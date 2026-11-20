@@ -1,0 +1,11 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  '@swc/core': true
+  workerd: true
+  unrs-resolver: true
+  sharp: true
