@@ -10,6 +10,7 @@ import {
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { logFinancialTransaction } from '../utils/audit-logger';
+import { getDailyMlmSummary, getUtcDateKey } from './quests';
 
 export const walletRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -38,6 +39,14 @@ walletRouter.get('/', async (c) => {
     totalWithdrawnMicroUsd: wallet.total_withdrawn_micro_usd,
     formattedTotalWithdrawn: formatMicroUsd(wallet.total_withdrawn_micro_usd),
   });
+});
+
+// 1.1 Get Today's Daily MLM Commission Summary
+walletRouter.get('/daily-mlm-summary', async (c) => {
+  const user = c.get('user');
+  const dateKey = c.req.query('dateKey') || getUtcDateKey();
+  const summary = await getDailyMlmSummary(c.env.DB, user.userId, dateKey);
+  return c.json(summary);
 });
 
 // 2. Request Withdrawal (Min $10 = 10,000,000 Micro-USD)

@@ -1,0 +1,20 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="av2Bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#18181B"/>
+      <stop offset="1" stopColor="#DC2626"/>
+    </linearGradient>
+  </defs>
+  <!-- Background Circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#av2Bg)" stroke="#EF4444" stroke-width="3"/>
+  <!-- Hood Cowl -->
+  <path d="M28 72C28 36 42 22 64 20C86 22 100 36 100 72C100 90 92 98 84 100L64 96L44 100C36 98 28 90 28 72Z" fill="#27272A" stroke="#52525B" stroke-width="2"/>
+  <!-- Shadow Face Inset -->
+  <path d="M42 54C42 42 50 36 64 36C78 36 86 42 86 54C86 74 76 86 64 86C52 86 42 74 42 54Z" fill="#09090B"/>
+  <!-- Glowing Red Robotic Monocle Eye -->
+  <circle cx="56" cy="56" r="6" fill="#EF4444" stroke="#FECACA" stroke-width="1.5"/>
+  <circle cx="56" cy="56" r="2" fill="#FFFFFF"/>
+  <line x1="48" y1="56" x2="64" y2="56" stroke="#F87171" stroke-width="1"/>
+  <!-- Shoulders -->
+  <path d="M20 122C20 108 34 100 48 98L64 102L80 98C94 100 108 108 108 122V124H20V122Z" fill="#18181B" stroke="#3F3F46" stroke-width="2"/>
+</svg>

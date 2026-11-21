@@ -1,0 +1,24 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="av1Bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#0F172A"/>
+      <stop offset="1" stopColor="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="av1Visor" x1="36" y1="52" x2="92" y2="68" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#38BDF8"/>
+      <stop offset="1" stopColor="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <!-- Background Circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#av1Bg)" stroke="#38BDF8" stroke-width="3"/>
+  <!-- Helmet Base -->
+  <path d="M34 60C34 40 46 26 64 26C82 26 94 40 94 60V82C94 88 88 94 82 94H46C40 94 34 88 34 82V60Z" fill="#1E293B" stroke="#475569" stroke-width="2"/>
+  <!-- Tactical Visor -->
+  <rect x="42" y="52" width="44" height="16" rx="8" fill="url(#av1Visor)"/>
+  <ellipse cx="50" cy="56" rx="4" ry="2" fill="#FFFFFF" fill-opacity="0.8"/>
+  <!-- Respirator Mask Details -->
+  <rect x="52" y="74" width="24" height="12" rx="4" fill="#0F172A" stroke="#38BDF8" stroke-width="1.5"/>
+  <line x1="56" y1="80" x2="72" y2="80" stroke="#38BDF8" stroke-width="1.5"/>
+  <!-- Shoulders Armor -->
+  <path d="M22 120C22 104 36 96 50 96H78C92 96 106 104 106 120V124H22V120Z" fill="#334155" stroke="#475569" stroke-width="2"/>
+</svg>

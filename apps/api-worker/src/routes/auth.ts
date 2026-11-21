@@ -5,8 +5,12 @@ import {
   WhatsAppOtpRequestSchema,
   WhatsAppOtpVerifySchema,
   TelegramLoginSchema,
+  UpdateProfileSchema,
   DEV_MOCK_OTP,
   formatMicroUsd,
+  MAX_ENERGY_TICKETS,
+  ENERGY_RECHARGE_SECONDS,
+  MAX_AVATAR_UPLOAD_BYTES,
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { hashPassword, verifyPassword, signJwt } from '../utils/crypto';
@@ -126,9 +130,48 @@ authRouter.get('/me', authMiddleware, async (c) => {
   const authUser = c.get('user');
 
   const user = await c.env.DB
-    .prepare('SELECT id, username, email, phone_number, telegram_id, referrer_id, role, status, created_at FROM users WHERE id = ?1')
+    .prepare(
+      `SELECT id, username, email, phone_number, telegram_id, referrer_id, role, status,
+              avatar_url, rank_badge, rename_count, energy_tickets, max_energy_tickets, last_energy_recharge, created_at
+       FROM users WHERE id = ?1`
+    )
     .bind(authUser.userId)
-    .first();
+    .first<any>();
+
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  // Energy Tickets Auto-Recharge (1 ticket per 3600s up to max_energy_tickets)
+  const now = Math.floor(Date.now() / 1000);
+  let energyTickets = user.energy_tickets ?? 6;
+  const maxTickets = user.max_energy_tickets ?? 6;
+  let lastRecharge = user.last_energy_recharge || now;
+
+  if (energyTickets < maxTickets) {
+    const elapsed = Math.max(0, now - lastRecharge);
+    const recharged = Math.floor(elapsed / ENERGY_RECHARGE_SECONDS);
+    if (recharged > 0) {
+      energyTickets = Math.min(maxTickets, energyTickets + recharged);
+      lastRecharge = energyTickets >= maxTickets ? now : (lastRecharge + recharged * ENERGY_RECHARGE_SECONDS);
+      await c.env.DB
+        .prepare('UPDATE users SET energy_tickets = ?1, last_energy_recharge = ?2 WHERE id = ?3')
+        .bind(energyTickets, lastRecharge, authUser.userId)
+        .run();
+      user.energy_tickets = energyTickets;
+      user.last_energy_recharge = lastRecharge;
+    }
+  }
+
+  const secondsToNextRecharge = energyTickets < maxTickets
+    ? Math.max(0, ENERGY_RECHARGE_SECONDS - (now - lastRecharge))
+    : 0;
+
+  // Downline network count
+  const downlineRes = await c.env.DB
+    .prepare('SELECT COUNT(*) as count FROM network_tree WHERE upline_id = ?1')
+    .bind(authUser.userId)
+    .first<{ count: number }>();
 
   const wallet = await c.env.DB
     .prepare('SELECT balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at FROM wallets WHERE user_id = ?1')
@@ -136,7 +179,11 @@ authRouter.get('/me', authMiddleware, async (c) => {
     .first<{ balance_micro_usd: number; total_earned_micro_usd: number; total_withdrawn_micro_usd: number }>();
 
   return c.json({
-    user,
+    user: {
+      ...user,
+      downline_count: downlineRes?.count || 0,
+      seconds_to_next_recharge: secondsToNextRecharge,
+    },
     wallet: wallet
       ? {
           ...wallet,
@@ -144,6 +191,92 @@ authRouter.get('/me', authMiddleware, async (c) => {
           formatted_total_earned: formatMicroUsd(wallet.total_earned_micro_usd),
         }
       : null,
+  });
+});
+
+// 3.1 Update User Profile (Avatar & Username with rename counter)
+authRouter.post('/profile', authMiddleware, async (c) => {
+  const authUser = c.get('user');
+  const body = await c.req.json().catch(() => null);
+
+  const parseResult = UpdateProfileSchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json({ error: 'Validation failed', details: parseResult.error.format() }, 400);
+  }
+
+  const { username, avatarUrl } = parseResult.data;
+
+  const currentUser = await c.env.DB
+    .prepare('SELECT id, username, rename_count FROM users WHERE id = ?1')
+    .bind(authUser.userId)
+    .first<{ id: string; username: string; rename_count: number }>();
+
+  if (!currentUser) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  // Validate Avatar Size if base64 data url (<= 512 KB)
+  if (avatarUrl && avatarUrl.startsWith('data:')) {
+    const base64Data = avatarUrl.split(',')[1] || '';
+    const approxBytes = Math.floor((base64Data.length * 3) / 4);
+    if (approxBytes > MAX_AVATAR_UPLOAD_BYTES) {
+      return c.json({ error: `Avatar image must be 512 KB or less. (Current size: ~${Math.round(approxBytes / 1024)} KB)` }, 400);
+    }
+  }
+
+  // Validate Username Change
+  let newRenameCount = currentUser.rename_count || 0;
+  if (username && username !== currentUser.username) {
+    if (newRenameCount >= 3) {
+      return c.json({ error: 'Rename limit reached (Maximum 3 renames allowed)' }, 400);
+    }
+
+    const taken = await c.env.DB
+      .prepare('SELECT id FROM users WHERE username = ?1 AND id != ?2')
+      .bind(username, authUser.userId)
+      .first();
+
+    if (taken) {
+      return c.json({ error: 'Username is already taken' }, 409);
+    }
+
+    newRenameCount += 1;
+  }
+
+  const updates: string[] = [];
+  const bindings: any[] = [];
+  let paramIdx = 1;
+
+  if (username) {
+    updates.push(`username = ?${paramIdx++}`);
+    bindings.push(username);
+    updates.push(`rename_count = ?${paramIdx++}`);
+    bindings.push(newRenameCount);
+  }
+
+  if (avatarUrl !== undefined) {
+    updates.push(`avatar_url = ?${paramIdx++}`);
+    bindings.push(avatarUrl);
+  }
+
+  if (updates.length > 0) {
+    bindings.push(authUser.userId);
+    await c.env.DB
+      .prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?${paramIdx}`)
+      .bind(...bindings)
+      .run();
+  }
+
+  // Return updated user
+  const updated = await c.env.DB
+    .prepare('SELECT id, username, email, avatar_url, rank_badge, rename_count, energy_tickets, max_energy_tickets FROM users WHERE id = ?1')
+    .bind(authUser.userId)
+    .first();
+
+  return c.json({
+    success: true,
+    user: updated,
+    remainingRenames: Math.max(0, 3 - newRenameCount),
   });
 });
 

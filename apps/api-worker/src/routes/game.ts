@@ -7,6 +7,7 @@ import {
 import type { Env } from '../types';
 import { getUplines } from '../utils/mlm-tree';
 import { logFinancialTransaction } from '../utils/audit-logger';
+import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from './quests';
 
 export const gameRouter = new Hono<{ Bindings: Env }>();
 
@@ -31,6 +32,7 @@ gameRouter.post('/batch-payout', async (c) => {
   }
 
   const now = Math.floor(Date.now() / 1000);
+  const dateKey = getUtcDateKey();
   const statements: ReturnType<typeof c.env.DB.prepare>[] = [];
   const logItems: Parameters<typeof logFinancialTransaction>[1][] = [];
 
@@ -51,15 +53,27 @@ gameRouter.post('/batch-payout', async (c) => {
       source_game_id: gameId,
     });
 
+    // Track daily quests for player: match played & coins earned
+    await trackQuestAction(c.env.DB, item.userId, 'finish_game_match', 1, dateKey);
+    const coinsEarned = Math.floor(item.amountMicroUsd / 100);
+    if (coinsEarned > 0) {
+      await trackQuestAction(c.env.DB, item.userId, 'earn_coins', coinsEarned, dateKey);
+    }
+
     // 2. Compute 5-level MLM commission from this reward
     const uplines = await getUplines(c.env.DB, item.userId);
     if (uplines.length > 0) {
       const mlm = calculateMlmDistribution(item.amountMicroUsd, uplines);
       for (const p of mlm.payouts) {
-        statements.push(
-          c.env.DB.prepare(
-            'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-          ).bind(Number(p.amountMicroUsd), now, p.userId)
+        // Record in daily_mlm_pending_ledger (pending_grey or unlocked_green)
+        await recordPendingMlmCommission(
+          c.env.DB,
+          p.userId,
+          item.userId,
+          p.depth,
+          Number(p.amountMicroUsd),
+          item.actionType === 'CHEST_OPEN' ? 'CHEST_OPEN' : 'GAME_KILL',
+          dateKey
         );
 
         logItems.push({

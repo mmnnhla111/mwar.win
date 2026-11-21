@@ -85,3 +85,9 @@ export const MAP_SPECS = {
 export const DEV_MOCK_OTP = '123456';
 export const DEV_MOCK_TELEGRAM_ID = '999888777';
 export const DEV_MOCK_PHONE = '+66812345678';
+
+// Daily Proof-of-Activity & Energy Specs
+export const DAILY_QUESTS_REQUIRED_TO_UNLOCK = 4;
+export const MAX_ENERGY_TICKETS = 6;
+export const ENERGY_RECHARGE_SECONDS = 3600; // 1 hour per ticket
+export const MAX_AVATAR_UPLOAD_BYTES = 512 * 1024; // 512 KB

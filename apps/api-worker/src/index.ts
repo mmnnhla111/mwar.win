@@ -10,6 +10,7 @@ import { adsRouter } from './routes/ads';
 import { gameRouter } from './routes/game';
 import { chatRouter } from './routes/chat';
 import { auditRouter } from './routes/audit';
+import { questsRouter, settleDailyMlm, getUtcDateKey } from './routes/quests';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -49,6 +50,16 @@ app.route('/api/ads', adsRouter);
 app.route('/api/game', gameRouter);
 app.route('/api/chat', chatRouter);
 app.route('/api/audit', auditRouter);
+app.route('/api/quests', questsRouter);
+
+// Cron endpoints (Direct trigger or Cloudflare Scheduled Event)
+app.post('/api/cron/settle-daily-mlm', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const dateKey = body.dateKey || getUtcDateKey();
+  const targetUserId = body.targetUserId;
+  const result = await settleDailyMlm(c.env, dateKey, targetUserId);
+  return c.json(result);
+});
 
 // Global Error Handler
 app.onError((err, c) => {

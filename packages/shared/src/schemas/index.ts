@@ -109,6 +109,27 @@ export const DirectMessageSendSchema = z.object({
   message: 'Must provide either message text or media URL',
 });
 
+// Daily Quest Schemas
+export const QuestProgressSchema = z.object({
+  questId: z.string().min(1),
+  increment: z.number().int().positive().default(1),
+});
+
+export const QuestClaimSchema = z.object({
+  questId: z.string().min(1),
+});
+
+// User Profile Update Schema
+export const UpdateProfileSchema = z.object({
+  username: z
+    .string()
+    .min(3)
+    .max(20)
+    .regex(/^[a-zA-Z0-9_]+$/)
+    .optional(),
+  avatarUrl: z.string().max(800000).optional(),
+});
+
 // Types inferred from Zod schemas
 export type RegisterInput = z.infer<typeof RegisterSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
@@ -120,3 +141,6 @@ export type MarketplaceCreateListingInput = z.infer<typeof MarketplaceCreateList
 export type AdPostbackInput = z.infer<typeof AdPostbackSchema>;
 export type GameBatchPayoutInput = z.infer<typeof GameBatchPayoutSchema>;
 export type DirectMessageSendInput = z.infer<typeof DirectMessageSendSchema>;
+export type QuestProgressInput = z.infer<typeof QuestProgressSchema>;
+export type QuestClaimInput = z.infer<typeof QuestClaimSchema>;
+export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>;

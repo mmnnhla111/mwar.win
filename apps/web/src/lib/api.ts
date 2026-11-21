@@ -2,6 +2,8 @@
  * MWAR Frontend API Client - Connects directly to local Cloudflare Worker (wrangler dev)
  */
 
+import type { TodayQuestsResponse, DailyMlmSummary } from '@mwar/shared';
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8787';
 
 let inMemoryToken: string | null = null;
@@ -50,4 +52,70 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit =
   }
 
   return data as T;
+}
+
+// User & Profile
+export async function getCurrentUser() {
+  return apiFetch<{ user: any; wallet: any }>('/api/auth/me');
+}
+
+export async function updateProfile(data: { username?: string; avatarUrl?: string }) {
+  return apiFetch<{ success: boolean; user: any; remainingRenames: number }>('/api/auth/profile', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Daily Quests & MLM Engine
+export async function getTodayQuests(dateKey?: string): Promise<TodayQuestsResponse> {
+  const query = dateKey ? `?dateKey=${dateKey}` : '';
+  return apiFetch<TodayQuestsResponse>(`/api/quests/today${query}`);
+}
+
+export async function progressQuest(questId: string, increment = 1, dateKey?: string) {
+  return apiFetch<{
+    success: boolean;
+    questId: string;
+    current: number;
+    isCompleted: boolean;
+    isMlmUnlocked: boolean;
+    justUnlockedMlm: boolean;
+  }>('/api/quests/progress', {
+    method: 'POST',
+    body: JSON.stringify({ questId, increment, dateKey }),
+  });
+}
+
+export async function claimQuest(questId: string, dateKey?: string) {
+  return apiFetch<{
+    success: boolean;
+    questId: string;
+    rewardCoins: number;
+    rewardMicroUsd: number;
+    formattedReward: string;
+  }>('/api/quests/claim', {
+    method: 'POST',
+    body: JSON.stringify({ questId, dateKey }),
+  });
+}
+
+export async function getDailyMlmSummary(dateKey?: string): Promise<DailyMlmSummary> {
+  const query = dateKey ? `?dateKey=${dateKey}` : '';
+  return apiFetch<DailyMlmSummary>(`/api/wallet/daily-mlm-summary${query}`);
+}
+
+export async function settleDailyMlm(dateKey?: string, targetUserId?: string) {
+  return apiFetch<{
+    success: boolean;
+    dateKey: string;
+    settledUsersCount: number;
+    forfeitedUsersCount: number;
+    totalSettledMicroUsd: number;
+    formattedSettled: string;
+    totalForfeitedMicroUsd: number;
+    formattedForfeited: string;
+  }>('/api/cron/settle-daily-mlm', {
+    method: 'POST',
+    body: JSON.stringify({ dateKey, targetUserId }),
+  });
 }

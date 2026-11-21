@@ -67,3 +67,28 @@ export async function fetchWithIndexedDbCache(url: string): Promise<ArrayBuffer>
   await storeCachedAsset(url, buffer);
   return buffer;
 }
+
+export const GAME_ARTWORK_URLS = [
+  '/images/rank_bronze.svg',
+  '/images/rank_silver.svg',
+  '/images/rank_gold.svg',
+  '/images/rank_diamond.svg',
+  '/images/rank_legendary.svg',
+  '/images/mode_mini30.svg',
+  '/images/mode_standard100.svg',
+  '/images/mode_fast.svg',
+  '/images/mode_practice.svg',
+  '/images/avatar_1.svg',
+  '/images/avatar_2.svg',
+  '/images/avatar_3.svg',
+  '/images/avatar_4.svg',
+  '/images/chest_3d.svg',
+  '/images/hero_backdrop.svg',
+];
+
+export async function preloadGameAssets(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  for (const url of GAME_ARTWORK_URLS) {
+    fetchWithIndexedDbCache(url).catch(() => {});
+  }
+}

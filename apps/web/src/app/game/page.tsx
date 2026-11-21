@@ -3,8 +3,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, progressQuest } from '../../lib/api';
 import { formatCoins, formatMicroUsd } from '@mwar/shared';
+import { GhostSpectatorIcon, QuestSpectateIcon } from '../../components/icons';
 
 export default function GamePage() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -23,6 +24,10 @@ export default function GamePage() {
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
+  // Spectator Mode Quest Tracking (90 seconds for Q_SPECTATE)
+  const [spectatorSeconds, setSpectatorSeconds] = useState(0);
+  const [spectatorQuestCompleted, setSpectatorQuestCompleted] = useState(false);
+
   // Mobile virtual joystick input states
   const mobileInputRef = useRef({
     moveX: 0,
@@ -36,6 +41,31 @@ export default function GamePage() {
     // Detect mobile touch
     setIsMobile('ontouchstart' in window || navigator.maxTouchPoints > 0);
   }, []);
+
+  // Spectator timer heartbeat
+  useEffect(() => {
+    const isSpectatorMode = typeof window !== 'undefined' && (
+      window.location.search.includes('mode=spectator') || hudStats.isGhost
+    );
+
+    if (!isSpectatorMode) return;
+
+    const timer = setInterval(async () => {
+      setSpectatorSeconds((prev) => {
+        const next = prev + 1;
+        // Every 15 seconds, ping API progress
+        if (next % 15 === 0 && next <= 90) {
+          progressQuest('Q_SPECTATE', 15).catch(() => {});
+        }
+        if (next >= 90 && !spectatorQuestCompleted) {
+          setSpectatorQuestCompleted(true);
+        }
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [hudStats.isGhost, spectatorQuestCompleted]);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -448,6 +478,32 @@ export default function GamePage() {
             </span>
           )}
         </div>
+
+        {/* Center: Spectator Quest Progress (90s) */}
+        {(typeof window !== 'undefined' && window.location.search.includes('mode=spectator') || hudStats.isGhost) && (
+          <div className="bg-slate-900/90 backdrop-blur-md border border-indigo-500/50 px-4 py-2 rounded-2xl flex items-center space-x-3 shadow-lg shadow-indigo-500/20">
+            <QuestSpectateIcon size={22} className="animate-pulse" />
+            <div>
+              <div className="flex items-center justify-between space-x-3 text-xs font-black">
+                <span className="text-indigo-300">DAILY QUEST: SPECTATE 90s</span>
+                <span className="text-amber-400 font-mono">{Math.min(90, spectatorSeconds)}s / 90s</span>
+              </div>
+              <div className="w-36 bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    spectatorQuestCompleted ? 'bg-emerald-400' : 'bg-indigo-500'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.round((spectatorSeconds / 90) * 100))}%` }}
+                />
+              </div>
+            </div>
+            {spectatorQuestCompleted && (
+              <span className="bg-emerald-500 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-md animate-bounce">
+                READY TO CLAIM!
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Right: Round Earnings & Kills */}
         <div className="bg-surface/80 backdrop-blur-md border border-gray-800 p-3 rounded-xl flex items-center space-x-4 text-right">

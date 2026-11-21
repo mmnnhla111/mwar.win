@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { DirectMessageSendSchema } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { trackQuestAction } from './quests';
 
 export const chatRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -49,6 +50,9 @@ chatRouter.post('/messages', async (c) => {
     )
     .bind(user.userId, receiver_id, message_text || null, media_r2_url || null, now)
     .run();
+
+  // Track daily quest for sender
+  await trackQuestAction(c.env.DB, user.userId, 'send_chat_or_network', 1);
 
   return c.json({
     success: true,

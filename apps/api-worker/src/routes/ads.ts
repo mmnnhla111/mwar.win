@@ -6,6 +6,7 @@ import {
 import type { Env, AuthUserPayload } from '../types';
 import { getUplines } from '../utils/mlm-tree';
 import { logFinancialTransaction } from '../utils/audit-logger';
+import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from './quests';
 
 export const adsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -23,7 +24,8 @@ async function processAdReward(
   userId: string,
   provider: string,
   country: string,
-  customAmountMicroUsd?: number
+  customAmountMicroUsd?: number,
+  dateKey = getUtcDateKey()
 ) {
   const grossReward = customAmountMicroUsd || TIER_REWARDS_MICRO_USD[country.toUpperCase()] || TIER_REWARDS_MICRO_USD.OTHER;
   const now = Math.floor(Date.now() / 1000);
@@ -34,47 +36,40 @@ async function processAdReward(
   // 2. Calculate 5-level MLM distribution
   const mlm = calculateMlmDistribution(grossReward, uplines);
 
-  // 3. Prepare atomic batch for D1:
-  // - Credit watcher (or watcher gets full reward while MLM is distributed from ad revenue pool)
-  const statements: ReturnType<typeof env.DB.prepare>[] = [
-    // Credit watcher
-    env.DB.prepare(
-      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-    ).bind(grossReward, now, userId),
-  ];
+  // 3. Credit watcher immediately
+  await env.DB.prepare(
+    'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
+  ).bind(grossReward, now, userId).run();
 
-  // Credit each upline with their MLM share
+  // 4. Record downline commission for each upline in daily_mlm_pending_ledger (Held as pending_grey until proof-of-activity unlock)
   for (const p of mlm.payouts) {
-    statements.push(
-      env.DB.prepare(
-        'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-      ).bind(Number(p.amountMicroUsd), now, p.userId)
+    await recordPendingMlmCommission(
+      env.DB,
+      p.userId,
+      userId,
+      p.depth,
+      Number(p.amountMicroUsd),
+      'AD_WATCH',
+      dateKey
     );
   }
 
-  await env.DB.batch(statements);
+  // 5. Track daily quests for watcher
+  await trackQuestAction(env.DB, userId, 'watch_rewarded_ad', 1, dateKey);
+  const earnedCoins = Math.floor(grossReward / 100);
+  if (earnedCoins > 0) {
+    await trackQuestAction(env.DB, userId, 'earn_coins', earnedCoins, dateKey);
+  }
 
-  // 4. Log transactions to financial audit trail
+  // 6. Log transactions to financial audit trail
   const txBase = `tx_ad_${provider}_${Date.now()}`;
   await logFinancialTransaction(env, {
     transaction_id: `${txBase}_watcher`,
     user_id: userId,
     action_type: 'AD_WATCH',
     amount_micro_usd: BigInt(grossReward),
-    balance_after_micro_usd: 0n, // Updated asynchronously
+    balance_after_micro_usd: 0n,
   });
-
-  for (const p of mlm.payouts) {
-    await logFinancialTransaction(env, {
-      transaction_id: `${txBase}_mlm_L${p.depth}`,
-      user_id: p.userId,
-      action_type: 'MLM_COMMISSION',
-      amount_micro_usd: p.amountMicroUsd,
-      balance_after_micro_usd: 0n,
-      related_user_id: userId,
-      mlm_level: p.depth,
-    });
-  }
 
   return {
     success: true,

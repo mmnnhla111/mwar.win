@@ -1,0 +1,31 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="silverBase" x1="64" y1="12" x2="64" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#E2E8F0" />
+      <stop offset="0.5" stopColor="#94A3B8" />
+      <stop offset="1" stopColor="#334155" />
+    </linearGradient>
+    <linearGradient id="silverTrim" x1="20" y1="12" x2="108" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#FFFFFF" />
+      <stop offset="0.5" stopColor="#CBD5E1" />
+      <stop offset="1" stopColor="#475569" />
+    </linearGradient>
+    <filter id="silverGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#94A3B8" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+  <g filter="url(#silverGlow)">
+    <!-- Wings / Chevron Flanks -->
+    <path d="M14 36L30 26L30 58L14 74Z" fill="#64748B" stroke="#CBD5E1" stroke-width="1.5"/>
+    <path d="M114 36L98 26L98 58L114 74Z" fill="#64748B" stroke="#CBD5E1" stroke-width="1.5"/>
+    <!-- Outer Shield Frame -->
+    <path d="M64 12L102 28V68C102 94 64 116 64 116C64 116 26 94 26 68V28L64 12Z" fill="url(#silverBase)" stroke="url(#silverTrim)" stroke-width="4"/>
+    <!-- Inner Shield Inset -->
+    <path d="M64 22L92 35V66C92 86 64 104 64 104C64 104 36 86 36 66V35L64 22Z" fill="#1E293B" stroke="#94A3B8" stroke-width="2"/>
+    <!-- Center Emblem: Dual Silver Chevrons & Star -->
+    <path d="M48 54L64 42L80 54L76 59L64 50L52 59Z" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1"/>
+    <path d="M48 68L64 56L80 68L76 73L64 64L52 73Z" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <!-- Tier Text -->
+    <text x="64" y="96" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="900" letter-spacing="1.5" font-family="system-ui, sans-serif">SILVER</text>
+  </g>
+</svg>

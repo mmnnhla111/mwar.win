@@ -1,0 +1,34 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="diaBase" x1="64" y1="8" x2="64" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#67E8F9" />
+      <stop offset="0.4" stopColor="#06B6D4" />
+      <stop offset="0.8" stopColor="#0891B2" />
+      <stop offset="1" stopColor="#164E63" />
+    </linearGradient>
+    <linearGradient id="diaTrim" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#CFFAFE" />
+      <stop offset="0.5" stopColor="#38BDF8" />
+      <stop offset="1" stopColor="#0C4A6E" />
+    </linearGradient>
+    <filter id="diaGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="10" flood-color="#06B6D4" flood-opacity="0.8"/>
+    </filter>
+  </defs>
+  <g filter="url(#diaGlow)">
+    <!-- Cyber Crystal Wings -->
+    <polygon points="10,40 32,18 28,68 8,82" fill="#0891B2" stroke="#67E8F9" stroke-width="1.5"/>
+    <polygon points="118,40 96,18 100,68 120,82" fill="#0891B2" stroke="#67E8F9" stroke-width="1.5"/>
+    <!-- Outer Shield Frame -->
+    <path d="M64 8L106 24V72C106 100 64 122 64 122C64 122 22 100 22 72V24L64 8Z" fill="url(#diaBase)" stroke="url(#diaTrim)" stroke-width="4.5"/>
+    <!-- Inner Shield Inset -->
+    <path d="M64 18L96 32V68C96 90 64 110 64 110C64 110 32 90 32 68V32L64 18Z" fill="#082F49" stroke="#67E8F9" stroke-width="2"/>
+    <!-- Center Diamond Crystal -->
+    <polygon points="64,36 82,54 64,84 46,54" fill="#22D3EE" stroke="#E0F2FE" stroke-width="2"/>
+    <line x1="46" y1="54" x2="82" y2="54" stroke="#CFFAFE" stroke-width="1.5"/>
+    <line x1="64" y1="36" x2="64" y2="84" stroke="#CFFAFE" stroke-width="1.5"/>
+    <polygon points="64,44 74,54 64,74 54,54" fill="#A5F3FC" fill-opacity="0.6"/>
+    <!-- Tier Text -->
+    <text x="64" y="102" text-anchor="middle" fill="#CFFAFE" font-size="11" font-weight="900" letter-spacing="2" font-family="system-ui, sans-serif">DIAMOND</text>
+  </g>
+</svg>

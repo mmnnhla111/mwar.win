@@ -1,0 +1,35 @@
+<svg width="1920" height="1080" viewBox="0 0 1920 1080" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="heroCenterGlow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stopColor="#1E1B4B" stop-opacity="0.8"/>
+      <stop offset="45%" stopColor="#0B0F19" stop-opacity="0.95"/>
+      <stop offset="100%" stopColor="#030712"/>
+    </radialGradient>
+    <linearGradient id="neonCyanBeam" x1="0" y1="0" x2="1" y2="1">
+      <stop stopColor="#38BDF8" stop-opacity="0.15"/>
+      <stop offset="1" stopColor="#0284C7" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="neonCrimsonBeam" x1="1" y1="0" x2="0" y2="1">
+      <stop stopColor="#F43F5E" stop-opacity="0.15"/>
+      <stop offset="1" stopColor="#9F1239" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="gridGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop stopColor="#1E293B" stop-opacity="0"/>
+      <stop offset="0.6" stopColor="#38BDF8" stop-opacity="0.08"/>
+      <stop offset="1" stopColor="#38BDF8" stop-opacity="0.2"/>
+    </linearGradient>
+  </defs>
+  <!-- Dark Vignette Canvas -->
+  <rect width="1920" height="1080" fill="url(#heroCenterGlow)"/>
+  <!-- Ambient High-tech Light Beams -->
+  <polygon points="0,0 700,0 1100,1080 0,1080" fill="url(#neonCyanBeam)"/>
+  <polygon points="1220,0 1920,0 1920,1080 820,1080" fill="url(#neonCrimsonBeam)"/>
+  <!-- 3D Perspective Cyber Floor Grid -->
+  <g opacity="0.8">
+    <path d="M0 650H1920M0 720H1920M0 800H1920M0 890H1920M0 990H1920" stroke="url(#gridGrad)" stroke-width="1.5"/>
+    <path d="M960 600L100 1080M960 600L350 1080M960 600L600 1080M960 600L820 1080M960 600L1100 1080M960 600L1320 1080M960 600L1570 1080M960 600L1820 1080" stroke="url(#gridGrad)" stroke-width="1.5"/>
+  </g>
+  <!-- Cyber Hexagonal Tech Accents -->
+  <polygon points="960,320 990,338 990,372 960,390 930,372 930,338" stroke="#38BDF8" stroke-width="2" stroke-opacity="0.25" fill="none"/>
+  <polygon points="960,260 1020,295 1020,365 960,400 900,365 900,295" stroke="#F43F5E" stroke-width="1.5" stroke-opacity="0.15" fill="none"/>
+</svg>

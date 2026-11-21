@@ -11,7 +11,7 @@ interface DevMockPanelProps {
 
 export function DevMockPanel({ onAuthSuccess, onRefreshData }: DevMockPanelProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'wa' | 'tg' | 'ads' | 'ai'>('wa');
+  const [activeTab, setActiveTab] = useState<'wa' | 'tg' | 'ads' | 'ai' | 'quests'>('quests');
 
   // WhatsApp State
   const [phone, setPhone] = useState(DEV_MOCK_PHONE);
@@ -26,6 +26,10 @@ export function DevMockPanel({ onAuthSuccess, onRefreshData }: DevMockPanelProps
   // AI & Faucet State
   const [faucetStatus, setFaucetStatus] = useState<string>('');
   const [aiStatus, setAiStatus] = useState<string>('');
+
+  // Quests & MLM Settlement State
+  const [questStatus, setQuestStatus] = useState<string>('');
+  const [settleStatus, setSettleStatus] = useState<string>('');
 
   // 1. WhatsApp OTP Handlers
   const handleRequestOtp = async () => {
@@ -149,6 +153,47 @@ export function DevMockPanel({ onAuthSuccess, onRefreshData }: DevMockPanelProps
     }
   };
 
+  // 6. Quests & Midnight Settlement Handlers
+  const handleCompleteAllQuests = async () => {
+    try {
+      setQuestStatus('Completing 4 quests...');
+      await apiFetch('/api/quests/progress', {
+        method: 'POST',
+        body: JSON.stringify({ questId: 'Q_DAILY_CHECKIN', increment: 1 }),
+      });
+      await apiFetch('/api/quests/progress', {
+        method: 'POST',
+        body: JSON.stringify({ questId: 'Q_SPECTATE', increment: 90 }),
+      });
+      await apiFetch('/api/quests/progress', {
+        method: 'POST',
+        body: JSON.stringify({ questId: 'Q_PLAY_MATCH', increment: 3 }),
+      });
+      const res = await apiFetch('/api/quests/progress', {
+        method: 'POST',
+        body: JSON.stringify({ questId: 'Q_WATCH_AD', increment: 2 }),
+      });
+      setQuestStatus(`All quests complete! MLM Status: ${res.isMlmUnlocked ? 'UNLOCKED (GREEN) 🎉' : 'Pending'}`);
+      onRefreshData?.();
+    } catch (err: any) {
+      setQuestStatus(`Error: ${err.message}`);
+    }
+  };
+
+  const handleTriggerMidnightSettlement = async () => {
+    try {
+      setSettleStatus('Settling daily MLM ledger...');
+      const res = await apiFetch('/api/cron/settle-daily-mlm', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      setSettleStatus(`Settled ${res.settledUsersCount} user(s) (${res.formattedSettled}). Forfeited ${res.forfeitedUsersCount} user(s) (${res.formattedForfeited}).`);
+      onRefreshData?.();
+    } catch (err: any) {
+      setSettleStatus(`Settlement Error: ${err.message}`);
+    }
+  };
+
   return (
     <div className="fixed bottom-4 right-4 z-50">
       {!isOpen ? (
@@ -174,32 +219,71 @@ export function DevMockPanel({ onAuthSuccess, onRefreshData }: DevMockPanelProps
           </div>
 
           {/* Navigation Tabs */}
-          <div className="grid grid-cols-4 gap-1 mb-3 bg-gray-800 p-1 rounded-lg text-xs font-semibold">
+          <div className="grid grid-cols-5 gap-1 mb-3 bg-gray-800 p-1 rounded-lg text-[10px] font-semibold">
+            <button
+              onClick={() => setActiveTab('quests')}
+              className={`py-1 rounded text-center ${activeTab === 'quests' ? 'bg-yellow-500 text-black font-bold' : 'text-gray-300'}`}
+            >
+              Quests
+            </button>
+            <button
+              onClick={() => setActiveTab('ads')}
+              className={`py-1 rounded text-center ${activeTab === 'ads' ? 'bg-yellow-500 text-black font-bold' : 'text-gray-300'}`}
+            >
+              S2S Ads
+            </button>
             <button
               onClick={() => setActiveTab('wa')}
-              className={`py-1 rounded text-center ${activeTab === 'wa' ? 'bg-yellow-500 text-black' : 'text-gray-300'}`}
+              className={`py-1 rounded text-center ${activeTab === 'wa' ? 'bg-yellow-500 text-black font-bold' : 'text-gray-300'}`}
             >
               WhatsApp
             </button>
             <button
               onClick={() => setActiveTab('tg')}
-              className={`py-1 rounded text-center ${activeTab === 'tg' ? 'bg-yellow-500 text-black' : 'text-gray-300'}`}
+              className={`py-1 rounded text-center ${activeTab === 'tg' ? 'bg-yellow-500 text-black font-bold' : 'text-gray-300'}`}
             >
               Telegram
             </button>
             <button
-              onClick={() => setActiveTab('ads')}
-              className={`py-1 rounded text-center ${activeTab === 'ads' ? 'bg-yellow-500 text-black' : 'text-gray-300'}`}
-            >
-              S2S Ads
-            </button>
-            <button
               onClick={() => setActiveTab('ai')}
-              className={`py-1 rounded text-center ${activeTab === 'ai' ? 'bg-yellow-500 text-black' : 'text-gray-300'}`}
+              className={`py-1 rounded text-center ${activeTab === 'ai' ? 'bg-yellow-500 text-black font-bold' : 'text-gray-300'}`}
             >
-              AI & Cash
+              AI/Cash
             </button>
           </div>
+
+          {/* Tab 0: Quests & Daily MLM Settlement */}
+          {activeTab === 'quests' && (
+            <div className="space-y-3">
+              <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-700 space-y-2">
+                <span className="text-[11px] font-bold text-amber-400 block">Instant Proof-of-Activity:</span>
+                <p className="text-[10px] text-gray-400">
+                  Instantly marks 4 quests completed (Check-in, Spectate 90s, Play Match, Watch Ad) to test Grey-to-Green MLM unlocking.
+                </p>
+                <button
+                  onClick={handleCompleteAllQuests}
+                  className="w-full bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-black py-1.5 rounded-lg text-xs shadow-md transition"
+                >
+                  ⚡ Complete 4 Quests (Unlock MLM)
+                </button>
+                {questStatus && <div className="text-[10px] text-emerald-300 font-mono">{questStatus}</div>}
+              </div>
+
+              <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-700 space-y-2">
+                <span className="text-[11px] font-bold text-rose-400 block">Midnight MLM Settlement Cron:</span>
+                <p className="text-[10px] text-gray-400">
+                  Triggers daily settlement: Unlocked (Green) commissions are paid to wallet balances; Incomplete (Grey) commissions are burned as forfeited.
+                </p>
+                <button
+                  onClick={handleTriggerMidnightSettlement}
+                  className="w-full bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-black py-1.5 rounded-lg text-xs shadow-md transition"
+                >
+                  🕛 Trigger Midnight MLM Settlement
+                </button>
+                {settleStatus && <div className="text-[10px] text-amber-300 font-mono">{settleStatus}</div>}
+              </div>
+            </div>
+          )}
 
           {/* Tab 1: WhatsApp OTP */}
           {activeTab === 'wa' && (

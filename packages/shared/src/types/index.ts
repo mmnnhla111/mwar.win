@@ -4,6 +4,7 @@
 
 export type UserRole = 'player' | 'admin' | 'auditor';
 export type UserStatus = 'active' | 'suspended' | 'banned';
+export type RankBadge = 'Bronze' | 'Silver' | 'Gold' | 'Diamond' | 'Legendary';
 
 export interface User {
   id: string;
@@ -13,6 +14,12 @@ export interface User {
   referrer_id: string | null;
   role: UserRole;
   status: UserStatus;
+  avatar_url?: string;
+  rank_badge?: RankBadge;
+  rename_count?: number;
+  energy_tickets?: number;
+  max_energy_tickets?: number;
+  last_energy_recharge?: number;
   created_at: number; // unix epoch in seconds
 }
 
@@ -175,3 +182,64 @@ export interface DevMockWithdrawalReview {
   aiScore?: number;
   reason?: string;
 }
+
+// Daily Quest & Proof-of-Activity MLM Types
+export interface DailyQuestDefinition {
+  quest_id: string;
+  title: string;
+  description: string;
+  target_count: number;
+  action_type: string;
+  reward_coins: number;
+  created_at: number;
+}
+
+export interface UserDailyQuestItem {
+  questId: string;
+  title: string;
+  description: string;
+  target: number;
+  current: number;
+  rewardCoins: number;
+  actionType: string;
+  isCompleted: boolean;
+  isClaimed: boolean;
+}
+
+export interface TodayQuestsResponse {
+  dateKey: string;
+  totalQuests: number;
+  completedQuests: number;
+  requiredToUnlock: number;
+  isMlmUnlocked: boolean;
+  quests: UserDailyQuestItem[];
+}
+
+export type DailyMlmStatus = 'pending_grey' | 'unlocked_green' | 'forfeited_burned' | 'settled_paid';
+
+export interface DailyMlmPendingLedgerItem {
+  id: string;
+  user_id: string;
+  date_key: string;
+  downline_user_id: string;
+  depth_level: number;
+  amount_micro_usd: number | bigint;
+  status: DailyMlmStatus;
+  source_type: string;
+  created_at: number;
+}
+
+export interface DailyMlmSummary {
+  dateKey: string;
+  isUnlocked: boolean;
+  pendingGreyMicroUsd: number;
+  unlockedGreenMicroUsd: number;
+  forfeitedMicroUsd: number;
+  settledPaidMicroUsd: number;
+  completedQuestsCount: number;
+  requiredQuestsCount: number;
+  formattedPendingGrey: string;
+  formattedUnlockedGreen: string;
+  message: string;
+}
+

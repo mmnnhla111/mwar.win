@@ -1,0 +1,20 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="av3Bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stopColor="#1E1B4B"/>
+      <stop offset="1" stopColor="#D97706"/>
+    </linearGradient>
+  </defs>
+  <!-- Background Circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#av3Bg)" stroke="#F59E0B" stroke-width="3"/>
+  <!-- Juggernaut Heavy Helm -->
+  <path d="M32 50C32 30 46 22 64 22C82 22 96 30 96 50V84H32V50Z" fill="#334155" stroke="#64748B" stroke-width="3"/>
+  <!-- Ballistic Gold Hazard Slits -->
+  <rect x="42" y="46" width="44" height="6" fill="#F59E0B"/>
+  <rect x="42" y="58" width="44" height="6" fill="#F59E0B"/>
+  <rect x="42" y="70" width="44" height="6" fill="#F59E0B"/>
+  <!-- Jaw Guard -->
+  <rect x="48" y="82" width="32" height="12" rx="3" fill="#1E293B" stroke="#F59E0B" stroke-width="1.5"/>
+  <!-- Heavy Shoulder Pauldrons -->
+  <path d="M16 122C16 102 34 94 48 94H80C94 94 112 102 112 122V124H16V122Z" fill="#1E293B" stroke="#475569" stroke-width="2"/>
+</svg>
