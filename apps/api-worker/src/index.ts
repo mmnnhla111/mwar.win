@@ -79,15 +79,18 @@ export default {
     const receiverUrl = env.LOG_RECEIVER_URL || 'http://localhost:3000/api/logs';
     for (const msg of batch.messages) {
       try {
-        await fetch(receiverUrl, {
+        const res = await fetch(receiverUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(msg.body),
         });
-      } catch (err) {
-        console.error('[Queue Consumer] Failed to deliver message to Log Receiver:', err);
-        // Throwing will cause Cloudflare Queues to retry with exponential backoff
-        throw err;
+        if (!res.ok) {
+          console.warn(`[Queue Consumer] Log receiver returned status ${res.status}`);
+        }
+      } catch (err: any) {
+        // Graceful fallback: when Mini PC / tunnel is not connected yet,
+        // avoid crashing queue consumer loop
+        console.warn(`[Queue Consumer Fallback] Log receiver offline (${receiverUrl}): ${err.message}. Message buffered in Cloudflare Queue.`);
       }
     }
   },

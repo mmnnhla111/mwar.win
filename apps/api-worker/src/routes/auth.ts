@@ -169,7 +169,7 @@ authRouter.get('/me', authMiddleware, async (c) => {
 
   // Downline network count
   const downlineRes = await c.env.DB
-    .prepare('SELECT COUNT(*) as count FROM network_tree WHERE upline_id = ?1')
+    .prepare('SELECT COUNT(*) as count FROM network_trees WHERE ancestor_id = ?1')
     .bind(authUser.userId)
     .first<{ count: number }>();
 

@@ -153,6 +153,7 @@ export default function GamePage() {
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'offline_practice'>('connecting');
 
   // Spectator Mode Quest Tracking (90 seconds for Q_SPECTATE)
   const [spectatorSeconds, setSpectatorSeconds] = useState(0);
@@ -321,15 +322,80 @@ export default function GamePage() {
       scene.add(treeGroup);
     }
 
-    // 6. Connect to Colyseus Game Server
-    const colyseusClient = new ColyseusClient(
-      process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'ws://localhost:2567'
-    );
+    // 6. Connect to Colyseus Game Server (or Offline Practice Mode Fallback)
+    const colyseusUrl =
+      process.env.NEXT_PUBLIC_GAME_SERVER_URL ||
+      (typeof window !== 'undefined' && (window.location.hostname === 'mwar.win' || window.location.hostname.endsWith('.mwar.win'))
+        ? 'wss://game.mwar.win'
+        : 'ws://localhost:2567');
+    const colyseusClient = new ColyseusClient(colyseusUrl);
 
     const remotePlayersMeshes = new Map<string, THREE.Group>();
     const chestMeshes = new Map<string, THREE.Group>();
 
     let currentRoom: Room | null = null;
+
+    function spawnPracticeObjects() {
+      // Spawn 2 practice bounty chests
+      const chestPositions = [
+        { x: -10, y: 0, z: -15, id: 'practice_chest_1' },
+        { x: 14, y: 0, z: -20, id: 'practice_chest_2' },
+      ];
+      chestPositions.forEach((pos) => {
+        const chestGroup = new THREE.Group();
+        const cGeo = new THREE.BoxGeometry(1.2, 0.9, 1.0);
+        const cMat = new THREE.MeshStandardMaterial({
+          color: 0xf59e0b,
+          roughness: 0.3,
+          metalness: 0.8,
+          emissive: 0xb45309,
+          emissiveIntensity: 0.6,
+        });
+        const cMesh = new THREE.Mesh(cGeo, cMat);
+        cMesh.position.y = 0.45;
+        cMesh.castShadow = true;
+        chestGroup.add(cMesh);
+
+        const chestLight = new THREE.PointLight(0xf59e0b, 1.5, 6);
+        chestLight.position.y = 1.0;
+        chestGroup.add(chestLight);
+
+        const ringGeo = new THREE.TorusGeometry(0.9, 0.05, 8, 24);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.rotation.x = Math.PI / 2;
+        ring.position.y = 0.05;
+        chestGroup.add(ring);
+
+        chestGroup.position.set(pos.x, pos.y, pos.z);
+        scene.add(chestGroup);
+        chestMeshes.set(pos.id, chestGroup);
+      });
+
+      // Spawn 2 practice target dummies
+      const dummyPositions = [
+        { x: 0, y: 0, z: -25, id: 'practice_dummy_1' },
+        { x: -18, y: 0, z: -35, id: 'practice_dummy_2' },
+      ];
+      dummyPositions.forEach((pos) => {
+        const pGroup = new THREE.Group();
+        (pGroup as any).name = pos.id;
+        const bodyGeo = new THREE.CylinderGeometry(0.5, 0.5, 1.8, 16);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0xef4444 });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 0.9;
+        body.castShadow = true;
+        pGroup.add(body);
+
+        const visor = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.25, 0.4), new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
+        visor.position.set(0, 1.4, 0.35);
+        pGroup.add(visor);
+
+        pGroup.position.set(pos.x, pos.y, pos.z);
+        scene.add(pGroup);
+        remotePlayersMeshes.set(pos.id, pGroup);
+      });
+    }
 
     async function initColyseus() {
       try {
@@ -352,6 +418,7 @@ export default function GamePage() {
 
         currentRoom = roomInstance;
         setRoom(roomInstance);
+        setConnectionStatus('connected');
 
         // Player Join / Move / Prop synchronization
         const state = roomInstance.state as any;
@@ -477,7 +544,14 @@ export default function GamePage() {
           setAfkPrompt(null);
         });
       } catch (err: any) {
-        console.error('Colyseus connection error:', err);
+        console.warn('Colyseus server offline. Activating Offline Practice Mode.', err);
+        setConnectionStatus('offline_practice');
+        spawnPracticeObjects();
+        setKillFeed((prev) => [
+          '🟡 Offline Practice Mode active (Solo Physics)',
+          '🎯 Practice targets & bounty chests spawned',
+          ...prev.slice(0, 2),
+        ]);
       }
     }
 
@@ -488,7 +562,6 @@ export default function GamePage() {
     let euler = new THREE.Euler(0, 0, 0, 'YXZ');
 
     const shootWeapon = () => {
-      if (!currentRoom) return;
       soundFX.playGunshot();
 
       const raycaster = new THREE.Raycaster();
@@ -507,16 +580,27 @@ export default function GamePage() {
         }
         const found = chestEntries.find((c) => c[1] === targetGroup);
         if (found) {
-          currentRoom.send('player_shoot', {
-            targetType: 'chest',
-            targetId: found[0],
-            damage: 25,
-          });
+          if (currentRoom) {
+            currentRoom.send('player_shoot', {
+              targetType: 'chest',
+              targetId: found[0],
+              damage: 25,
+            });
+          } else {
+            // Local practice chest feedback
+            soundFX.playChestPickup();
+            setHudStats((prev) => ({
+              ...prev,
+              chests: prev.chests + 1,
+              earningsMicroUsd: prev.earningsMicroUsd + 100000,
+            }));
+            setKillFeed((prev) => ['💰 Claimed Practice Bounty Chest! (+100 Coins)', ...prev.slice(0, 4)]);
+          }
           return;
         }
       }
 
-      // Check remote players
+      // Check remote players / practice targets
       const playerEntries = Array.from(remotePlayersMeshes.entries());
       const playerObjects = playerEntries.map((p) => p[1]);
       const playerIntersects = raycaster.intersectObjects(playerObjects, true);
@@ -527,14 +611,31 @@ export default function GamePage() {
         while (rootGroup && !remotePlayersMeshes.has((rootGroup as any).name) && rootGroup.parent) {
           const found = playerEntries.find((p) => p[1] === rootGroup);
           if (found) {
-            currentRoom.send('player_shoot', {
-              targetType: 'player',
-              targetId: found[0],
-              damage: 35,
-            });
+            if (currentRoom) {
+              currentRoom.send('player_shoot', {
+                targetType: 'player',
+                targetId: found[0],
+                damage: 35,
+              });
+            } else {
+              setHudStats((prev) => ({
+                ...prev,
+                kills: prev.kills + 1,
+                earningsMicroUsd: prev.earningsMicroUsd + 100000,
+              }));
+              setKillFeed((prev) => ['🎯 Eliminated Practice Target! (+$0.10)', ...prev.slice(0, 4)]);
+            }
             return;
           }
           rootGroup = rootGroup.parent;
+        }
+        if (!currentRoom) {
+          setHudStats((prev) => ({
+            ...prev,
+            kills: prev.kills + 1,
+            earningsMicroUsd: prev.earningsMicroUsd + 100000,
+          }));
+          setKillFeed((prev) => ['🎯 Hit Practice Target! (Solo Mode)', ...prev.slice(0, 4)]);
         }
       }
     };
@@ -547,7 +648,11 @@ export default function GamePage() {
       if (k === 'd') keys.d = true;
       if (k === 'shift') keys.shift = true;
       if (k === 'c') {
-        currentRoom?.send('player_toggle_prop');
+        if (currentRoom) {
+          currentRoom.send('player_toggle_prop');
+        } else {
+          setHudStats((prev) => ({ ...prev, isProp: !prev.isProp }));
+        }
       }
       if (k === 'f' || e.code === 'Space') {
         shootWeapon();
@@ -610,38 +715,38 @@ export default function GamePage() {
         cGroup.position.y = Math.sin(now * 0.003) * 0.1;
       });
 
-      // Player Movement
-      if (currentRoom) {
-        const speed = keys.shift ? 10.0 : 6.0;
-        let moveX = 0;
-        let moveZ = 0;
+      // Player Movement (Online & Offline Practice Mode)
+      const speed = keys.shift ? 10.0 : 6.0;
+      let moveX = 0;
+      let moveZ = 0;
 
-        if (isMobile) {
-          moveX = mobileInputRef.current.moveX;
-          moveZ = mobileInputRef.current.moveZ;
-        } else {
-          if (keys.w) moveZ -= 1;
-          if (keys.s) moveZ += 1;
-          if (keys.a) moveX -= 1;
-          if (keys.d) moveX += 1;
-        }
+      if (isMobile) {
+        moveX = mobileInputRef.current.moveX;
+        moveZ = mobileInputRef.current.moveZ;
+      } else {
+        if (keys.w) moveZ -= 1;
+        if (keys.s) moveZ += 1;
+        if (keys.a) moveX -= 1;
+        if (keys.d) moveX += 1;
+      }
 
-        if (moveX !== 0 || moveZ !== 0) {
-          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-          forward.y = 0;
-          forward.normalize();
+      if (moveX !== 0 || moveZ !== 0) {
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        forward.y = 0;
+        forward.normalize();
 
-          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-          right.y = 0;
-          right.normalize();
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        right.y = 0;
+        right.normalize();
 
-          const dir = new THREE.Vector3();
-          dir.addScaledVector(forward, -moveZ);
-          dir.addScaledVector(right, moveX);
-          dir.normalize();
+        const dir = new THREE.Vector3();
+        dir.addScaledVector(forward, -moveZ);
+        dir.addScaledVector(right, moveX);
+        dir.normalize();
 
-          camera.position.addScaledVector(dir, speed * delta);
+        camera.position.addScaledVector(dir, speed * delta);
 
+        if (currentRoom) {
           currentRoom.send('player_move', {
             x: camera.position.x,
             y: 0,
@@ -708,13 +813,13 @@ export default function GamePage() {
       {/* Top HUD: Combat, Economy & Audio Controls */}
       <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-20">
         {/* Left: Health & Status */}
-        <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 p-3 sm:p-3.5 rounded-2xl flex items-center space-x-4 shadow-xl">
+        <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 p-3 sm:p-3.5 rounded-2xl flex items-center space-x-3 sm:space-x-4 shadow-xl">
           <div>
             <div className="flex justify-between items-center text-[10px] text-slate-400 font-black uppercase">
               <span>HEALTH</span>
               <span>{hudStats.health}%</span>
             </div>
-            <div className="w-28 sm:w-36 h-2.5 bg-slate-800 rounded-full overflow-hidden mt-1">
+            <div className="w-24 sm:w-32 h-2.5 bg-slate-800 rounded-full overflow-hidden mt-1">
               <div
                 className={`h-full transition-all duration-300 ${
                   hudStats.health > 50 ? 'bg-emerald-500' : hudStats.health > 25 ? 'bg-amber-500' : 'bg-rose-600'
@@ -723,6 +828,24 @@ export default function GamePage() {
               />
             </div>
           </div>
+
+          {/* Connection Status Indicator */}
+          {connectionStatus === 'connected' ? (
+            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              20Hz MULTIPLAYER
+            </span>
+          ) : connectionStatus === 'offline_practice' ? (
+            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              OFFLINE PRACTICE MODE • Solo Physics Active
+            </span>
+          ) : (
+            <span className="bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+              CONNECTING...
+            </span>
+          )}
 
           {hudStats.isProp && (
             <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">

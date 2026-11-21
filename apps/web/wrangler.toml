@@ -1,0 +1,14 @@
+name = "mwar-web"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+account_id = "00a674bee4124645524f4aabe22ac68c"
+workers_dev = false
+
+routes = [
+  { pattern = "mwar.win", custom_domain = true },
+  { pattern = "www.mwar.win", custom_domain = true }
+]
+
+[assets]
+directory = "./out"
+binding = "ASSETS"

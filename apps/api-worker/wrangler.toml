@@ -2,33 +2,33 @@ name = "mwar-api-worker"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
+account_id = "00a674bee4124645524f4aabe22ac68c"
+workers_dev = false
+
+routes = [
+  { pattern = "api.mwar.win", custom_domain = true }
+]
 
 [vars]
 DEV_MOCK_MODE = "true"
-JWT_SECRET = "local-dev-jwt-secret-mwar-super-safe-key-32chars"
-INTERNAL_API_SECRET = "local-dev-internal-game-secret-2026"
-LOG_RECEIVER_URL = "http://localhost:3000/api/logs"
+LOG_RECEIVER_URL = "https://logs.mwar.win/api/logs"
 
-# 1. Core D1 Database (Users, Wallets, MLM Trees, Market, Withdrawals)
+# 1. Core D1 Database (Users, Wallets, MLM Trees, Market, Withdrawals, Daily Quests)
 [[d1_databases]]
 binding = "DB"
 database_name = "core_db"
-database_id = "local-core-db-id"
+database_id = "3c539f8e-7a45-4415-9b72-d335787e15f0"
 migrations_dir = "migrations/core_db"
 
 # 2. Chat D1 Database (Monthly rotating table chat_YYYY_MM)
 [[d1_databases]]
 binding = "CHAT_DB"
 database_name = "chat_2026_11"
-database_id = "local-chat-db-id"
+database_id = "4b626ea0-91ab-4266-ae22-8f6fbfb61190"
 migrations_dir = "migrations/chat_2026_11"
 
-# 3. R2 Object Storage (Game assets, avatars, screenshots)
-[[r2_buckets]]
-binding = "ASSETS_BUCKET"
-bucket_name = "game-assets-bucket"
-
-# 4. Cloudflare Queues Producer (Financial Log Buffer)
+# 3. Cloudflare Queues Producer (Financial Log Buffer)
 [[queues.producers]]
 binding = "LOG_QUEUE"
-queue = "financial-log-queue"
+queue = "mwar-financial-logs"
+
