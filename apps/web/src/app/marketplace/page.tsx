@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { formatMicroUsd } from '@mwar/shared';
+import { formatMicroUsd, formatCoins } from '@mwar/shared';
+import { BountyChestIcon, GoldCoinIcon, UsdDollarIcon } from '../../components/icons';
 
 export default function MarketplacePage() {
   const [listings, setListings] = useState<any[]>([]);
@@ -12,6 +13,7 @@ export default function MarketplacePage() {
   const [selectedTargetId, setSelectedTargetId] = useState('');
   const [listingPriceUsd, setListingPriceUsd] = useState('15.00');
   const [actionMsg, setActionMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const loadMarketplace = async () => {
     setLoading(true);
@@ -37,6 +39,7 @@ export default function MarketplacePage() {
   const handleCreateListing = async (e: React.FormEvent) => {
     e.preventDefault();
     setActionMsg('');
+    setIsSubmitting(true);
     try {
       const priceMicroUsd = Math.round(parseFloat(listingPriceUsd) * 1_000_000);
       await apiFetch('/api/marketplace/listings', {
@@ -47,10 +50,12 @@ export default function MarketplacePage() {
         }),
       });
       setShowCreateModal(false);
-      setActionMsg('Downline member successfully listed on the marketplace!');
+      setActionMsg('Downline squad member successfully listed on the marketplace!');
       await loadMarketplace();
     } catch (err: any) {
       setActionMsg(`Listing Error: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -72,90 +77,124 @@ export default function MarketplacePage() {
   };
 
   return (
-    <div className="space-y-6 py-4">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="text-2xl font-black text-white">REFERRAL MARKETPLACE</h1>
-          <p className="text-xs text-gray-400 mt-1">
-            Trade high-performing downline team members. All transactions protected with a 30-day escrow warranty.
-          </p>
+    <div className="space-y-6 pb-12">
+      {/* 1. Header Banner */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex items-center space-x-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
+            <BountyChestIcon size={28} />
+          </div>
+          <div>
+            <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center space-x-2">
+              <span>REFERRAL SQUAD MARKETPLACE</span>
+              <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black px-2 py-0.5 rounded-full">
+                30-DAY ESCROW
+              </span>
+            </h1>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Trade active Level 1 downline earners. Funds held in automated 30-day escrow warranty.
+            </p>
+          </div>
         </div>
 
         <button
           onClick={() => setShowCreateModal(true)}
-          className="bg-red-600 hover:bg-red-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition"
+          className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black px-4 py-2.5 rounded-2xl text-xs transition shadow-lg shadow-amber-500/20 active:scale-95 shrink-0"
         >
-          + List Downline for Sale
+          + List Downline For Sale
         </button>
       </div>
 
       {actionMsg && (
-        <div className="bg-yellow-950/60 border border-yellow-700/60 text-yellow-300 text-xs p-3 rounded-xl">
+        <div className="bg-slate-900 border border-amber-500/60 text-amber-200 text-xs p-3.5 rounded-2xl shadow-md">
           {actionMsg}
         </div>
       )}
 
-      {/* Listings Grid */}
+      {/* 2. Listings Grid */}
       {loading ? (
-        <div className="p-12 text-center text-sm text-gray-400">Loading marketplace listings...</div>
+        <div className="p-16 text-center text-sm text-slate-400 animate-pulse">Loading marketplace listings...</div>
       ) : listings.length === 0 ? (
-        <div className="bg-surface rounded-2xl border border-gray-800 p-12 text-center space-y-3">
-          <span className="text-4xl block">🏪</span>
-          <h3 className="text-base font-bold text-white">No Active Listings Available</h3>
-          <p className="text-xs text-gray-400 max-w-md mx-auto">
-            You can list your active Level 1 direct referrals for sale to earn instant cash, or wait for other commanders to post their downlines.
+        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-12 text-center space-y-3 shadow-xl">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-800 flex items-center justify-center text-2xl">
+            🛒
+          </div>
+          <h3 className="text-base font-black text-white">No Downline Listings Active</h3>
+          <p className="text-xs text-slate-400 max-w-md mx-auto">
+            There are currently no downlines listed for sale. List one of your direct Level 1 referrals to monetize your squad!
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {listings.map((l) => (
-            <div key={l.id} className="bg-surface rounded-2xl border border-gray-800 p-5 space-y-4 hover:border-gray-700 transition">
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-[10px] font-bold bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/30">
-                    30-DAY ESCROW WARRANTY
+            <div
+              key={l.id}
+              className="bg-slate-900/95 border border-slate-800 hover:border-slate-700 rounded-3xl p-5 shadow-xl space-y-4 transition flex flex-col justify-between"
+            >
+              <div className="space-y-3">
+                <div className="flex justify-between items-start">
+                  <div className="flex items-center space-x-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-slate-800 border-2 border-amber-400/60 flex items-center justify-center font-black text-amber-300 text-sm">
+                      {l.targetUsername?.substring(0, 2).toUpperCase() || 'SQ'}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black text-white">{l.targetUsername}</h4>
+                      <span className="text-[10px] text-slate-400">Seller: {l.sellerUsername}</span>
+                    </div>
+                  </div>
+                  <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black px-2 py-0.5 rounded-full">
+                    30D WARRANTY
                   </span>
-                  <h4 className="text-base font-black text-white mt-1.5">{l.targetUsername}</h4>
-                  <span className="text-xs text-gray-400">Seller: {l.sellerUsername}</span>
                 </div>
-                <div className="text-right">
-                  <span className="text-xs text-gray-400 block">Price</span>
-                  <span className="text-lg font-black text-emerald-400">{l.formattedPrice}</span>
+
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 grid grid-cols-2 gap-2 text-center">
+                  <div>
+                    <span className="text-[10px] text-slate-500 font-bold block uppercase">Lifetime Earned</span>
+                    <span className="text-xs font-black text-emerald-400 font-mono">
+                      {formatMicroUsd(l.targetTotalEarnedMicroUsd || 0)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 font-bold block uppercase">Squad Depth</span>
+                    <span className="text-xs font-black text-amber-400">Direct (L1)</span>
+                  </div>
                 </div>
               </div>
 
-              <div className="bg-surfaceLight/50 p-3 rounded-xl border border-gray-800 text-xs space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Lifetime Earnings:</span>
-                  <span className="font-bold text-white">{l.formattedTargetEarned}</span>
+              <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-bold">Asking Price:</span>
+                  <div className="flex items-center space-x-1">
+                    <span className="text-base font-black text-white font-mono">
+                      {formatMicroUsd(l.priceMicroUsd)}
+                    </span>
+                    <span className="text-[11px] text-amber-400 font-mono font-bold">
+                      ({formatCoins(l.priceMicroUsd)})
+                    </span>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Joined Date:</span>
-                  <span className="text-gray-300">{new Date(l.targetJoinedAt * 1000).toLocaleDateString()}</span>
-                </div>
-              </div>
 
-              <button
-                onClick={() => handleBuy(l.id, l.formattedPrice)}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs transition shadow-md"
-              >
-                BUY REFERRAL ({l.formattedPrice})
-              </button>
+                <button
+                  onClick={() => handleBuy(l.id, formatMicroUsd(l.priceMicroUsd))}
+                  className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-black text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-rose-600/30 active:scale-95 transition"
+                >
+                  BUY MEMBER
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Create Listing Modal */}
+      {/* 3. Create Listing Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-surface border border-gray-700 w-full max-w-md rounded-2xl p-6 space-y-4 shadow-2xl">
-            <div className="flex justify-between items-center border-b border-gray-800 pb-3">
-              <h3 className="text-base font-black text-white">List Direct Downline for Sale</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-white">LIST DOWNLINE REFERRAL FOR SALE</h3>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="text-gray-400 hover:text-white text-xs bg-gray-800 px-2 py-1 rounded"
+                className="text-slate-400 hover:text-white text-xl font-bold p-1"
               >
                 ✕
               </button>
@@ -163,22 +202,24 @@ export default function MarketplacePage() {
 
             <form onSubmit={handleCreateListing} className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-gray-400 block mb-1">
-                  Select Direct Downline (Level 1):
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Select Direct Level 1 Downline:
                 </label>
                 {downlines.length === 0 ? (
-                  <p className="text-xs text-red-400">You do not have any Level 1 direct referrals to list.</p>
+                  <p className="text-xs text-rose-400 bg-rose-950/40 p-2.5 rounded-xl border border-rose-900/40">
+                    You have no direct Level 1 downline members to sell. Enlist referrals first!
+                  </p>
                 ) : (
                   <select
                     value={selectedTargetId}
                     onChange={(e) => setSelectedTargetId(e.target.value)}
                     required
-                    className="w-full bg-surfaceLight border border-gray-700 rounded-lg px-3 py-2 text-xs text-white"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:border-amber-400 focus:outline-none"
                   >
-                    <option value="">-- Choose Downline Member --</option>
+                    <option value="">-- Choose Member --</option>
                     {downlines.map((d) => (
                       <option key={d.userId} value={d.userId}>
-                        {d.username} (Earned: {d.formattedTotalEarned})
+                        {d.username} (Earned: {formatMicroUsd(d.totalEarnedMicroUsd)})
                       </option>
                     ))}
                   </select>
@@ -186,37 +227,47 @@ export default function MarketplacePage() {
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-gray-400 block mb-1">
-                  Asking Price in USD ($):
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Listing Price (USD):
                 </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="1.00"
-                  value={listingPriceUsd}
-                  onChange={(e) => setListingPriceUsd(e.target.value)}
-                  required
-                  className="w-full bg-surfaceLight border border-gray-700 rounded-lg px-3 py-2 text-xs text-white"
-                />
-                <span className="text-[11px] text-gray-500 block mt-1">
-                  Funds released after 30-day warranty escrow period.
-                </span>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="1"
+                    value={listingPriceUsd}
+                    onChange={(e) => setListingPriceUsd(e.target.value)}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-7 pr-3 py-2 text-xs text-white font-bold font-mono focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Equivalent to {(parseFloat(listingPriceUsd || '0') * 10000).toLocaleString()} Coins ($0.01 = 100 Coins).
+                </p>
               </div>
 
-              <div className="flex space-x-2 pt-2">
+              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <span className="text-amber-400 font-bold block">30-Day Escrow Warranty:</span>
+                <p>
+                  Upon purchase, the buyer receives this referral in their downline tree. Funds are released after 30 days of active member activity.
+                </p>
+              </div>
+
+              <div className="flex space-x-3 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-semibold py-2 rounded-xl text-xs"
+                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={downlines.length === 0 || !selectedTargetId}
-                  className="flex-1 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-bold py-2 rounded-xl text-xs"
+                  disabled={!selectedTargetId || isSubmitting}
+                  className="flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black py-2.5 rounded-xl text-xs transition shadow-lg shadow-amber-500/20 disabled:opacity-50"
                 >
-                  Publish Listing
+                  {isSubmitting ? 'Listing...' : 'Confirm Listing'}
                 </button>
               </div>
             </form>

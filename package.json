@@ -5,6 +5,8 @@
   "packageManager": "pnpm@12.21.0",
   "scripts": {
     "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "dev:all": "concurrently -n worker,game,log,web -c cyan,magenta,yellow,blue \"pnpm dev:worker\" \"pnpm dev:game\" \"pnpm dev:log\" \"pnpm dev:web\"",
     "dev:worker": "pnpm --filter @mwar/api-worker dev",
     "dev:game": "pnpm --filter @mwar/game-server dev",
     "dev:log": "pnpm --filter @mwar/log-receiver dev",
@@ -14,7 +16,8 @@
     "docker:down": "docker compose down"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
-    "@types/node": "^22.13.0"
+    "@types/node": "^22.13.0",
+    "concurrently": "^10.0.7",
+    "typescript": "^5.7.3"
   }
 }

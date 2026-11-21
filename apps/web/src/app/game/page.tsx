@@ -7,6 +7,135 @@ import { apiFetch, progressQuest } from '../../lib/api';
 import { formatCoins, formatMicroUsd } from '@mwar/shared';
 import { GhostSpectatorIcon, QuestSpectateIcon } from '../../components/icons';
 
+// ----------------------------------------------------------------------------
+// Procedural Web Audio API Sound Synthesizer (Zero External Audio Bloat)
+// ----------------------------------------------------------------------------
+class SoundSynthesizer {
+  private ctx: AudioContext | null = null;
+  public isMuted: boolean = false;
+
+  private init() {
+    if (!this.ctx && typeof window !== 'undefined') {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        this.ctx = new AudioCtx();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
+  playGunshot() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    // Filtered noise burst (punchy muzzle blast)
+    const bufferSize = Math.floor(this.ctx.sampleRate * 0.12);
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.25));
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1200, now);
+    filter.frequency.exponentialRampToValueAtTime(150, now + 0.12);
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.5, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+
+    // Sub-bass thump
+    const osc = this.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(160, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.1);
+
+    const oscGain = this.ctx.createGain();
+    oscGain.gain.setValueAtTime(0.7, now);
+    oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+
+    noise.connect(filter).connect(gain).connect(this.ctx.destination);
+    osc.connect(oscGain).connect(this.ctx.destination);
+
+    noise.start(now);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
+  playHitMarker() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(2400, now);
+    osc.frequency.exponentialRampToValueAtTime(1200, now + 0.05);
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.4, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.05);
+  }
+
+  playChestPickup() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    // Upbeat major arpeggio (C5 -> E5 -> G5 -> C6)
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    notes.forEach((freq, idx) => {
+      const osc = this.ctx!.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.06);
+
+      const gain = this.ctx!.createGain();
+      gain.gain.setValueAtTime(0.3, now + idx * 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.06 + 0.12);
+
+      osc.connect(gain).connect(this.ctx!.destination);
+      osc.start(now + idx * 0.06);
+      osc.stop(now + idx * 0.06 + 0.12);
+    });
+  }
+
+  playQuestComplete() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const chords = [523.25, 659.25, 783.99, 1046.5];
+    chords.forEach((freq) => {
+      const osc = this.ctx!.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      const gain = this.ctx!.createGain();
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+
+      osc.connect(gain).connect(this.ctx!.destination);
+      osc.start(now);
+      osc.stop(now + 0.6);
+    });
+  }
+}
+
+const soundFX = new SoundSynthesizer();
+
 export default function GamePage() {
   const mountRef = useRef<HTMLDivElement>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -23,6 +152,7 @@ export default function GamePage() {
   const [afkPrompt, setAfkPrompt] = useState<string | null>(null);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
 
   // Spectator Mode Quest Tracking (90 seconds for Q_SPECTATE)
   const [spectatorSeconds, setSpectatorSeconds] = useState(0);
@@ -37,8 +167,13 @@ export default function GamePage() {
     isShooting: false,
   });
 
+  const toggleMute = () => {
+    const next = !isMuted;
+    setIsMuted(next);
+    soundFX.isMuted = next;
+  };
+
   useEffect(() => {
-    // Detect mobile touch
     setIsMobile('ontouchstart' in window || navigator.maxTouchPoints > 0);
   }, []);
 
@@ -50,15 +185,15 @@ export default function GamePage() {
 
     if (!isSpectatorMode) return;
 
-    const timer = setInterval(async () => {
+    const timer = setInterval(() => {
       setSpectatorSeconds((prev) => {
         const next = prev + 1;
-        // Every 15 seconds, ping API progress
         if (next % 15 === 0 && next <= 90) {
           progressQuest('Q_SPECTATE', 15).catch(() => {});
         }
         if (next >= 90 && !spectatorQuestCompleted) {
           setSpectatorQuestCompleted(true);
+          soundFX.playQuestComplete();
         }
         return next;
       });
@@ -77,8 +212,8 @@ export default function GamePage() {
 
     // 1. Three.js Scene Setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0e131f);
-    scene.fog = new THREE.FogExp2(0x0e131f, 0.015);
+    scene.background = new THREE.Color(0x0a0f1d);
+    scene.fog = new THREE.FogExp2(0x0a0f1d, 0.012);
 
     const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
     camera.position.set(0, 1.7, 0);
@@ -89,19 +224,21 @@ export default function GamePage() {
     renderer.shadowMap.enabled = true;
     container.appendChild(renderer.domElement);
 
-    // 2. Lighting & Environment
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    // 2. Lighting & Tactical Environment
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xfff5e6, 1.2);
-    dirLight.position.set(50, 80, 50);
+    const dirLight = new THREE.DirectionalLight(0xfff1d0, 1.4);
+    dirLight.position.set(60, 90, 60);
     dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
     scene.add(dirLight);
 
-    // Ground Plane (Grid tactical map)
+    // Ground Plane with Grid
     const groundGeo = new THREE.PlaneGeometry(300, 300, 30, 30);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x182030,
+      color: 0x111827,
       roughness: 0.8,
       metalness: 0.2,
     });
@@ -110,28 +247,87 @@ export default function GamePage() {
     ground.receiveShadow = true;
     scene.add(ground);
 
-    const gridHelper = new THREE.GridHelper(300, 60, 0xe63946, 0x243248);
+    const gridHelper = new THREE.GridHelper(300, 60, 0xef4444, 0x1f2937);
     gridHelper.position.y = 0.02;
     scene.add(gridHelper);
 
-    // Buildings & Obstacles (Procedural)
-    const buildingGeo = new THREE.BoxGeometry(10, 8, 10);
-    const buildingMat = new THREE.MeshStandardMaterial({ color: 0x2b384e, roughness: 0.9 });
-    for (let i = 0; i < 10; i++) {
-      const b = new THREE.Mesh(buildingGeo, buildingMat);
-      b.position.set((Math.random() - 0.5) * 180, 4, (Math.random() - 0.5) * 180);
-      b.castShadow = true;
-      b.receiveShadow = true;
-      scene.add(b);
+    // 3. Stylized Buildings with Neon Trims & Windows
+    const buildingMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7 });
+    const trimMatCyan = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const trimMatOrange = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+
+    const buildingCoords = [
+      { x: -35, z: -35, w: 14, h: 12, d: 14 },
+      { x: 35, z: -40, w: 16, h: 16, d: 16 },
+      { x: -40, z: 40, w: 18, h: 10, d: 12 },
+      { x: 45, z: 35, w: 12, h: 14, d: 14 },
+      { x: 0, z: -70, w: 20, h: 18, d: 20 },
+      { x: 0, z: 70, w: 20, h: 14, d: 20 },
+    ];
+
+    buildingCoords.forEach((bc, idx) => {
+      const bGroup = new THREE.Group();
+      const bMesh = new THREE.Mesh(new THREE.BoxGeometry(bc.w, bc.h, bc.d), buildingMat);
+      bMesh.position.y = bc.h / 2;
+      bMesh.castShadow = true;
+      bMesh.receiveShadow = true;
+      bGroup.add(bMesh);
+
+      // Neon Roof Trim
+      const roofTrim = new THREE.Mesh(
+        new THREE.BoxGeometry(bc.w + 0.2, 0.4, bc.d + 0.2),
+        idx % 2 === 0 ? trimMatCyan : trimMatOrange
+      );
+      roofTrim.position.y = bc.h;
+      bGroup.add(roofTrim);
+
+      bGroup.position.set(bc.x, 0, bc.z);
+      scene.add(bGroup);
+    });
+
+    // 4. Tactical Cover Barricades
+    const barricadeMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 });
+    for (let i = 0; i < 16; i++) {
+      const angle = (i / 16) * Math.PI * 2;
+      const radius = 25 + (i % 3) * 15;
+      const barrier = new THREE.Mesh(new THREE.BoxGeometry(4, 1.3, 0.8), barricadeMat);
+      barrier.position.set(Math.cos(angle) * radius, 0.65, Math.sin(angle) * radius);
+      barrier.rotation.y = angle + Math.PI / 2;
+      barrier.castShadow = true;
+      barrier.receiveShadow = true;
+      scene.add(barrier);
     }
 
-    // 3. Connect to Colyseus Game Server
+    // 5. Stylized Low-Poly Foliage Trees
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.9 });
+    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x059669, roughness: 0.6 });
+
+    for (let i = 0; i < 12; i++) {
+      const treeGroup = new THREE.Group();
+      // Trunk
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 2, 8), trunkMat);
+      trunk.position.y = 1;
+      trunk.castShadow = true;
+      treeGroup.add(trunk);
+      // Leaves (stacked cones)
+      for (let j = 0; j < 3; j++) {
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(2 - j * 0.4, 2, 8), foliageMat);
+        cone.position.y = 2.2 + j * 1.1;
+        cone.castShadow = true;
+        treeGroup.add(cone);
+      }
+      const angle = (i / 12) * Math.PI * 2 + 0.2;
+      treeGroup.position.set(Math.cos(angle) * 85, 0, Math.sin(angle) * 85);
+      scene.add(treeGroup);
+    }
+
+    // 6. Connect to Colyseus Game Server
     const colyseusClient = new ColyseusClient(
       process.env.NEXT_PUBLIC_GAME_SERVER_URL || 'ws://localhost:2567'
     );
 
     const remotePlayersMeshes = new Map<string, THREE.Group>();
-    const chestMeshes = new Map<string, THREE.Mesh>();
+    const chestMeshes = new Map<string, THREE.Group>();
 
     let currentRoom: Room | null = null;
 
@@ -141,7 +337,7 @@ export default function GamePage() {
         try {
           meData = await apiFetch('/api/auth/me');
         } catch {
-          // Play as guest if not logged in
+          // Guest mode
         }
 
         const roomInstance = await colyseusClient.joinOrCreate('mini_30', {
@@ -161,7 +357,6 @@ export default function GamePage() {
         const state = roomInstance.state as any;
         state.players.onAdd((player: any, key: string) => {
           if (key === roomInstance.sessionId) {
-            // Local player
             camera.position.set(player.x, player.y + 1.7, player.z);
             setHudStats((prev) => ({
               ...prev,
@@ -172,13 +367,19 @@ export default function GamePage() {
               isGhost: player.isGhost,
             }));
           } else {
-            // Remote player mesh
             const pGroup = new THREE.Group();
             const bodyGeo = new THREE.CylinderGeometry(0.5, 0.5, 1.8, 16);
-            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x00b4d8 });
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0284c7 });
             const body = new THREE.Mesh(bodyGeo, bodyMat);
             body.position.y = 0.9;
+            body.castShadow = true;
             pGroup.add(body);
+
+            // Visor
+            const visor = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.25, 0.4), new THREE.MeshBasicMaterial({ color: 0x38bdf8 }));
+            visor.position.set(0, 1.4, 0.35);
+            pGroup.add(visor);
+
             pGroup.position.set(player.x, player.y, player.z);
             scene.add(pGroup);
             remotePlayersMeshes.set(key, pGroup);
@@ -213,36 +414,59 @@ export default function GamePage() {
           }
         });
 
-        // 15-Second Treasure Chests synchronization
+        // 7. Glowing 15-Second Bounty Treasure Chests (Pulsing Light & Gold Sheen)
         state.chests.onAdd((chest: any, key: string) => {
-          const cGeo = new THREE.BoxGeometry(1.2, 1, 1.2);
+          const chestGroup = new THREE.Group();
+
+          // Chest Base Box
+          const cGeo = new THREE.BoxGeometry(1.2, 0.9, 1.0);
           const cMat = new THREE.MeshStandardMaterial({
-            color: chest.isDeathDrop ? 0xff9f1c : 0xffd166,
+            color: chest.isDeathDrop ? 0xd97706 : 0xf59e0b,
             roughness: 0.3,
-            metalness: 0.7,
-            emissive: chest.isDeathDrop ? 0x663300 : 0x443300,
+            metalness: 0.8,
+            emissive: chest.isDeathDrop ? 0x92400e : 0xb45309,
+            emissiveIntensity: 0.6,
           });
           const cMesh = new THREE.Mesh(cGeo, cMat);
-          cMesh.position.set(chest.x, chest.y + 0.5, chest.z);
-          scene.add(cMesh);
-          chestMeshes.set(key, cMesh);
+          cMesh.position.y = 0.45;
+          cMesh.castShadow = true;
+          chestGroup.add(cMesh);
+
+          // Golden Pulsing PointLight Beacon
+          const chestLight = new THREE.PointLight(0xf59e0b, 1.5, 6);
+          chestLight.position.y = 1.0;
+          chestGroup.add(chestLight);
+
+          // Glowing Aura Ring
+          const ringGeo = new THREE.TorusGeometry(0.9, 0.05, 8, 24);
+          const ringMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+          const ring = new THREE.Mesh(ringGeo, ringMat);
+          ring.rotation.x = Math.PI / 2;
+          ring.position.y = 0.05;
+          chestGroup.add(ring);
+
+          chestGroup.position.set(chest.x, chest.y, chest.z);
+          scene.add(chestGroup);
+          chestMeshes.set(key, chestGroup);
         });
 
         state.chests.onRemove((_chest: any, key: string) => {
-          const cMesh = chestMeshes.get(key);
-          if (cMesh) {
-            scene.remove(cMesh);
+          const cGroup = chestMeshes.get(key);
+          if (cGroup) {
+            scene.remove(cGroup);
             chestMeshes.delete(key);
           }
         });
 
-        // Events
+        // Event Listeners with Audio Feedback
         roomInstance.onMessage('player_killed', (data: any) => {
-          setKillFeed((prev) => [`⚔️ ${data.killerUsername} killed ${data.victimUsername} (+$0.10)`, ...prev.slice(0, 4)]);
+          soundFX.playHitMarker();
+          setKillFeed((prev) => [`⚔️ ${data.killerUsername} eliminated ${data.victimUsername} (+$0.10)`, ...prev.slice(0, 4)]);
         });
 
         roomInstance.onMessage('chest_destroyed', (data: any) => {
-          setKillFeed((prev) => [`💰 ${data.collectedByUsername} opened 15s Chest!`, ...prev.slice(0, 4)]);
+          soundFX.playChestPickup();
+          setKillFeed((prev) => [`💰 ${data.collectedByUsername} claimed 15s Bounty Chest!`, ...prev.slice(0, 4)]);
         });
 
         roomInstance.onMessage('afk_warning', (data: any) => {
@@ -259,9 +483,61 @@ export default function GamePage() {
 
     initColyseus();
 
-    // 4. Input & Controls (PC PointerLock & Keys)
+    // 8. Input & Controls
     const keys = { w: false, a: false, s: false, d: false, shift: false };
     let euler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+    const shootWeapon = () => {
+      if (!currentRoom) return;
+      soundFX.playGunshot();
+
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+      // Check chests
+      const chestEntries = Array.from(chestMeshes.entries());
+      const chestObjects = chestEntries.map((c) => c[1]);
+      const chestIntersects = raycaster.intersectObjects(chestObjects, true);
+
+      if (chestIntersects.length > 0) {
+        soundFX.playHitMarker();
+        let targetGroup: THREE.Object3D | null = chestIntersects[0].object;
+        while (targetGroup && targetGroup.parent && !chestEntries.some((c) => c[1] === targetGroup)) {
+          targetGroup = targetGroup.parent;
+        }
+        const found = chestEntries.find((c) => c[1] === targetGroup);
+        if (found) {
+          currentRoom.send('player_shoot', {
+            targetType: 'chest',
+            targetId: found[0],
+            damage: 25,
+          });
+          return;
+        }
+      }
+
+      // Check remote players
+      const playerEntries = Array.from(remotePlayersMeshes.entries());
+      const playerObjects = playerEntries.map((p) => p[1]);
+      const playerIntersects = raycaster.intersectObjects(playerObjects, true);
+
+      if (playerIntersects.length > 0) {
+        soundFX.playHitMarker();
+        let rootGroup: THREE.Object3D | null = playerIntersects[0].object;
+        while (rootGroup && !remotePlayersMeshes.has((rootGroup as any).name) && rootGroup.parent) {
+          const found = playerEntries.find((p) => p[1] === rootGroup);
+          if (found) {
+            currentRoom.send('player_shoot', {
+              targetType: 'player',
+              targetId: found[0],
+              damage: 35,
+            });
+            return;
+          }
+          rootGroup = rootGroup.parent;
+        }
+      }
+    };
 
     const onKeyDown = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
@@ -274,7 +550,6 @@ export default function GamePage() {
         currentRoom?.send('player_toggle_prop');
       }
       if (k === 'f' || e.code === 'Space') {
-        // Fire weapon
         shootWeapon();
       }
     };
@@ -300,121 +575,89 @@ export default function GamePage() {
       camera.quaternion.setFromEuler(euler);
     };
 
-    const shootWeapon = () => {
-      if (!currentRoom) return;
-      // Raycast shooting
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-
-      // Check chests first
-      const chestEntries = Array.from(chestMeshes.entries());
-      const chestObjects = chestEntries.map((c) => c[1]);
-      const chestIntersects = raycaster.intersectObjects(chestObjects);
-
-      if (chestIntersects.length > 0) {
-        const hitMesh = chestIntersects[0].object as THREE.Mesh;
-        const entry = chestEntries.find((c) => c[1] === hitMesh);
-        if (entry) {
-          currentRoom.send('player_shoot', {
-            targetType: 'chest',
-            targetId: entry[0],
-            damage: 25,
-          });
-          return;
-        }
-      }
-
-      // Check remote players
-      const playerEntries = Array.from(remotePlayersMeshes.entries());
-      const playerObjects = playerEntries.map((p) => p[1]);
-      const playerIntersects = raycaster.intersectObjects(playerObjects, true);
-
-      if (playerIntersects.length > 0) {
-        let rootGroup: THREE.Object3D | null = playerIntersects[0].object;
-        while (rootGroup && !remotePlayersMeshes.has((rootGroup as any).name) && rootGroup.parent) {
-          const found = playerEntries.find((p) => p[1] === rootGroup);
-          if (found) {
-            currentRoom.send('player_shoot', {
-              targetType: 'player',
-              targetId: found[0],
-              damage: 35,
-            });
-            return;
-          }
-          rootGroup = rootGroup.parent;
-        }
-      }
-    };
-
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('mousemove', onMouseMove);
-
-    // Canvas click requests pointer lock
-    const handleCanvasClick = () => {
-      if (!isMobile && !document.pointerLockElement) {
-        container.requestPointerLock();
-      } else {
-        shootWeapon();
-      }
-    };
-    container.addEventListener('click', handleCanvasClick);
 
     const onPointerLockChange = () => {
       setIsPointerLocked(document.pointerLockElement === container);
     };
     document.addEventListener('pointerlockchange', onPointerLockChange);
 
-    // 5. Game Render & Physics Loop
+    const handleCanvasClick = () => {
+      if (!isPointerLocked && !isMobile) {
+        container.requestPointerLock?.();
+      } else if (isPointerLocked) {
+        shootWeapon();
+      }
+    };
+    container.addEventListener('click', handleCanvasClick);
+
+    // 9. Animation & Movement Loop
     let lastTime = performance.now();
     let animId: number;
 
-    const animate = (time: number) => {
+    const animate = () => {
       animId = requestAnimationFrame(animate);
-      const delta = (time - lastTime) / 1000;
-      lastTime = time;
 
-      // Handle Movement
-      const speed = keys.shift ? 12 : 6;
-      const moveVec = new THREE.Vector3();
+      const now = performance.now();
+      const delta = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
 
-      if (keys.w) moveVec.z -= 1;
-      if (keys.s) moveVec.z += 1;
-      if (keys.a) moveVec.x -= 1;
-      if (keys.d) moveVec.x += 1;
-
-      // Mobile joystick inputs
-      if (mobileInputRef.current.moveX !== 0 || mobileInputRef.current.moveZ !== 0) {
-        moveVec.x += mobileInputRef.current.moveX;
-        moveVec.z += mobileInputRef.current.moveZ;
-      }
-
-      if (moveVec.lengthSq() > 0) {
-        moveVec.normalize();
-        moveVec.applyEuler(new THREE.Euler(0, euler.y, 0));
-        camera.position.addScaledVector(moveVec, speed * delta);
-
-        // Inform Colyseus server of position (Server-Authoritative bounding)
-        currentRoom?.send('player_move', {
-          x: camera.position.x,
-          y: camera.position.y - 1.7,
-          z: camera.position.z,
-          rotationY: euler.y,
-        });
-      }
-
-      // Rotate 15s chests slowly for visual effect
-      chestMeshes.forEach((mesh) => {
-        mesh.rotation.y += delta * 1.5;
+      // Animate chest bobbing & spinning aura
+      chestMeshes.forEach((cGroup) => {
+        cGroup.rotation.y += 0.02;
+        cGroup.position.y = Math.sin(now * 0.003) * 0.1;
       });
+
+      // Player Movement
+      if (currentRoom) {
+        const speed = keys.shift ? 10.0 : 6.0;
+        let moveX = 0;
+        let moveZ = 0;
+
+        if (isMobile) {
+          moveX = mobileInputRef.current.moveX;
+          moveZ = mobileInputRef.current.moveZ;
+        } else {
+          if (keys.w) moveZ -= 1;
+          if (keys.s) moveZ += 1;
+          if (keys.a) moveX -= 1;
+          if (keys.d) moveX += 1;
+        }
+
+        if (moveX !== 0 || moveZ !== 0) {
+          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+          forward.y = 0;
+          forward.normalize();
+
+          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+          right.y = 0;
+          right.normalize();
+
+          const dir = new THREE.Vector3();
+          dir.addScaledVector(forward, -moveZ);
+          dir.addScaledVector(right, moveX);
+          dir.normalize();
+
+          camera.position.addScaledVector(dir, speed * delta);
+
+          currentRoom.send('player_move', {
+            x: camera.position.x,
+            y: 0,
+            z: camera.position.z,
+            rotationY: euler.y,
+          });
+        }
+      }
 
       renderer.render(scene, camera);
     };
 
-    animId = requestAnimationFrame(animate);
+    animate();
 
-    // Resize Handler
     const handleResize = () => {
+      if (!container) return;
       const w = container.clientWidth || window.innerWidth;
       const h = container.clientHeight || window.innerHeight;
       camera.aspect = w / h;
@@ -441,47 +684,61 @@ export default function GamePage() {
   }, [isPointerLocked, isMobile]);
 
   return (
-    <div className="relative w-full h-[calc(100vh-5rem)] rounded-2xl overflow-hidden border border-gray-800 bg-black select-none">
+    <div className="relative w-full h-[calc(100vh-5rem)] rounded-3xl overflow-hidden border border-slate-800 bg-black select-none shadow-2xl">
       {/* 3D WebGL Canvas */}
       <div ref={mountRef} className="w-full h-full cursor-crosshair" />
 
       {/* Crosshair (PC) */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-        <div className="w-4 h-4 border border-red-500/80 rounded-full flex items-center justify-center">
-          <div className="w-1 h-1 bg-red-500 rounded-full"></div>
+        <div className="w-6 h-6 border-2 border-rose-500/80 rounded-full flex items-center justify-center shadow-lg shadow-rose-500/50">
+          <div className="w-1.5 h-1.5 bg-rose-500 rounded-full" />
         </div>
       </div>
 
-      {/* Top HUD: Combat & Financial Statistics */}
-      <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none">
+      {/* Prop Disguise Overlay (When active) */}
+      {hudStats.isProp && (
+        <div className="absolute top-24 left-1/2 transform -translate-x-1/2 pointer-events-none z-30">
+          <div className="bg-amber-500/90 text-slate-950 font-black text-xs px-4 py-2 rounded-2xl shadow-xl shadow-amber-500/40 border-2 border-white flex items-center space-x-2 animate-bounce">
+            <span>📦</span>
+            <span>PROP DISGUISE ACTIVE (DISGUISED AS SUPPLY CRATE) • PRESS 'C' TO EXIT</span>
+          </div>
+        </div>
+      )}
+
+      {/* Top HUD: Combat, Economy & Audio Controls */}
+      <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-20">
         {/* Left: Health & Status */}
-        <div className="bg-surface/80 backdrop-blur-md border border-gray-800 p-3 rounded-xl flex items-center space-x-4">
+        <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 p-3 sm:p-3.5 rounded-2xl flex items-center space-x-4 shadow-xl">
           <div>
-            <span className="text-[10px] text-gray-400 font-bold block">HEALTH</span>
-            <div className="w-32 h-3 bg-gray-800 rounded-full overflow-hidden mt-0.5">
+            <div className="flex justify-between items-center text-[10px] text-slate-400 font-black uppercase">
+              <span>HEALTH</span>
+              <span>{hudStats.health}%</span>
+            </div>
+            <div className="w-28 sm:w-36 h-2.5 bg-slate-800 rounded-full overflow-hidden mt-1">
               <div
                 className={`h-full transition-all duration-300 ${
-                  hudStats.health > 50 ? 'bg-emerald-500' : hudStats.health > 25 ? 'bg-yellow-500' : 'bg-red-600'
+                  hudStats.health > 50 ? 'bg-emerald-500' : hudStats.health > 25 ? 'bg-amber-500' : 'bg-rose-600'
                 }`}
                 style={{ width: `${hudStats.health}%` }}
               />
             </div>
           </div>
+
           {hudStats.isProp && (
-            <span className="bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 text-[10px] font-black px-2 py-0.5 rounded">
-              📦 PROP DISGUISE ACTIVE
+            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">
+              📦 PROP
             </span>
           )}
           {hudStats.isGhost && (
-            <span className="bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 text-[10px] font-black px-2 py-0.5 rounded animate-pulse">
-              👻 GHOST SPECTATOR MODE
+            <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">
+              👻 GHOST
             </span>
           )}
         </div>
 
         {/* Center: Spectator Quest Progress (90s) */}
         {(typeof window !== 'undefined' && window.location.search.includes('mode=spectator') || hudStats.isGhost) && (
-          <div className="bg-slate-900/90 backdrop-blur-md border border-indigo-500/50 px-4 py-2 rounded-2xl flex items-center space-x-3 shadow-lg shadow-indigo-500/20">
+          <div className="bg-slate-950/90 backdrop-blur-md border border-indigo-500/50 px-4 py-2 rounded-2xl flex items-center space-x-3 shadow-lg shadow-indigo-500/20">
             <QuestSpectateIcon size={22} className="animate-pulse" />
             <div>
               <div className="flex items-center justify-between space-x-3 text-xs font-black">
@@ -505,72 +762,78 @@ export default function GamePage() {
           </div>
         )}
 
-        {/* Right: Round Earnings & Kills */}
-        <div className="bg-surface/80 backdrop-blur-md border border-gray-800 p-3 rounded-xl flex items-center space-x-4 text-right">
-          <div>
-            <span className="text-[10px] text-gray-400 font-bold block">SESSION EARNED</span>
-            <span className="text-base font-black text-emerald-400">
-              {formatMicroUsd(hudStats.earningsMicroUsd)}
-            </span>
-            <span className="text-[10px] text-gray-500 block">
-              {formatCoins(hudStats.earningsMicroUsd)}
-            </span>
+        {/* Right: Round Earnings & Audio Toggle */}
+        <div className="flex items-center space-x-2">
+          <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 p-3 sm:p-3.5 rounded-2xl flex items-center space-x-4 text-right shadow-xl">
+            <div>
+              <span className="text-[10px] text-slate-400 font-bold block uppercase">Round Earned</span>
+              <span className="text-sm sm:text-base font-black text-emerald-400 font-mono">
+                {formatMicroUsd(hudStats.earningsMicroUsd)}
+              </span>
+            </div>
+            <div className="border-l border-slate-800 pl-3">
+              <span className="text-[10px] text-slate-400 font-bold block uppercase">Kills</span>
+              <span className="text-sm sm:text-base font-black text-white">{hudStats.kills}</span>
+            </div>
           </div>
-          <div className="border-l border-gray-700 pl-3">
-            <span className="text-[10px] text-gray-400 font-bold block">ELIMINATIONS</span>
-            <span className="text-base font-black text-white">{hudStats.kills} Kills</span>
-          </div>
+
+          {/* Sound Toggle Button */}
+          <button
+            onClick={toggleMute}
+            className="pointer-events-auto bg-slate-900/90 hover:bg-slate-800 border border-slate-700 p-2.5 rounded-2xl text-xs font-bold transition shadow-md"
+            title={isMuted ? 'Unmute Sound' : 'Mute Sound'}
+          >
+            {isMuted ? '🔇' : '🔊'}
+          </button>
         </div>
       </div>
 
       {/* Killfeed Notifications */}
-      <div className="absolute top-20 right-4 space-y-1 pointer-events-none">
+      <div className="absolute top-20 right-4 space-y-1.5 pointer-events-none z-20">
         {killFeed.map((feed, idx) => (
-          <div key={idx} className="bg-black/60 border border-gray-800 text-xs text-gray-200 px-3 py-1 rounded backdrop-blur-sm">
+          <div key={idx} className="bg-slate-950/80 border border-slate-800 text-xs font-bold text-slate-200 px-3 py-1.5 rounded-xl backdrop-blur-md shadow-lg animate-in fade-in slide-in-from-right-4">
             {feed}
           </div>
         ))}
       </div>
 
-      {/* Controls Hint / PointerLock Overlay */}
+      {/* Controls Hint / PointerLock Overlay (PC) */}
       {!isPointerLocked && !isMobile && (
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center pointer-events-auto">
-          <div className="bg-surface border border-gray-700 p-6 rounded-2xl text-center max-w-sm space-y-3">
-            <h3 className="text-lg font-black text-white">CLICK SCREEN TO ENGAGE CONTROLS</h3>
-            <p className="text-xs text-gray-400">
+        <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center pointer-events-auto z-30">
+          <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl text-center max-w-sm space-y-3.5 shadow-2xl">
+            <h3 className="text-lg font-black text-white tracking-tight">CLICK SCREEN TO ENGAGE CONTROLS</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
               WASD: Move | Shift: Sprint | Mouse: Aim | Left-Click: Fire | C: Prop-Hide Disguise | Esc: Release
             </p>
-            <div className="text-[11px] bg-red-950/40 border border-red-900/50 text-red-300 py-1.5 px-3 rounded-lg font-semibold">
-              🎁 15-Second Treasure Chests spawn randomly. Destroy them to earn Micro-USD!
+            <div className="text-[11px] bg-amber-500/20 border border-amber-500/40 text-amber-300 py-2 px-3 rounded-xl font-bold">
+              🎁 15-Second Bounty Chests spawn on player kills. Shoot them to claim instant Micro-USD Coins!
             </div>
           </div>
         </div>
       )}
 
-      {/* Mobile PUBG-Style Controls Overlay */}
+      {/* Mobile Touch Controls */}
       {isMobile && (
-        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4">
+        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4 z-20">
           <div />
           <div className="flex justify-between items-end pointer-events-auto">
-            {/* Left Joystick Area */}
-            <div className="w-32 h-32 rounded-full border-2 border-white/20 bg-white/5 flex items-center justify-center">
-              <span className="text-xs text-gray-400 font-bold">MOVE</span>
+            <div className="w-28 h-28 rounded-full border-2 border-white/20 bg-slate-900/40 backdrop-blur-md flex items-center justify-center">
+              <span className="text-xs text-slate-400 font-bold">JOYSTICK</span>
             </div>
 
-            {/* Right Action Buttons */}
             <div className="flex flex-col space-y-3 items-end">
               <button
                 onClick={() => room?.send('player_toggle_prop')}
-                className="w-14 h-14 rounded-full bg-yellow-600/80 active:bg-yellow-500 text-white font-bold text-xs flex items-center justify-center shadow-lg border border-yellow-400/50"
+                className="w-14 h-14 rounded-2xl bg-amber-600/90 active:bg-amber-500 text-white font-black text-xs flex items-center justify-center shadow-lg border border-amber-400/50"
               >
                 📦 PROP
               </button>
               <button
                 onClick={() => {
-                  // Fire weapon via mobile touch
+                  soundFX.playGunshot();
                   room?.send('player_shoot', { targetType: 'chest', targetId: 'any', damage: 25 });
                 }}
-                className="w-20 h-20 rounded-full bg-red-600 active:bg-red-500 text-white font-black text-sm flex items-center justify-center shadow-xl border-2 border-white/40"
+                className="w-18 h-18 rounded-3xl bg-gradient-to-tr from-rose-600 to-rose-500 active:scale-95 text-white font-black text-sm flex items-center justify-center shadow-2xl border-2 border-white/40"
               >
                 🔥 FIRE
               </button>
@@ -579,15 +842,15 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Anti-AFK Captcha Popup */}
+      {/* Anti-AFK Verification Modal */}
       {afkPrompt && (
-        <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50">
-          <div className="bg-surface border border-yellow-500 p-6 rounded-2xl max-w-sm text-center space-y-4">
-            <h3 className="text-base font-black text-yellow-400">⚠️ ANTI-AFK VERIFICATION</h3>
-            <p className="text-xs text-gray-300">{afkPrompt}</p>
+        <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-amber-500 p-6 rounded-3xl max-w-sm text-center space-y-4 shadow-2xl">
+            <h3 className="text-base font-black text-amber-400">⚠️ ANTI-AFK BOT CHECK</h3>
+            <p className="text-xs text-slate-300">{afkPrompt}</p>
             <button
               onClick={() => room?.send('afk_captcha_solved')}
-              className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-2 rounded-xl text-sm"
+              className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2.5 rounded-xl text-xs transition"
             >
               I AM HERE (VERIFY)
             </button>
