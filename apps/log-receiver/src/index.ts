@@ -1,17 +1,40 @@
 import Fastify from 'fastify';
 import { Pool } from 'pg';
+import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import type { FinancialLog } from '@mwar/shared';
 
-dotenv.config();
+// Attempt to load .env from multiple candidate locations
+const envCandidates = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(__dirname, '../.env'),
+  path.resolve(__dirname, '../../.env'),
+  '/opt/mwar-node/.env',
+];
+
+for (const candidate of envCandidates) {
+  if (fs.existsSync(candidate)) {
+    dotenv.config({ path: candidate });
+    console.log(`[Log Receiver] Loaded environment from: ${candidate}`);
+    break;
+  }
+}
 
 const app = Fastify({ logger: true });
 
+const dbUrl = process.env.DATABASE_URL || 'postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs';
+
 const pgPool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs',
+  connectionString: dbUrl,
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 3000,
+});
+
+pgPool.on('error', (err) => {
+  console.error('[PostgreSQL Pool Background Error]', err.message);
+  isDbConnected = false;
 });
 
 // Offline Memory Buffer (Downtime resilience buffer when Mini PC PostgreSQL is offline)
@@ -68,7 +91,7 @@ async function checkDbConnection() {
     client.release();
   } catch (err: any) {
     isDbConnected = false;
-    // Expected when PostgreSQL container is not started yet
+    console.warn(`[Log Receiver DB Check] PostgreSQL not reachable yet: ${err.message}`);
   }
 }
 
@@ -175,10 +198,14 @@ app.get<{ Params: { userId: string } }>('/api/logs/summary/:userId', async (requ
 
 const start = async () => {
   try {
-    const port = Number(process.env.PORT) || 3000;
-    await app.listen({ port, host: '0.0.0.0' });
-    console.log(`[Log Receiver] Running on http://localhost:${port}`);
+    const port = Number(process.env.LOG_PORT || process.env.PORT) || 3000;
+    const host = '0.0.0.0';
+    console.log(`[Log Receiver] Starting Fastify log server on ${host}:${port}...`);
+    await app.listen({ port, host });
+    console.log(`[Log Receiver] Running on http://${host}:${port}`);
+    console.log(`[Log Receiver] Healthcheck endpoint: http://${host}:${port}/health`);
   } catch (err) {
+    console.error('[Log Receiver Fatal Startup Error]', err);
     app.log.error(err);
     process.exit(1);
   }

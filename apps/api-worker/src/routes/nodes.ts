@@ -222,6 +222,7 @@ NODE_ENV=production
 NODE_ID=${nodeName}
 NODE_ROLE=${role}
 PORT=2567
+GAME_PORT=2567
 LOG_PORT=3000
 API_BASE_URL=${apiBaseUrl}
 INTERNAL_API_SECRET=${internalSecret}
@@ -229,20 +230,6 @@ DATABASE_URL=postgresql://log_writer:local_dev_password_2026@localhost:5432/game
 REDIS_URL=redis://127.0.0.1:6379
 ENVEOF
 chmod 600 /opt/mwar-node/.env
-
-# --- 7. PM2 Process Launch & Auto-Boot On Reboot ---
-echo "[7/7] Launching services under PM2 process manager..."
-pm2 delete mwar-game-server 2>/dev/null || true
-pm2 delete mwar-log-receiver 2>/dev/null || true
-pm2 delete mwar-heartbeat 2>/dev/null || true
-
-if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
-  pm2 start /opt/mwar-node/apps/game-server/dist/index.js --name "mwar-game-server" --env PORT=2567
-fi
-
-if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
-  pm2 start /opt/mwar-node/apps/log-receiver/dist/index.js --name "mwar-log-receiver" --env PORT=3000
-fi
 
 # Background Heartbeat Daemon (reports CPU, RAM, active rooms every 30s)
 cat << 'HEARTEOF' > /opt/mwar-node/heartbeat.sh
@@ -279,9 +266,87 @@ while true; do
 done
 HEARTEOF
 chmod +x /opt/mwar-node/heartbeat.sh
-pm2 start /opt/mwar-node/heartbeat.sh --name "mwar-heartbeat" --interpreter bash
 
-# Enable auto-start on server boot / power cycle
+# --- 7. PM2 Ecosystem Configuration & Launch ---
+echo "[7/7] Generating PM2 ecosystem configuration (/opt/mwar-node/ecosystem.config.cjs)..."
+
+cat << 'ECOSYSTEM_HEAD' > /opt/mwar-node/ecosystem.config.cjs
+module.exports = {
+  apps: [
+ECOSYSTEM_HEAD
+
+if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
+cat << ECOSYSTEM_GAME >> /opt/mwar-node/ecosystem.config.cjs
+    {
+      name: "mwar-game-server",
+      script: "./apps/game-server/dist/index.js",
+      cwd: "/opt/mwar-node",
+      instances: 1,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 2000,
+      env: {
+        NODE_ENV: "production",
+        PORT: 2567,
+        GAME_PORT: 2567,
+        REDIS_URL: "redis://127.0.0.1:6379",
+        API_BASE_URL: "${apiBaseUrl}",
+        INTERNAL_API_SECRET: "${internalSecret}",
+        NODE_ID: "${nodeName}",
+        NODE_ROLE: "${role}"
+      }
+    },
+ECOSYSTEM_GAME
+fi
+
+if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
+cat << ECOSYSTEM_LOGS >> /opt/mwar-node/ecosystem.config.cjs
+    {
+      name: "mwar-log-receiver",
+      script: "./apps/log-receiver/dist/index.js",
+      cwd: "/opt/mwar-node",
+      instances: 1,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 2000,
+      env: {
+        NODE_ENV: "production",
+        PORT: 3000,
+        LOG_PORT: 3000,
+        DATABASE_URL: "postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs",
+        API_BASE_URL: "${apiBaseUrl}",
+        INTERNAL_API_SECRET: "${internalSecret}",
+        NODE_ID: "${nodeName}",
+        NODE_ROLE: "${role}"
+      }
+    },
+ECOSYSTEM_LOGS
+fi
+
+cat << ECOSYSTEM_TAIL >> /opt/mwar-node/ecosystem.config.cjs
+    {
+      name: "mwar-heartbeat",
+      script: "./heartbeat.sh",
+      interpreter: "bash",
+      cwd: "/opt/mwar-node",
+      instances: 1,
+      autorestart: true,
+      restart_delay: 5000,
+      env: {
+        NODE_ENV: "production",
+        API_BASE_URL: "${apiBaseUrl}",
+        INTERNAL_API_SECRET: "${internalSecret}",
+        NODE_ID: "${nodeName}",
+        NODE_ROLE: "${role}"
+      }
+    }
+  ]
+};
+ECOSYSTEM_TAIL
+
+echo "      Starting services via PM2 ecosystem..."
+pm2 delete all 2>/dev/null || true
+pm2 start /opt/mwar-node/ecosystem.config.cjs
 pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 pm2 save || true
 
@@ -293,6 +358,39 @@ cloudflared service install "${tunnelToken}" || true
 systemctl enable cloudflared || true
 systemctl restart cloudflared || true
 ` : '# No tunnel token specified; skip cloudflared service'}
+
+# --- Mandatory Health Verification ---
+echo "      Waiting 5 seconds for service warm-up and health verification..."
+sleep 5
+
+VERIFY_FAILED=0
+
+if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
+  echo "      Checking mwar-game-server on http://127.0.0.1:2567/health..."
+  if curl -fsS http://127.0.0.1:2567/health >/dev/null 2>&1; then
+    echo "      ✅ mwar-game-server is HEALTHY (port 2567 responding)"
+  else
+    echo "      ❌ mwar-game-server FAILED healthcheck on port 2567!" >&2
+    VERIFY_FAILED=1
+  fi
+fi
+
+if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
+  echo "      Checking mwar-log-receiver on http://127.0.0.1:3000/health..."
+  if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
+    echo "      ✅ mwar-log-receiver is HEALTHY (port 3000 responding)"
+  else
+    echo "      ❌ mwar-log-receiver FAILED healthcheck on port 3000!" >&2
+    VERIFY_FAILED=1
+  fi
+fi
+
+if [ "\${VERIFY_FAILED}" -ne 0 ]; then
+  echo ""
+  echo "❌ INSTALLATION VERIFICATION FAILED! Dumping PM2 error logs:" >&2
+  pm2 logs --err --lines 30 --nostream || true
+  exit 1
+fi
 
 # Send immediate initial registration heartbeat
 IP_ADDR=$(curl -s https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
