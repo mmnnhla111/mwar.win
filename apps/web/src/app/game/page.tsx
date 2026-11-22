@@ -100,6 +100,8 @@ interface HudState {
   botsAlive: number;
   roundKills: number;
   ecProgress: number;
+  energyTickets: number;
+  maxEnergyTickets: number;
   roundsCompleted: number;
   alive: boolean;
   respawnIn: number;
@@ -150,6 +152,8 @@ export default function GamePage() {
     botsAlive: 0,
     roundKills: 0,
     ecProgress: 0,
+    energyTickets: 6,
+    maxEnergyTickets: 6,
     roundsCompleted: 0,
     alive: true,
     respawnIn: 0,
@@ -630,12 +634,16 @@ export default function GamePage() {
       disguised: false,
     };
 
+    let roundStartTime = Date.now();
     const awardPracticeProgress = (points: number, reason: string) => {
       // ENERGY RECHARGE RULE: no Micro-USD / coins in solo bot mode — only EC recharge progress.
       player.roundKills += points;
       if (player.roundKills >= PRACTICE_ROUND_GOAL) {
         player.roundKills -= PRACTICE_ROUND_GOAL;
         player.roundsCompleted += 1;
+        const roundDurationSeconds = Math.max(15, Math.round((Date.now() - roundStartTime) / 1000));
+        roundStartTime = Date.now();
+
         ecProgress += EC_PROGRESS_PER_ROUND;
         let msg = `⚡ Practice round complete! +${EC_PROGRESS_PER_ROUND}% Energy Ticket recharge`;
         if (ecProgress >= 100) {
@@ -651,6 +659,32 @@ export default function GamePage() {
         setRoundBanner(msg);
         setTimeout(() => setRoundBanner(null), 3500);
         feed(msg);
+
+        // Sync EC progress and Energy Tickets to Cloudflare D1 & PostgreSQL Audit Logs
+        apiFetch('/api/practice/claim-ec', {
+          method: 'POST',
+          body: JSON.stringify({
+            roundKills: 10,
+            roundDurationSeconds,
+          }),
+        })
+          .then((res: any) => {
+            if (res && res.success) {
+              ecProgress = res.energy_progress_pct;
+              setHudStats((prev) => ({
+                ...prev,
+                ecProgress: res.energy_progress_pct,
+                energyTickets: res.energy_tickets,
+                maxEnergyTickets: res.max_energy_tickets,
+              }));
+              if (res.ticketAwarded) {
+                feed('⚡ +1 ENERGY TICKET (EC) credited to your account!');
+              }
+            }
+          })
+          .catch((err) => {
+            console.warn('Practice EC claim failed (guest mode or offline):', err.message);
+          });
       } else if (reason) {
         feed(reason);
       }
@@ -754,6 +788,12 @@ export default function GamePage() {
       soundFX.playClink(0.14);
       soundFX.playReload();
       feed(`🔫 Picked up ${WEAPONS[w.id].name} (${w.mag}/${w.reserve})`);
+      if (currentRoom) {
+        currentRoom.send('player_pickup_weapon', {
+          dropId: String(w.uid),
+          weaponId: w.id,
+        });
+      }
       removeWorldWeapon(w);
     };
     pickupRef.current = () => {
@@ -771,6 +811,16 @@ export default function GamePage() {
       const from = camera.position.clone().addScaledVector(dir, 0.6).add(new THREE.Vector3(0, -0.25, 0));
       const vel = dir.multiplyScalar(6.5).add(new THREE.Vector3(0, 2.6, 0));
       const w = dropWeapon(gun, from, vel);
+      if (currentRoom && w) {
+        currentRoom.send('player_drop_weapon', {
+          weaponId: gun.id,
+          magAmmo: gun.mag,
+          reserveAmmo: gun.reserve,
+          x: from.x,
+          y: from.y,
+          z: from.z,
+        });
+      }
       feed(w ? `🫳 Threw ${WEAPONS[gun.id].name} (${gun.mag}/${gun.reserve})` : `🗑️ Empty ${WEAPONS[gun.id].name} discarded — it vanished`);
       viewmodel.throwSwing();
       if (slot === 'primary') inv.primary = null;
@@ -931,7 +981,18 @@ export default function GamePage() {
         const joinPromise = colyseusClient.joinOrCreate(roomName, {
           userId: meData?.user?.id || `guest_${Math.random().toString(36).substring(2, 6)}`,
           username: meData?.user?.username || `Guest_${Math.floor(Math.random() * 900 + 100)}`,
+          avatarId: loadoutCharacter,
+          primaryWeapon: loadoutPrimary,
         });
+        if (meData?.user) {
+          const u = meData.user;
+          setHudStats((prev) => ({
+            ...prev,
+            energyTickets: u.energy_tickets ?? 6,
+            maxEnergyTickets: u.max_energy_tickets ?? 6,
+            ecProgress: u.energy_progress_pct ?? 0,
+          }));
+        }
         const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('join timeout')), 6000));
         const roomInstance = (await Promise.race([joinPromise, timeout])) as Room;
         if (destroyed) {
@@ -947,11 +1008,11 @@ export default function GamePage() {
           if (key === roomInstance.sessionId) {
             setHudStats((prev) => ({ ...prev, health: p.health, kills: p.kills, chests: p.chestsCollected, isGhost: p.isGhost }));
           } else {
-            // Opponents get a random operator model + random primary
-            const rig = createCharacter(randomCharacterId(), {
+            // Opponents get their chosen avatar rig (or fallback) + weapon
+            const rig = createCharacter((p.avatarId as CharacterId) || randomCharacterId(), {
               name: p.username || 'Enemy',
               tagColor: '#7dd3fc',
-              weapon: PRIMARY_IDS[Math.floor(Math.random() * PRIMARY_IDS.length)],
+              weapon: (p.currentWeapon as WeaponId) || PRIMARY_IDS[Math.floor(Math.random() * PRIMARY_IDS.length)],
             });
             rig.root.position.set(p.x, p.y || 0, p.z);
             rig.hitMeshes.forEach((m) => (m.userData.remoteId = key));
@@ -998,6 +1059,52 @@ export default function GamePage() {
           chestMeshes.set(key, g);
         });
         state.chests.onRemove((_c: any, key: string) => removeChest(key));
+
+        if (state.droppedWeapons) {
+          state.droppedWeapons.onAdd((dw: any, key: string) => {
+            const exists = worldWeapons.some((w) => String(w.uid) === key || String(w.uid) === dw.id);
+            if (!exists && (dw.magAmmo > 0 || dw.reserveAmmo > 0)) {
+              const w = createWorldWeapon(dw.weaponId as any, dw.magAmmo, dw.reserveAmmo);
+              w.group.position.set(dw.x, dw.y, dw.z);
+              w.ttl = Math.max(1, (dw.expiresAt - Date.now()) / 1000);
+              scene.add(w.group);
+              worldWeapons.push(w);
+            }
+          });
+          state.droppedWeapons.onRemove((_dw: any, key: string) => {
+            const w = worldWeapons.find((x) => String(x.uid) === key);
+            if (w) removeWorldWeapon(w);
+          });
+        }
+
+        roomInstance.onMessage('weapon_dropped', (data: any) => {
+          const exists = worldWeapons.some((w) => String(w.uid) === data.dropId);
+          if (!exists && (data.magAmmo > 0 || data.reserveAmmo > 0)) {
+            const w = createWorldWeapon(data.weaponId as any, data.magAmmo, data.reserveAmmo);
+            w.group.position.set(data.x, data.y, data.z);
+            w.ttl = Math.max(1, (data.expiresAt - Date.now()) / 1000);
+            scene.add(w.group);
+            worldWeapons.push(w);
+          }
+        });
+        roomInstance.onMessage('weapon_picked_up', (data: any) => {
+          const w = worldWeapons.find((x) => String(x.uid) === data.dropId);
+          if (w) removeWorldWeapon(w);
+        });
+        roomInstance.onMessage('grenade_thrown', (data: any) => {
+          if (data.throwerSessionId !== roomInstance.sessionId) {
+            const g = buildGrenadeModel();
+            g.group.scale.setScalar(1.3);
+            g.group.position.set(data.x, data.y, data.z);
+            scene.add(g.group);
+            const vel = new THREE.Vector3(data.vx, data.vy, data.vz);
+            grenades.push({ mesh: g.group, vel, fuse: GRENADE.fuse, byPlayer: false, bounces: 0 });
+          }
+        });
+        roomInstance.onMessage('grenade_exploded', (data: any) => {
+          effects.explosion(new THREE.Vector3(data.x, data.y, data.z));
+          soundFX.playExplosion(new THREE.Vector3(data.x, data.y, data.z).distanceTo(camera.position));
+        });
 
         roomInstance.onMessage('player_killed', (data: any) => {
           soundFX.playHitMarker();
@@ -1098,6 +1205,16 @@ export default function GamePage() {
       scene.add(g.group);
       const vel = dir.multiplyScalar(GRENADE.throwSpeed).add(new THREE.Vector3(0, 3.2, 0));
       grenades.push({ mesh: g.group, vel, fuse: GRENADE.fuse, byPlayer: true, bounces: 0 });
+      if (currentRoom) {
+        currentRoom.send('player_throw_grenade', {
+          x: camera.position.x,
+          y: camera.position.y,
+          z: camera.position.z,
+          vx: vel.x,
+          vy: vel.y,
+          vz: vel.z,
+        });
+      }
     };
     const throwGrenade = (quick: boolean) => {
       if (!player.alive || player.isProp || inv.grenades <= 0 || pendingThrow >= 0) return;
@@ -1321,6 +1438,12 @@ export default function GamePage() {
       body.velY = 0;
       player.renderY = s.y;
       look.yaw = Math.atan2(s.x, s.z);
+      if (currentRoom) {
+        currentRoom.send('player_deploy', {
+          avatarId: character,
+          primary: primary,
+        });
+      }
       feed(`🪂 Deployed as ${character.replace(/_/g, ' ')} with ${WEAPONS[primary].name} + Pistol + ${GRENADE.start} frags`);
     };
 
@@ -1993,8 +2116,10 @@ export default function GamePage() {
       {isBotMode && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none w-[min(92vw,560px)]">
           <div className="bg-slate-950/85 border border-amber-400/60 backdrop-blur-md rounded-2xl px-4 py-2 shadow-xl shadow-amber-500/10">
-            <div className="text-[11px] font-black text-amber-300 text-center tracking-wide">
-              ⚡ ENERGY RECHARGE MODE • Practice &amp; EC Recharge Only (No Micro-USD/Coins)
+            <div className="text-[11px] font-black text-amber-300 text-center tracking-wide flex items-center justify-center gap-2">
+              <span>⚡ ENERGY RECHARGE MODE</span>
+              <span className="text-amber-400/60">•</span>
+              <span className="text-yellow-300 font-extrabold">EC TICKETS: {hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
             </div>
             <div className="flex items-center gap-2 mt-1.5">
               <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
@@ -2062,6 +2187,11 @@ export default function GamePage() {
             </span>
           )}
           {hudStats.crouching && <span className="bg-slate-700/60 text-slate-200 text-[10px] font-black px-2 py-0.5 rounded-full">CROUCH</span>}
+          <span className="bg-amber-500/20 text-yellow-300 border border-amber-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1">
+            <span>⚡ EC:</span>
+            <span>{hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
+            <span className="text-amber-400/80">({Math.round(hudStats.ecProgress)}%)</span>
+          </span>
           {hudStats.isGhost && (
             <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">👻 GHOST</span>
           )}

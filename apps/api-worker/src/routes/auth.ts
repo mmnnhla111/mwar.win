@@ -132,7 +132,7 @@ authRouter.get('/me', authMiddleware, async (c) => {
   const user = await c.env.DB
     .prepare(
       `SELECT id, username, email, phone_number, telegram_id, referrer_id, role, status,
-              avatar_url, rank_badge, rename_count, energy_tickets, max_energy_tickets, last_energy_recharge, created_at
+              avatar_url, rank_badge, rename_count, energy_tickets, max_energy_tickets, last_energy_recharge, energy_progress_pct, created_at
        FROM users WHERE id = ?1`
     )
     .bind(authUser.userId)

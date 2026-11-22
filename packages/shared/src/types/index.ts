@@ -87,7 +87,8 @@ export type FinancialActionType =
   | 'MARKET_BUY'
   | 'CASHOUT_REQUEST'
   | 'CASHOUT_REJECT_REFUND'
-  | 'DEV_MOCK_FAUCET';
+  | 'DEV_MOCK_FAUCET'
+  | 'PRACTICE_EC_RECHARGE';
 
 export interface FinancialLog {
   id?: number;

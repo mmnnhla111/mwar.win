@@ -12,6 +12,7 @@ import { chatRouter } from './routes/chat';
 import { auditRouter } from './routes/audit';
 import { questsRouter, settleDailyMlm, getUtcDateKey } from './routes/quests';
 import { nodesRouter } from './routes/nodes';
+import { practiceRouter } from './routes/practice';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -53,6 +54,7 @@ app.route('/api/chat', chatRouter);
 app.route('/api/audit', auditRouter);
 app.route('/api/quests', questsRouter);
 app.route('/api/nodes', nodesRouter);
+app.route('/api/practice', practiceRouter);
 
 // Cron endpoints (Direct trigger or Cloudflare Scheduled Event)
 app.post('/api/cron/settle-daily-mlm', async (c) => {

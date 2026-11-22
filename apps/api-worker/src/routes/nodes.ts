@@ -193,7 +193,7 @@ if [ -d "/opt/mwar-node/.git" ]; then
   git remote set-url origin https://github.com/mmnnhla111/mwar.win.git || true
   git fetch origin main --prune
   git reset --hard origin/main
-  git clean -fd
+  git clean -fd -e .env -e ecosystem.config.cjs
 else
   echo "      Fresh clone into /opt/mwar-node..."
   rm -rf /opt/mwar-node
