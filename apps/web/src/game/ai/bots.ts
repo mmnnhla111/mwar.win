@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { CollisionWorld, MoveBody } from '../physics/collision';
 import { NavNode } from '../assets/mapLayout';
-import { animateSoldier, createSoldier, SoldierRig } from './soldier';
+import { animateCharacter, createCharacter, CharacterRig, randomCharacterId } from '../assets/characters';
+import { PRIMARY_IDS, PrimaryId, WEAPONS } from '../weapons';
 import { CombatEffects } from '../effects';
 
 /**
@@ -38,7 +39,10 @@ export interface BotEvents {
 interface Bot {
   id: number;
   name: string;
-  rig: SoldierRig;
+  rig: CharacterRig;
+  weapon: PrimaryId;
+  crouchT: number;
+  deathPos: THREE.Vector3;
   body: MoveBody;
   yaw: number;
   hp: number;
@@ -74,6 +78,15 @@ export interface BotManagerOptions {
   /** Base hit probability of a single shot (0.7 = 70 % skill). */
   accuracy: number;
   playerHalf: number;
+  /** Pool of valid spawn points (streets, courtyards, houses, rooftops). */
+  spawnPoints: THREE.Vector3[];
+}
+
+/** Overwatch bots favour the sniper; street patrols carry assault rifles / SMGs. */
+function pickBotWeapon(overwatch: boolean): PrimaryId {
+  if (overwatch) return Math.random() < 0.6 ? 'sniper' : PRIMARY_IDS[Math.floor(Math.random() * PRIMARY_IDS.length)];
+  const street: PrimaryId[] = ['ak47', 'm16', 'uzi', 'ak47', 'm16'];
+  return street[Math.floor(Math.random() * street.length)];
 }
 
 const tmpA = new THREE.Vector3();
@@ -101,12 +114,8 @@ export class BotManager {
     const overwatchCount = Math.min(postPool.length, Math.round(opts.count * 0.35));
     for (let i = 0; i < opts.count; i++) {
       const overwatch = i < overwatchCount;
-      const rig = createSoldier({
-        uniform: [0x4b5320, 0x5a4a3a, 0x3f4a55, 0x6b5b45][i % 4],
-        vest: [0x2f3424, 0x3a3226, 0x272f36, 0x4a3f2f][i % 4],
-        accent: 0xef4444,
-        name: `BOT ${CALLSIGNS[i % CALLSIGNS.length]}`,
-      });
+      const weapon = pickBotWeapon(overwatch);
+      const rig = createCharacter(randomCharacterId(), { name: `BOT ${CALLSIGNS[i % CALLSIGNS.length]}`, weapon });
       rig.hitMeshes.forEach((m) => (m.userData.botId = i));
       this.hitMeshes.push(...rig.hitMeshes);
       this.group.add(rig.root);
@@ -115,6 +124,9 @@ export class BotManager {
         id: i,
         name: CALLSIGNS[i % CALLSIGNS.length],
         rig,
+        weapon,
+        crouchT: 0,
+        deathPos: new THREE.Vector3(),
         body: { x: 0, y: 0, z: 0, velY: 0, onGround: true, radius: 0.38, height: 1.8 },
         yaw: Math.random() * Math.PI * 2,
         hp: 100,
@@ -159,6 +171,11 @@ export class BotManager {
     return this.bots[id];
   }
 
+  /**
+   * Random respawn: pick a point from the spawn pool that is far from where the bot died, away
+   * from the player and out of the player's direct line of sight. Overwatch bots take a random
+   * free rooftop post instead of always the same one.
+   */
   private respawn(bot: Bot, player: BotTargetInfo | null) {
     bot.hp = 100;
     bot.state = 'patrol';
@@ -166,32 +183,40 @@ export class BotManager {
     bot.seenTime = 0;
     bot.burstLeft = 0;
     bot.coverPoint = null;
+    bot.crouchT = 0;
     bot.rig.root.visible = true;
     bot.rig.body.rotation.set(0, 0, 0);
-    let p: THREE.Vector3;
-    if (bot.post) {
-      p = bot.post;
-    } else {
-      // Random street node, preferring ones far from / hidden from the player
-      let best = this.nav[Math.floor(Math.random() * this.nav.length)].p;
-      for (let tries = 0; tries < 12; tries++) {
-        const cand = this.nav[Math.floor(Math.random() * this.nav.length)];
-        if (!player) {
-          best = cand.p;
-          break;
-        }
-        const d = cand.p.distanceTo(player.position);
-        const visible = this.world.lineOfSight(cand.p.x, 1.6, cand.p.z, player.eye.x, player.eye.y, player.eye.z);
-        if (d > 35 && !visible) {
-          best = cand.p;
-          bot.node = cand.id;
-          break;
-        }
-      }
-      p = best;
-      bot.node = this.nearestNode(p);
-      bot.targetNode = bot.node;
+    bot.yaw = Math.random() * Math.PI * 2;
+    // Fresh primary for the new life
+    const weapon = pickBotWeapon(bot.kind === 'overwatch');
+    if (weapon !== bot.weapon) {
+      bot.weapon = weapon;
+      bot.rig.setWeapon(weapon);
     }
+    const hasDeath = bot.deathPos.lengthSq() > 0;
+    const ok = (c: THREE.Vector3, minDeath: number, minPlayer: number) => {
+      if (hasDeath && c.distanceTo(bot.deathPos) < minDeath) return false;
+      if (this.bots.some((o) => o !== bot && o.state !== 'dead' && Math.hypot(o.body.x - c.x, o.body.z - c.z) < 4)) return false;
+      if (!player) return true;
+      if (c.distanceTo(player.position) < minPlayer) return false;
+      return !this.world.lineOfSight(c.x, c.y + 1.6, c.z, player.eye.x, player.eye.y, player.eye.z);
+    };
+    let p: THREE.Vector3 | null = null;
+    if (bot.kind === 'overwatch' && this.posts.length) {
+      const taken = new Set(this.bots.filter((o) => o !== bot && o.post).map((o) => o.post));
+      const free = this.posts.filter((q) => !Array.from(taken).some((t) => t && t.distanceTo(q) < 1));
+      const shuffled = free.sort(() => Math.random() - 0.5);
+      p = shuffled.find((c) => ok(c, 30, 25)) ?? shuffled.find((c) => ok(c, 0, 15)) ?? null;
+      if (p) bot.post = p.clone();
+    }
+    if (!p) {
+      const pool = this.opts.spawnPoints.length ? this.opts.spawnPoints : this.nav.map((n) => n.p);
+      const shuffled = pool.slice().sort(() => Math.random() - 0.5);
+      p = shuffled.find((c) => ok(c, 40, 35)) ?? shuffled.find((c) => ok(c, 20, 20)) ?? shuffled[0];
+      if (bot.kind === 'overwatch') bot.post = null;
+    }
+    bot.node = this.nearestNode(p);
+    bot.targetNode = bot.node;
     bot.body.x = p.x;
     bot.body.y = p.y;
     bot.body.z = p.z;
@@ -228,6 +253,7 @@ export class BotManager {
     bot.seenTime = Math.max(bot.seenTime, bot.reaction * 0.6); // react faster when shot
     if (bot.hp <= 0) {
       bot.state = 'dead';
+      bot.deathPos.set(bot.body.x, bot.body.y, bot.body.z);
       bot.deadTime = 0;
       bot.stateTime = 0;
       return true;
@@ -305,6 +331,9 @@ export class BotManager {
     if (player.crouching) p *= 0.88;
     if (bot.speed > 1) p *= 0.88;
     if (bot.seenTime < bot.reaction + 0.6) p *= 0.75; // first shots less accurate
+    const def = WEAPONS[bot.weapon];
+    if (bot.weapon === 'uzi') p *= THREE.MathUtils.clamp(1.2 - dist / 40, 0.35, 1);
+    if (bot.weapon === 'sniper') p = Math.min(0.9, p * (dist > 25 ? 1.15 : 0.8));
     const chest = tmpB.set(player.position.x, player.position.y + (player.crouching ? 0.8 : 1.25), player.position.z);
     const clear = this.world.lineOfSight(muzzle.x, muzzle.y, muzzle.z, chest.x, chest.y, chest.z);
     const hit = clear && Math.random() < p;
@@ -322,7 +351,7 @@ export class BotManager {
     }
     this.effects.tracer(muzzle.clone(), end, true);
     this.events.onShot?.(muzzle.clone());
-    if (hit) this.events.onPlayerHit(Math.round(7 + Math.random() * 5), muzzle.clone(), bot.name);
+    if (hit) this.events.onPlayerHit(Math.max(4, Math.round(def.damage * 0.3 * (0.85 + Math.random() * 0.3))), muzzle.clone(), bot.name);
   }
 
   update(dt: number, player: BotTargetInfo) {
@@ -428,12 +457,14 @@ export class BotManager {
             this.activeShooters++;
             bot.shotTimer -= dt;
             if (bot.shotTimer <= 0) {
+              const def = WEAPONS[bot.weapon];
               if (bot.burstLeft <= 0) {
-                bot.burstLeft = 3 + Math.floor(Math.random() * 3);
+                bot.burstLeft = bot.weapon === 'sniper' ? 1 : bot.weapon === 'uzi' ? 5 + Math.floor(Math.random() * 4) : 3 + Math.floor(Math.random() * 3);
               }
               this.shoot(bot, player);
               bot.burstLeft--;
-              bot.shotTimer = bot.burstLeft > 0 ? 0.11 + Math.random() * 0.04 : 0.55 + Math.random() * 0.7;
+              const pause = bot.weapon === 'sniper' ? 1.8 + Math.random() * 1.2 : 0.55 + Math.random() * 0.7;
+              bot.shotTimer = bot.burstLeft > 0 ? def.fireInterval * 1.15 + Math.random() * 0.03 : pause;
             }
           }
           break;
@@ -491,14 +522,32 @@ export class BotManager {
       this.world.clampToBounds(bot.body, 1.2);
       // Gravity when not moving this frame
       if (moved === 0) this.world.moveBody(bot.body, 0, 0, dt);
+      // Crouch behind cover once there
+      const wantCrouch = bot.state === 'cover' && !!bot.coverPoint && Math.hypot(bot.coverPoint.x - bot.body.x, bot.coverPoint.z - bot.body.z) < 1 ? 1 : 0;
+      bot.crouchT = THREE.MathUtils.damp(bot.crouchT, wantCrouch, 6, dt);
       this.syncRig(bot, bot.speed, aiming);
     }
+  }
+
+  /** Explosion damage to every bot within radius (occluded by solid walls). Returns killed ids. */
+  explosion(center: THREE.Vector3, radius: number, maxDamage: number): number[] {
+    const killed: number[] = [];
+    for (const bot of this.bots) {
+      if (bot.state === 'dead') continue;
+      const c = tmpA.set(bot.body.x, bot.body.y + 1.0, bot.body.z);
+      const d = c.distanceTo(center);
+      if (d > radius) continue;
+      if (!this.world.lineOfSight(center.x, center.y + 0.2, center.z, c.x, c.y, c.z)) continue;
+      const dmg = maxDamage * (1 - d / radius) ** 0.8;
+      if (this.damage(bot.id, dmg, center)) killed.push(bot.id);
+    }
+    return killed;
   }
 
   private syncRig(bot: Bot, speed: number, aiming: boolean) {
     bot.rig.root.position.set(bot.body.x, bot.body.y, bot.body.z);
     bot.rig.root.rotation.y = bot.yaw;
-    if (bot.state !== 'dead') animateSoldier(bot.rig, bot.animT, speed, aiming);
+    if (bot.state !== 'dead') animateCharacter(bot.rig, bot.animT, speed, aiming, bot.crouchT);
   }
 
   dispose() {

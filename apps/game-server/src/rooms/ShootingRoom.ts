@@ -4,7 +4,6 @@ import Redis from 'ioredis';
 import {
   MAP_SPECS,
   GAME_TICK_INTERVAL_MS,
-  CHEST_EVENT_INTERVAL_MS,
   GAME_BATCH_SYNC_INTERVAL_MS,
   AFK_WARNING_SECONDS,
   AFK_KICK_SECONDS,
@@ -68,16 +67,12 @@ export class ShootingRoom extends Room<GameState> {
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), GAME_TICK_INTERVAL_MS);
     this.setPatchRate(GAME_TICK_INTERVAL_MS);
 
-    // 4. Chest Spawner Event (Every 15 Seconds)
-    this.clock.setInterval(() => this.spawnRandomChest(), CHEST_EVENT_INTERVAL_MS);
+    // 4. Bounty chests are NOT spawned randomly any more: they only drop at the death location of
+    //    a suicide / non-player death (self-grenade, fall damage, /suicide). See 'player_suicide'.
 
     // 5. Financial Batching Interval (Every 10 Seconds)
     this.clock.setInterval(() => this.flushPayoutBatch(), GAME_BATCH_SYNC_INTERVAL_MS);
 
-    // Initial Chest Spawns
-    for (let i = 0; i < 5; i++) {
-      this.spawnRandomChest();
-    }
   }
 
   private registerMessageHandlers() {
@@ -116,6 +111,30 @@ export class ShootingRoom extends Room<GameState> {
       }
       player.lastActiveTime = Date.now();
       this.broadcast('prop_transformed', { sessionId: client.sessionId, isProp: player.isProp, propType: player.propType });
+    });
+
+    // Explicit prop selection from the radial disguise menu (C key)
+    this.onMessage('player_set_prop', (client, data: { isProp: boolean; propType?: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.isGhost) return;
+      player.isProp = !!data?.isProp;
+      if (player.isProp && typeof data?.propType === 'string') player.propType = data.propType.slice(0, 32);
+      player.lastActiveTime = Date.now();
+      this.broadcast('prop_transformed', { sessionId: client.sessionId, isProp: player.isProp, propType: player.propType });
+    });
+
+    // Suicide / non-player death (self grenade, falling, environment, /suicide command):
+    // the ONLY case that drops a bounty chest.
+    this.onMessage('player_suicide', (client, data?: { cause?: string; x?: number; y?: number; z?: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.isGhost) return;
+      player.isProp = false;
+      player.health = 0;
+      player.isGhost = true;
+      player.deaths += 1;
+      this.spawnDeathChest(player.x, player.y, player.z);
+      this.broadcast('player_suicide', { victimUsername: player.username, cause: String(data?.cause ?? 'suicide').slice(0, 24) });
+      client.send('entered_ghost_mode', { message: 'You died. You are now in Ghost Spectator mode!' });
     });
 
     // Weapon Shooting & Hit Verification
@@ -164,8 +183,7 @@ export class ShootingRoom extends Room<GameState> {
       const killReward = Number(KILL_REWARD_BASE_MICRO_USD);
       shooter.sessionEarningsMicroUsd += killReward;
 
-      // 2. Drop 15-Second Treasure Chest at death location
-      this.spawnDeathChest(target.x, target.y, target.z);
+      // 2. Kills by another player do NOT drop a chest (chests only come from suicides).
 
       // 3. Queue reward for batch payout to Cloudflare Workers
       this.pendingPayouts.push({
@@ -228,34 +246,6 @@ export class ShootingRoom extends Room<GameState> {
         rewardMicroUsd: reward,
       });
     }
-  }
-
-  private spawnRandomChest() {
-    const chestId = `chest_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const halfX = (this.state.mapSizeX / 2) - 10;
-    const halfZ = (this.state.mapSizeZ / 2) - 10;
-
-    const chest = new ChestState();
-    chest.id = chestId;
-    chest.x = Math.round((Math.random() * 2 - 1) * halfX);
-    chest.y = 0; // Flat ground
-    chest.z = Math.round((Math.random() * 2 - 1) * halfZ);
-    chest.health = 50;
-    chest.rewardMicroUsd = Number(CHEST_REWARD_BASE_MICRO_USD);
-    chest.isDeathDrop = false;
-    chest.spawnedAt = Date.now();
-
-    this.state.chests.set(chestId, chest);
-    this.state.activeChestsCount = this.state.chests.size;
-
-    this.broadcast('chest_spawned', {
-      id: chest.id,
-      x: chest.x,
-      y: chest.y,
-      z: chest.z,
-      rewardMicroUsd: chest.rewardMicroUsd,
-      isDeathDrop: false,
-    });
   }
 
   private spawnDeathChest(x: number, y: number, z: number) {

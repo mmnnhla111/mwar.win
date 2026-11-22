@@ -42,6 +42,8 @@ export interface ArenaLayout {
   posts: THREE.Vector3[];
   playerSpawns: THREE.Vector3[];
   chestSpots: THREE.Vector3[];
+  /** 35+ validated spawn points (streets, courtyards, house interiors, rooftops). */
+  spawnPoints: THREE.Vector3[];
   terrain: SkyAndTerrain;
   staticMeshes: THREE.Mesh[];
 }
@@ -311,5 +313,26 @@ export function buildArena(scene: THREE.Scene, world: CollisionWorld, lib: Mater
     c.z = THREE.MathUtils.clamp(c.z, -PLAY_HALF + 3, PLAY_HALF - 3);
   });
 
-  return { structures, nav, posts, playerSpawns, chestSpots, terrain, staticMeshes };
+  // ---- Randomised spawn pool: streets, courtyards / parks, building & house interiors, rooftops.
+  const spawnPoints: THREE.Vector3[] = [];
+  const tryAdd = (x: number, y: number, z: number) => {
+    if (Math.abs(x) > PLAY_HALF - 3 || Math.abs(z) > PLAY_HALF - 3) return;
+    const g = world.groundHeightAt(x, z, 0.4, y + 0.6);
+    if (Math.abs(g - y) > 0.6) return;
+    // Body must fit (no wall / prop overlapping a standing capsule)
+    for (const h of [0.5, 1.2, 1.7]) if (world.pointInSolid(x, g + h, z)) return;
+    for (const [ox, oz] of [[0.4, 0], [-0.4, 0], [0, 0.4], [0, -0.4]]) if (world.pointInSolid(x + ox, g + 1.0, z + oz)) return;
+    if (spawnPoints.some((q) => q.distanceToSquared(new THREE.Vector3(x, g, z)) < 9)) return;
+    spawnPoints.push(new THREE.Vector3(x, g, z));
+  };
+  nav.forEach((n, i) => {
+    if (i % 2 === 0) tryAdd(n.p.x, 0, n.p.z);
+  });
+  chestSpots.forEach((c) => tryAdd(c.x, 0, c.z));
+  structures.forEach((s) => {
+    s.interior.forEach((p) => tryAdd(p[0], p[1] - 0.05, p[2]));
+    s.rooftops.forEach((p) => tryAdd(p[0], p[1] - 0.05, p[2]));
+  });
+
+  return { structures, nav, posts, playerSpawns, chestSpots, spawnPoints, terrain, staticMeshes };
 }

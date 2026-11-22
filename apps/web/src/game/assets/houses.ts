@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Frame, Kit, Rect, door, win } from './kit';
-import { STORY, WALL_H, SLAB_T, StructureInfo, buildStories, worldPoint, windowsAlong, Vec3 } from './structure';
+import { STORY, WALL_H, SLAB_T, StructureInfo, buildStories, worldPoint, windowsAlong, Vec3, GROUND_WINDOW } from './structure';
 import { MaterialKey } from './materials';
 
 /**
@@ -73,13 +73,13 @@ function buildSingle(cfg: SingleCfg): HouseFactory {
       key: cfg.wallKey ?? 'plaster',
       color: cfg.wall,
       trim: cfg.trim,
-      n: [door(doorAt, 1.2, 2.3), ...windowsAlong(cfg.w, 3, { avoid: [[doorAt - 1, doorAt + 1]] })],
-      s: cfg.wing ? [door(wingDoorAt, 1.2, 2.3), ...windowsAlong(cfg.w, 2, { avoid: [[wingDoorAt - 1.2, wingDoorAt + 1.2]] })] : [door(cfg.w * 0.75, 1.1, 2.2), ...windowsAlong(cfg.w, 2, { avoid: [[cfg.w * 0.75 - 1, cfg.w * 0.75 + 1]] })],
-      w: cfg.garage ? [door((cfg.d - 2 * t) / 2, 1.1, 2.2)] : windowsAlong(cfg.d - 2 * t, 2),
-      e: windowsAlong(cfg.d - 2 * t, 2),
+      n: [door(doorAt, 1.2, 2.3), ...windowsAlong(cfg.w, 3, { ...GROUND_WINDOW, avoid: [[doorAt - 1, doorAt + 1]] })],
+      s: cfg.wing ? [door(wingDoorAt, 1.2, 2.3), ...windowsAlong(cfg.w, 2, { ...GROUND_WINDOW, avoid: [[wingDoorAt - 1.2, wingDoorAt + 1.2]] })] : [door(cfg.w * 0.75, 1.1, 2.2), ...windowsAlong(cfg.w, 2, { ...GROUND_WINDOW, avoid: [[cfg.w * 0.75 - 1, cfg.w * 0.75 + 1]] })],
+      w: cfg.garage ? [door((cfg.d - 2 * t) / 2, 1.1, 2.2)] : windowsAlong(cfg.d - 2 * t, 2, GROUND_WINDOW),
+      e: windowsAlong(cfg.d - 2 * t, 2, GROUND_WINDOW),
     });
     kit.slab(f, r, WALL_H, SLAB_T, { color: 0x9ca3af });
-    kit.deco(f, 'wood', 0xb7926b, 0, 0.005, 0, cfg.w - 2 * t, 0.01, cfg.d - 2 * t, false);
+    kit.floorFinish(f, { x0: r.x0 + t, z0: r.z0 + t, x1: r.x1 - t, z1: r.z1 - t }, 0, [], 'wood', 0xb7926b);
     roofFor(kit, f, r, STORY, cfg.roof, cfg.roofColor, cfg.wall);
     if (cfg.partition) {
       const px = r.x0 + cfg.w * 0.45;
@@ -97,8 +97,8 @@ function buildSingle(cfg: SingleCfg): HouseFactory {
     const interior: Vec3[] = [worldPoint(f, 0, 0.05, 0.6)];
     if (cfg.wing) {
       const wr: Rect = { x0: r.x1 - cfg.wing.w, z0: r.z1, x1: r.x1, z1: r.z1 + cfg.wing.d };
-      kit.wall(f, wr.x0 + t / 2, wr.z0, wr.x0 + t / 2, wr.z1 - t, 0, WALL_H, { t, color: cfg.wall, openings: windowsAlong(cfg.wing.d - t, 1) });
-      kit.wall(f, wr.x1 - t / 2, wr.z0, wr.x1 - t / 2, wr.z1 - t, 0, WALL_H, { t, color: cfg.wall, openings: windowsAlong(cfg.wing.d - t, 1) });
+      kit.wall(f, wr.x0 + t / 2, wr.z0, wr.x0 + t / 2, wr.z1 - t, 0, WALL_H, { t, color: cfg.wall, openings: windowsAlong(cfg.wing.d - t, 1, GROUND_WINDOW) });
+      kit.wall(f, wr.x1 - t / 2, wr.z0, wr.x1 - t / 2, wr.z1 - t, 0, WALL_H, { t, color: cfg.wall, openings: windowsAlong(cfg.wing.d - t, 1, GROUND_WINDOW) });
       kit.wall(f, wr.x0, wr.z1 - t / 2, wr.x1, wr.z1 - t / 2, 0, WALL_H, { t, color: cfg.wall, openings: [door(cfg.wing.w / 2, 1.1, 2.2)] });
       kit.slab(f, wr, WALL_H, SLAB_T, { color: 0x9ca3af });
       roofFor(kit, f, wr, STORY, cfg.roof === 'gable-x' ? 'gable-z' : cfg.roof, cfg.roofColor, cfg.wall);

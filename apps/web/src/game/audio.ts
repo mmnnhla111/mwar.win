@@ -17,6 +17,98 @@ export class SoundSynthesizer {
     }
   }
 
+  /** Weapon-flavoured shot: heavier for rifles / sniper, snappier for SMG / pistol. */
+  playWeaponShot(kind: 'sniper' | 'ak47' | 'm16' | 'uzi' | 'pistol') {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const cfg = {
+      sniper: { len: 0.35, cut: 2400, end: 90, gain: 0.75, thump: 110 },
+      ak47: { len: 0.14, cut: 1500, end: 140, gain: 0.55, thump: 140 },
+      m16: { len: 0.11, cut: 2000, end: 180, gain: 0.45, thump: 170 },
+      uzi: { len: 0.07, cut: 2600, end: 300, gain: 0.32, thump: 220 },
+      pistol: { len: 0.09, cut: 2200, end: 220, gain: 0.38, thump: 200 },
+    }[kind];
+    const now = this.ctx.currentTime;
+    const n = Math.floor(this.ctx.sampleRate * cfg.len);
+    const buffer = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (n * 0.22));
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(cfg.cut, now);
+    filter.frequency.exponentialRampToValueAtTime(cfg.end, now + cfg.len);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(cfg.gain, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + cfg.len);
+    const osc = this.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(cfg.thump, now);
+    osc.frequency.exponentialRampToValueAtTime(35, now + cfg.len * 0.8);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(cfg.gain * 1.2, now);
+    og.gain.exponentialRampToValueAtTime(0.01, now + cfg.len * 0.8);
+    src.connect(filter).connect(gain).connect(this.ctx.destination);
+    osc.connect(og).connect(this.ctx.destination);
+    src.start(now);
+    osc.start(now);
+    osc.stop(now + cfg.len);
+  }
+
+  /** Grenade explosion: long low rumble, volume by distance. */
+  playExplosion(distance = 0) {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const vol = Math.max(0.08, 1 - distance / 90);
+    const n = Math.floor(this.ctx.sampleRate * 1.2);
+    const buffer = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (n * 0.18));
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(900, now);
+    filter.frequency.exponentialRampToValueAtTime(60, now + 1.1);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.9 * vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(70, now);
+    osc.frequency.exponentialRampToValueAtTime(25, now + 0.8);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(1.0 * vol, now);
+    og.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
+    src.connect(filter).connect(gain).connect(this.ctx.destination);
+    osc.connect(og).connect(this.ctx.destination);
+    src.start(now);
+    osc.start(now);
+    osc.stop(now + 1.0);
+  }
+
+  /** Short metallic clink (grenade bounce / weapon pickup). */
+  playClink(vol = 0.12) {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(2200 + Math.random() * 600, now);
+    osc.frequency.exponentialRampToValueAtTime(900, now + 0.08);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.1);
+  }
+
   playGunshot() {
     if (this.isMuted) return;
     this.init();

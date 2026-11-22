@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Frame, Kit, Rect, door, win } from './kit';
-import { STORY, WALL_H, SLAB_T, StructureInfo, buildStories, standardPoints, worldPoint, windowsAlong } from './structure';
+import { STORY, WALL_H, SLAB_T, StructureInfo, buildStories, standardPoints, worldPoint, windowsAlong, GROUND_WINDOW } from './structure';
 
 /**
  * 10 distinct multi-storey building architectures (Building01 … Building10).
@@ -142,7 +142,9 @@ export const Building03: BuildingFactory = (kit, f) => {
   const roofY = stories * STORY;
   kit.parapet(f, r, roofY, { h: 1.15, color: 0x7c5b45 });
   // Beacon & sandbag nest
-  kit.deco(f, 'emissive', 0xf97316, 2.8, roofY + 1.2, -2.8, 0.25, 0.25, 0.25, false);
+  // Beacon on a mast (solid pole so it is no longer a floating walk-through object).
+  kit.solid(f, 'metal', 0x3f3f46, 2.8, roofY, -2.8, 0.12, 1.2, 0.12, { walkable: false });
+  kit.solid(f, 'emissive', 0xf97316, 2.8, roofY + 1.2, -2.8, 0.25, 0.25, 0.25, { walkable: false, castShadow: false });
   sandbagRow(kit, f, -2.5, -2.6, 0.5, -2.6, roofY);
   return {
     name: 'Sniper Watchtower',
@@ -202,6 +204,8 @@ export const Building05: BuildingFactory = (kit, f) => {
     g.rotateX(-0.35);
     kit.geometry(f, 'metal', 0x1e3a8a, g, -5.5 + i * 3.2, roofY + 0.7, 3.5);
     kit.solid(f, 'metal', 0x94a3b8, -5.5 + i * 3.2, roofY, 3.5, 2.4, 0.6, 0.2, { walkable: false });
+    // Collider matching the tilted panel envelope (was walk-through).
+    kit.solid(f, 'metal', 0x1e3a8a, -5.5 + i * 3.2, roofY, 3.5, 2.6, 1.0, 1.52, { visual: false, walkable: false });
   }
   kit.solid(f, 'metal', 0xcbd5e1, 6, roofY, -3.5, 1.8, 1.3, 1.8);
   const pts = standardPoints(f, r, 2, true);
@@ -235,7 +239,19 @@ export const Building06: BuildingFactory = (kit, f) => {
   }
   kit.solid(f, 'concrete', 0xd6d3d1, 0, WALL_H - 0.1, -9.0, 3, 0.2, 2);
   kit.solid(f, 'metal', 0x78716c, -4, roofY, 4.5, 2.4, 2.0, 2.4);
-  kit.deco(f, 'metal', 0x57534e, 4, roofY, 5, 0.8, 1.6, 0.8);
+  // Rooftop water tank on a stand (fully solid; previously a walk-through visual-only block).
+  for (const [lx, lz] of [[3.3, 4.3], [4.7, 4.3], [3.3, 5.7], [4.7, 5.7]]) kit.solid(f, 'metal', 0x44403c, lx, roofY, lz, 0.12, 0.8, 0.12, { walkable: false });
+  kit.solid(f, 'metal', 0x44403c, 4, roofY + 0.8, 5, 1.7, 0.08, 1.7);
+  {
+    const tank = new THREE.CylinderGeometry(0.8, 0.8, 1.6, 16);
+    tank.translate(0, 0.8, 0);
+    kit.geometry(f, 'metal', 0x57534e, tank, 4, roofY + 0.88, 5);
+    kit.solid(f, 'metal', 0x57534e, 4, roofY + 0.88, 5, 1.6, 1.6, 1.6, { visual: false });
+  }
+  // HVAC unit + skylight (solid, exact colliders)
+  kit.solid(f, 'metal', 0x9ca3af, -4, roofY, -4.5, 1.8, 1.1, 1.2);
+  kit.deco(f, 'metal', 0x52525b, -4, roofY + 1.1, -4.5, 1.0, 0.05, 1.0, false);
+  kit.solid(f, 'glass', 0xbfdbfe, 1.5, roofY, -1.5, 1.6, 0.45, 1.6);
   const pts = standardPoints(f, r, 4, true);
   pts.interior.push(worldPoint(f, -3.5, 2 * STORY + 0.05, -9.2));
   return { name: 'Apartment Complex', ...pts, entrance: worldPoint(f, 0, 0, -11.5), footprint: footprint(f, { x0: -7, z0: -10.5, x1: 7, z1: 8 }) };
@@ -265,7 +281,8 @@ export const Building07: BuildingFactory = (kit, f) => {
   sandbagRow(kit, f, 6.6, -4, 6.6, 4, roofY);
   sandbagRow(kit, f, -3, 5.6, 5, 5.6, roofY);
   // Camo net poles
-  kit.deco(f, 'fabric', 0x4d5b3a, 0, roofY + 2.3, 0, 9, 0.05, 7);
+  // Camo net: solid canopy so jumping players can't poke their head through it.
+  kit.solid(f, 'fabric', 0x4d5b3a, 0, roofY + 2.3, 0, 9, 0.05, 7, { blocksBullets: false, walkable: false });
   for (const [px, pz] of [[-4.2, -3.2], [4.2, -3.2], [-4.2, 3.2], [4.2, 3.2]]) kit.solid(f, 'metal', 0x3f3f46, px, roofY, pz, 0.12, 2.3, 0.12, { walkable: false });
   return {
     name: 'Fortified Bunker',
@@ -341,7 +358,10 @@ export const Building09: BuildingFactory = (kit, f) => {
   kit.deco(f, 'emissive', 0xfacc15, 0, roofY + 0.01, 1.5, 0.5, 0.02, 3.2, false);
   kit.deco(f, 'emissive', 0xfacc15, -1.0, roofY + 0.01, 1.5, 0.5, 0.02, 3.2, false);
   kit.deco(f, 'emissive', 0xfacc15, -0.5, roofY + 0.01, 1.5, 1.5, 0.02, 0.4, false);
-  for (const [cx, cz] of [[-5.8, -5.8], [5.8, -5.8], [-5.8, 5.8], [5.8, 5.8]]) kit.deco(f, 'emissive', 0xef4444, cx, roofY + 1.15, cz, 0.18, 0.18, 0.18, false);
+  for (const [cx, cz] of [[-5.8, -5.8], [5.8, -5.8], [-5.8, 5.8], [5.8, 5.8]]) {
+    kit.solid(f, 'metal', 0x3f3f46, cx, roofY, cz, 0.1, 1.15, 0.1, { walkable: false });
+    kit.solid(f, 'emissive', 0xef4444, cx, roofY + 1.15, cz, 0.18, 0.18, 0.18, { walkable: false, castShadow: false });
+  }
   const pts = standardPoints(f, r, 5, true);
   return { name: 'Plaza Tower', ...pts, entrance: worldPoint(f, 0, 0, -8.5), footprint: footprint(f, r) };
 };
@@ -359,10 +379,10 @@ export const Building10: BuildingFactory = (kit, f) => {
       key: 'plaster',
       color: wallColor,
       trim: 0x7c2d12,
-      n: g ? [door(9.5, 3.0, 2.8), ...windowsAlong(19, 6, { avoid: [[7.5, 11.5]] })] : windowsAlong(19, 6),
-      s: g ? [door(9.5, 1.6, 2.4), ...windowsAlong(19, 6, { avoid: [[8.3, 10.7]] })] : windowsAlong(19, 6),
-      w: windowsAlong(18.4, 5),
-      e: g ? [door(9.2, 1.6, 2.4), ...windowsAlong(18.4, 5, { avoid: [[8, 10.4]] })] : windowsAlong(18.4, 5),
+      n: g ? [door(9.5, 3.0, 2.8), ...windowsAlong(19, 6, { ...GROUND_WINDOW, avoid: [[7.5, 11.5]] })] : windowsAlong(19, 6),
+      s: g ? [door(9.5, 1.6, 2.4), ...windowsAlong(19, 6, { ...GROUND_WINDOW, avoid: [[8.3, 10.7]] })] : windowsAlong(19, 6),
+      w: windowsAlong(18.4, 5, g ? GROUND_WINDOW : {}),
+      e: g ? [door(9.2, 1.6, 2.4), ...windowsAlong(18.4, 5, { ...GROUND_WINDOW, avoid: [[8, 10.4]] })] : windowsAlong(18.4, 5),
     });
     kit.room(f, inner, y, WALL_H, {
       key: 'plaster',

@@ -70,8 +70,42 @@ export class BrowserGuard {
     if (!document.fullscreenElement && this.keyboardLocked) {
       (navigator as unknown as { keyboard?: KeyboardLockApi }).keyboard?.unlock?.();
       this.keyboardLocked = false;
+    } else if (document.fullscreenElement && this.armed && !this.keyboardLocked) {
+      void this.lockKeys();
     }
   };
+
+  private async lockKeys() {
+    const kb = (navigator as unknown as { keyboard?: KeyboardLockApi }).keyboard;
+    if (!kb?.lock) return;
+    try {
+      await kb.lock(LOCKED_CODES);
+      this.keyboardLocked = true;
+    } catch {
+      this.keyboardLocked = false;
+    }
+  }
+
+  /**
+   * Manual fullscreen toggle (the ⛶ button). Fullscreens the whole document so overlays stay
+   * visible; on phones it also tries to lock landscape orientation. Never called automatically.
+   */
+  async toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return false;
+      }
+      await document.documentElement.requestFullscreen({ navigationUI: 'hide' } as FullscreenOptions);
+      const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+      orientation?.lock?.('landscape').catch(() => {});
+      if (this.armed) await this.lockKeys();
+      return true;
+    } catch (err) {
+      console.warn('[BrowserGuard] fullscreen toggle failed:', err);
+      return !!document.fullscreenElement;
+    }
+  }
 
   private onContextMenu = (e: Event) => {
     if (this.armed) e.preventDefault();

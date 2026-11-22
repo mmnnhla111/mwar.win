@@ -174,6 +174,36 @@ export interface Rect {
   z1: number;
 }
 
+/** Split rectangle r into non-overlapping rectangles that exclude every hole (rows merged). */
+export function rectsMinusHoles(r: Rect, rawHoles: Rect[]): Rect[] {
+  const holes = rawHoles.map((h) => ({
+    x0: Math.max(r.x0, Math.min(h.x0, h.x1)),
+    x1: Math.min(r.x1, Math.max(h.x0, h.x1)),
+    z0: Math.max(r.z0, Math.min(h.z0, h.z1)),
+    z1: Math.min(r.z1, Math.max(h.z0, h.z1)),
+  })).filter((h) => h.x1 > h.x0 && h.z1 > h.z0);
+  const xs = Array.from(new Set([r.x0, r.x1, ...holes.flatMap((h) => [h.x0, h.x1])])).sort((a, b) => a - b);
+  const zs = Array.from(new Set([r.z0, r.z1, ...holes.flatMap((h) => [h.z0, h.z1])])).sort((a, b) => a - b);
+  const out: Rect[] = [];
+  for (let j = 0; j < zs.length - 1; j++) {
+    let runStart: number | null = null;
+    for (let i = 0; i <= xs.length - 1; i++) {
+      let solidCell = false;
+      if (i < xs.length - 1) {
+        const cx = (xs[i] + xs[i + 1]) / 2;
+        const cz = (zs[j] + zs[j + 1]) / 2;
+        solidCell = !holes.some((h) => cx > h.x0 && cx < h.x1 && cz > h.z0 && cz < h.z1);
+      }
+      if (solidCell && runStart === null) runStart = xs[i];
+      if (!solidCell && runStart !== null) {
+        out.push({ x0: runStart, x1: xs[i], z0: zs[j], z1: zs[j + 1] });
+        runStart = null;
+      }
+    }
+  }
+  return out;
+}
+
 export const door = (at: number, width = 1.4, top = 2.3): Opening => ({ at, width, sill: 0, top });
 export const win = (at: number, width = 1.3, sill = 1.0, top = 2.1): Opening => ({ at, width, sill, top });
 
@@ -309,32 +339,15 @@ export class Kit {
   slab(f: Frame, r: Rect, y: number, t: number, opts: { key?: MaterialKey; color?: THREE.ColorRepresentation; holes?: Rect[] } = {}) {
     const key = opts.key ?? 'concrete';
     const color = opts.color ?? 0xbdbdbd;
-    const holes = (opts.holes ?? []).map((h) => ({
-      x0: Math.max(r.x0, Math.min(h.x0, h.x1)),
-      x1: Math.min(r.x1, Math.max(h.x0, h.x1)),
-      z0: Math.max(r.z0, Math.min(h.z0, h.z1)),
-      z1: Math.min(r.z1, Math.max(h.z0, h.z1)),
-    }));
-    const xs = Array.from(new Set([r.x0, r.x1, ...holes.flatMap((h) => [h.x0, h.x1])])).sort((a, b) => a - b);
-    const zs = Array.from(new Set([r.z0, r.z1, ...holes.flatMap((h) => [h.z0, h.z1])])).sort((a, b) => a - b);
-    for (let j = 0; j < zs.length - 1; j++) {
-      // Merge consecutive solid cells in this row.
-      let runStart: number | null = null;
-      for (let i = 0; i <= xs.length - 1; i++) {
-        let solidCell = false;
-        if (i < xs.length - 1) {
-          const cx = (xs[i] + xs[i + 1]) / 2;
-          const cz = (zs[j] + zs[j + 1]) / 2;
-          solidCell = !holes.some((h) => cx > h.x0 && cx < h.x1 && cz > h.z0 && cz < h.z1);
-        }
-        if (solidCell && runStart === null) runStart = xs[i];
-        if (!solidCell && runStart !== null) {
-          const xa = runStart;
-          const xb = xs[i];
-          this.solid(f, key, color, (xa + xb) / 2, y, (zs[j] + zs[j + 1]) / 2, xb - xa, t, zs[j + 1] - zs[j]);
-          runStart = null;
-        }
-      }
+    for (const c of rectsMinusHoles(r, opts.holes ?? [])) {
+      this.solid(f, key, color, (c.x0 + c.x1) / 2, y, (c.z0 + c.z1) / 2, c.x1 - c.x0, t, c.z1 - c.z0);
+    }
+  }
+
+  /** Thin visual floor finish that respects stairwell openings (never covers a hole). */
+  floorFinish(f: Frame, r: Rect, y: number, holes: Rect[], key: MaterialKey = 'wood', color: THREE.ColorRepresentation = 0xc8a27a) {
+    for (const c of rectsMinusHoles(r, holes)) {
+      this.deco(f, key, color, (c.x0 + c.x1) / 2, y + 0.004, (c.z0 + c.z1) / 2, c.x1 - c.x0, 0.012, c.z1 - c.z0, false);
     }
   }
 

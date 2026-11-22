@@ -9,6 +9,12 @@ export const SLAB_T = STORY - WALL_H;
 
 export type Vec3 = [number, number, number];
 
+/**
+ * Ground-floor window opening tuned for crouch-jump entry: jump apex ≈ 1.24 m clears the 1.1 m
+ * sill, and the 1.2 m crouched hitbox fits the 1.4 m opening.
+ */
+export const GROUND_WINDOW = { sill: 1.1, top: 2.5, width: 1.35 } as const;
+
 export interface StructureInfo {
   name: string;
   /** World-space standing points on walkable rooftops (AI overwatch posts). */
@@ -104,7 +110,8 @@ export function buildStories(kit: Kit, f: Frame, r: Rect, o: StoriesOptions) {
       for (const at of doors) list.push(door(at, doorW, 2.4));
       const avoid: [number, number][] = doors.map((at) => [at - doorW / 2 - 0.3, at + doorW / 2 + 0.3]);
       const n = o.windows?.[sideKey] ?? Math.max(1, Math.floor(len / 3.2));
-      list.push(...windowsAlong(len, n, { avoid, glass: o.glassWindows }));
+      // Ground floor: vaultable windows (jump + crouch to climb through); upper floors: standard.
+      list.push(...windowsAlong(len, n, { avoid, glass: o.glassWindows, ...(ground ? GROUND_WINDOW : {}) }));
       return list;
     };
     kit.room(f, r, y, WALL_H, {
@@ -119,8 +126,8 @@ export function buildStories(kit: Kit, f: Frame, r: Rect, o: StoriesOptions) {
     });
     // Slab above this storey (floor of next / roof)
     kit.slab(f, r, y + WALL_H, SLAB_T, { color: o.floorColor ?? 0xa3a3a3, holes: holes[k + 1] });
-    // Interior floor finish (visual)
-    kit.deco(f, 'wood', 0xc8a27a, (r.x0 + r.x1) / 2, y + (ground ? 0.005 : 0), (r.z0 + r.z1) / 2, w - 2 * t, 0.01, d - 2 * t, false);
+    // Interior floor finish (visual) — cut around this floor's stairwell opening.
+    kit.floorFinish(f, { x0: r.x0 + t, z0: r.z0 + t, x1: r.x1 - t, z1: r.z1 - t }, y, holes[k]);
   }
 
   const roofY = o.stories * STORY;

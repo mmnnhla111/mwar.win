@@ -54,6 +54,8 @@ export interface MoveBody {
   onGround: boolean;
   radius: number;
   height: number;
+  /** Owner id: dynamic boxes with the same owner (e.g. your own prop disguise) are ignored. */
+  owner?: string;
 }
 
 export interface RayHit {
@@ -86,6 +88,9 @@ export class CollisionWorld {
   private nextId = 1;
   private queryStamp = 0;
   private boxStamps: number[] = [];
+  /** Dynamic movable boxes (prop disguises) keyed by owner. */
+  private dynamic = new Map<string, SolidBox>();
+  private ignoreOwner: string | undefined;
 
   constructor(opts: CollisionWorldOptions) {
     this.halfSize = opts.halfSize;
@@ -167,7 +172,35 @@ export class CollisionWorld {
     return ramp.id;
   }
 
+  /**
+   * Set / move / clear (null) a dynamic solid box owned by `owner` (e.g. a solid prop disguise).
+   * Dynamic boxes block movement of every body except their owner; they never stop bullets.
+   */
+  setDynamicBox(owner: string, box: AABB | null, opts: { walkable?: boolean } = {}) {
+    if (!box) {
+      this.dynamic.delete(owner);
+      return;
+    }
+    const prev = this.dynamic.get(owner);
+    const b: SolidBox = prev ?? { id: this.nextId++, minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0, blocksMovement: true, blocksBullets: false, walkable: true };
+    b.minX = box.minX;
+    b.maxX = box.maxX;
+    b.minY = box.minY;
+    b.maxY = box.maxY;
+    b.minZ = box.minZ;
+    b.maxZ = box.maxZ;
+    b.walkable = opts.walkable ?? true;
+    this.dynamic.set(owner, b);
+  }
+
   private forBoxesNear(minX: number, minZ: number, maxX: number, maxZ: number, cb: (b: SolidBox) => void) {
+    if (this.dynamic.size) {
+      this.dynamic.forEach((b, owner) => {
+        if (owner === this.ignoreOwner) return;
+        if (maxX < b.minX || minX > b.maxX || maxZ < b.minZ || minZ > b.maxZ) return;
+        cb(b);
+      });
+    }
     const stamp = ++this.queryStamp;
     this.cellsFor(minX, minZ, maxX, maxZ, (k) => {
       const list = this.boxGrid.get(k);
@@ -256,6 +289,15 @@ export class CollisionWorld {
    * per-axis resolution so the body slides along walls. Returns the body (mutated).
    */
   moveBody(body: MoveBody, dx: number, dz: number, dt: number): MoveBody {
+    this.ignoreOwner = body.owner;
+    try {
+      return this.moveBodyInner(body, dx, dz, dt);
+    } finally {
+      this.ignoreOwner = undefined;
+    }
+  }
+
+  private moveBodyInner(body: MoveBody, dx: number, dz: number, dt: number): MoveBody {
     const maxStep = body.radius * 0.5;
     const dist = Math.hypot(dx, dz);
     const steps = Math.max(1, Math.ceil(dist / maxStep));
