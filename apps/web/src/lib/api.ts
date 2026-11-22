@@ -123,3 +123,41 @@ export async function settleDailyMlm(dateKey?: string, targetUserId?: string) {
     body: JSON.stringify({ dateKey, targetUserId }),
   });
 }
+
+// Server Nodes & 1-Click Provisioning API
+export interface GameNode {
+  id: string;
+  node_name: string;
+  role: 'all' | 'game' | 'logs';
+  status: 'online' | 'offline';
+  ip_address?: string;
+  region?: string;
+  cpu_usage: number;
+  ram_usage: number;
+  active_rooms: number;
+  player_count: number;
+  room_capacity_mini: number;
+  room_capacity_fast: number;
+  provision_token?: string;
+  tunnel_hostname?: string;
+  last_heartbeat?: number;
+  created_at: number;
+}
+
+export async function getServerNodes() {
+  return apiFetch<{ nodes: GameNode[]; provisionKey?: string }>('/api/nodes');
+}
+
+export async function getProvisionCommand(data: { role: string; nodeName: string; tunnelToken?: string }) {
+  return apiFetch<{ command: string; provisionKey: string }>('/api/nodes/provision-command', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateNodeCapacity(nodeId: string, data: { room_capacity_mini?: number; room_capacity_fast?: number }) {
+  return apiFetch<{ success: boolean; node: GameNode }>(`/api/nodes/${nodeId}/capacity`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}

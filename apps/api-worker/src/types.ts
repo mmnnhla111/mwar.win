@@ -16,6 +16,7 @@ export interface Env {
   DEV_MOCK_MODE?: string;
   JWT_SECRET: string;
   INTERNAL_API_SECRET: string;
+  NODE_PROVISION_KEY?: string;
   LOG_RECEIVER_URL?: string;
 }
 
