@@ -1,15 +1,15 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="goldBase" x1="64" y1="10" x2="64" y2="118" gradientUnits="userSpaceOnUse">
-      <stop stopColor="#FDE047" />
-      <stop offset="0.4" stopColor="#EAB308" />
-      <stop offset="0.8" stopColor="#CA8A04" />
-      <stop offset="1" stopColor="#713F12" />
+      <stop stop-color="#FDE047" />
+      <stop offset="0.4" stop-color="#EAB308" />
+      <stop offset="0.8" stop-color="#CA8A04" />
+      <stop offset="1" stop-color="#713F12" />
     </linearGradient>
     <linearGradient id="goldTrim" x1="16" y1="10" x2="112" y2="118" gradientUnits="userSpaceOnUse">
-      <stop stopColor="#FEF08A" />
-      <stop offset="0.5" stopColor="#F59E0B" />
-      <stop offset="1" stopColor="#451A03" />
+      <stop stop-color="#FEF08A" />
+      <stop offset="0.5" stop-color="#F59E0B" />
+      <stop offset="1" stop-color="#451A03" />
     </linearGradient>
     <filter id="goldGlow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#EAB308" flood-opacity="0.7"/>

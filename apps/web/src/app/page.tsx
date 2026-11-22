@@ -29,6 +29,7 @@ import {
   QuestCheckinIcon,
 } from '../components/icons';
 import { preloadGameAssets } from '../lib/cache';
+import ArenaModeCard from '../components/ArenaModeCard';
 import type { TodayQuestsResponse, DailyMlmSummary } from '@mwar/shared';
 
 const RANK_BADGE_MAP: Record<string, string> = {
@@ -615,43 +616,49 @@ export default function LobbyPage() {
               </button>
             </div>
 
-            {/* Arena Mode Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* 30-Player Skirmish */}
-              <Link
+            {/* Arena Mode Grid (uniform 400x220 artwork + automatic SVG fallback) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+              <ArenaModeCard
                 href="/game?mode=mini_30"
-                onClick={() => setIsFightModalOpen(false)}
-                className="group relative rounded-2xl overflow-hidden border border-slate-700 hover:border-sky-400 transition transform hover:-translate-y-1 shadow-lg"
-              >
-                <img src="/images/mode_mini30.svg" alt="30-Player Skirmish" className="w-full h-auto object-cover" />
-              </Link>
-
-              {/* 100-Player Warzone */}
-              <Link
+                imageSrc="/images/mode_mini30.svg"
+                title="30-Player Skirmish"
+                subtitle="Tight urban map • Micro-USD kills & 15s bounty chests"
+                accent="#38BDF8"
+                badge="LIVE PvP"
+                onSelect={() => setIsFightModalOpen(false)}
+              />
+              <ArenaModeCard
                 href="/game?mode=standard_100"
-                onClick={() => setIsFightModalOpen(false)}
-                className="group relative rounded-2xl overflow-hidden border border-slate-700 hover:border-rose-400 transition transform hover:-translate-y-1 shadow-lg"
-              >
-                <img src="/images/mode_standard100.svg" alt="100-Player Warzone" className="w-full h-auto object-cover" />
-              </Link>
-
-              {/* Fast & Mini Mode */}
-              <Link
+                imageSrc="/images/mode_standard100.svg"
+                title="100-Player Warzone"
+                subtitle="Massive open island • high stakes & huge bounty pools"
+                accent="#F87171"
+                badge="LIVE PvP"
+                onSelect={() => setIsFightModalOpen(false)}
+              />
+              <ArenaModeCard
                 href="/game?mode=fast_mini"
-                onClick={() => setIsFightModalOpen(false)}
-                className="group relative rounded-2xl overflow-hidden border border-slate-700 hover:border-purple-400 transition transform hover:-translate-y-1 shadow-lg"
-              >
-                <img src="/images/mode_fast.svg" alt="Fast & Mini Mode" className="w-full h-auto object-cover" />
-              </Link>
-
-              {/* Practice Range */}
-              <Link
+                imageSrc="/images/mode_fast.svg"
+                title="Fast & Mini Mode"
+                subtitle="Instant respawns • turbo energy tickets & quick payouts"
+                accent="#E879F9"
+                badge="TURBO"
+                onSelect={() => setIsFightModalOpen(false)}
+              />
+              <ArenaModeCard
                 href="/game?mode=practice"
-                onClick={() => setIsFightModalOpen(false)}
-                className="group relative rounded-2xl overflow-hidden border border-slate-700 hover:border-emerald-400 transition transform hover:-translate-y-1 shadow-lg"
-              >
-                <img src="/images/mode_practice.svg" alt="Practice Range" className="w-full h-auto object-cover" />
-              </Link>
+                imageSrc="/images/mode_practice.svg"
+                title="Practice Range / Solo Bot Mode"
+                subtitle="⚡ ENERGY RECHARGE / TRAINING MODE"
+                accent="#34D399"
+                badge="SOLO"
+                onSelect={() => setIsFightModalOpen(false)}
+                highlight={
+                  <div className="text-[10.5px] font-black leading-snug text-amber-300 bg-amber-500/10 border border-amber-400/40 rounded-lg px-2 py-1">
+                    ⚡ ENERGY RECHARGE / TRAINING MODE (70% Skill AI Bots • No Micro-USD / Coin Payouts)
+                  </div>
+                }
+              />
             </div>
 
             {/* Ghost Spectator Mode Banner */}

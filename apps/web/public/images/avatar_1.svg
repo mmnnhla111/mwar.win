@@ -1,12 +1,12 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="av1Bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
-      <stop stopColor="#0F172A"/>
-      <stop offset="1" stopColor="#0284C7"/>
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#0284C7"/>
     </linearGradient>
     <linearGradient id="av1Visor" x1="36" y1="52" x2="92" y2="68" gradientUnits="userSpaceOnUse">
-      <stop stopColor="#38BDF8"/>
-      <stop offset="1" stopColor="#06B6D4"/>
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#06B6D4"/>
     </linearGradient>
   </defs>
   <!-- Background Circle -->

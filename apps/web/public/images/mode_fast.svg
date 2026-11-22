@@ -1,27 +1,32 @@
 <svg width="400" height="220" viewBox="0 0 400 220" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bgFast" x1="0" y1="0" x2="400" y2="220" gradientUnits="userSpaceOnUse">
-      <stop stopColor="#1E1B4B"/>
-      <stop offset="0.5" stopColor="#4A044E"/>
-      <stop offset="1" stopColor="#C026D3"/>
+    <linearGradient id="fbg" x1="0" y1="0" x2="400" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B0420"/><stop offset="0.55" stop-color="#4C1D95"/><stop offset="1" stop-color="#C026D3"/>
     </linearGradient>
-    <linearGradient id="accentPurple" x1="0" y1="0" x2="1" y2="1">
-      <stop stopColor="#E879F9"/>
-      <stop offset="1" stopColor="#A855F7"/>
+    <linearGradient id="fbolt" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#FEF08A"/><stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+    <linearGradient id="fshade" x1="0" y1="120" x2="0" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B0420" stop-opacity="0"/><stop offset="1" stop-color="#0B0420" stop-opacity="0.95"/>
     </linearGradient>
   </defs>
-  <rect width="400" height="220" rx="16" fill="url(#bgFast)"/>
-  <!-- Neon Speed Lines -->
-  <path d="M180 20L150 200M240 10L200 210M300 0L250 220M360 10L310 210" stroke="#F472B6" stroke-opacity="0.25" stroke-width="2"/>
-  <!-- Lightning Bolt Energy Core -->
-  <polygon points="320,30 260,110 300,110 270,190 350,95 305,95" fill="#F472B6" stroke="#FDF2F8" stroke-width="2"/>
-  <!-- Content -->
-  <rect x="24" y="24" width="76" height="24" rx="12" fill="#A21CAF"/>
-  <text x="62" y="40" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="900" font-family="system-ui, sans-serif">SPEED RUN</text>
-  <text x="24" y="90" fill="#FFFFFF" font-size="24" font-weight="900" font-family="system-ui, sans-serif">FAST & MINI MODE</text>
-  <text x="24" y="116" fill="#F5D0FE" font-size="13" font-weight="500" font-family="system-ui, sans-serif">Instant respawns, turbo energy tickets & fast loot.</text>
-  <text x="24" y="136" fill="#E879F9" font-size="13" font-weight="700" font-family="system-ui, sans-serif">Energy Cost: 1 EC • Double Daily Quest EXP</text>
-  <!-- CTA Badge -->
-  <rect x="24" y="160" width="120" height="36" rx="8" fill="url(#accentPurple)"/>
-  <text x="84" y="183" text-anchor="middle" fill="#FFFFFF" font-size="13" font-weight="800" font-family="system-ui, sans-serif">BLITZ PLAY</text>
+  <rect width="400" height="220" fill="url(#fbg)"/>
+  <g stroke="#E879F9" stroke-width="3" stroke-linecap="round" opacity="0.75">
+    <path d="M10 40 H150"/><path d="M40 62 H210"/><path d="M0 84 H120"/><path d="M60 106 H230"/><path d="M20 128 H160"/>
+  </g>
+  <g stroke="#A5F3FC" stroke-width="2" stroke-linecap="round" opacity="0.6">
+    <path d="M250 50 H390"/><path d="M280 72 H400"/><path d="M240 140 H380"/>
+  </g>
+  <path d="M222 22 L170 108 H206 L184 170 L252 74 H214 L240 22Z" fill="url(#fbolt)" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="212" cy="96" r="70" fill="#F0ABFC" opacity="0.12"/>
+  <g transform="translate(300 98)">
+    <circle r="26" fill="#1E1B4B" stroke="#22D3EE" stroke-width="3"/>
+    <path d="M0 -16 V0 L12 8" stroke="#22D3EE" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <rect width="400" height="220" fill="url(#fshade)"/>
+  <rect x="16" y="16" width="150" height="24" rx="12" fill="#A855F7"/>
+  <text x="91" y="32.5" fill="#FFFFFF" font-size="11" font-weight="900" text-anchor="middle" font-family="system-ui, sans-serif">TURBO • 5-MIN ROUNDS</text>
+  <text x="20" y="182" fill="#FFFFFF" font-size="24" font-weight="900" font-family="system-ui, sans-serif">FAST &amp; MINI MODE</text>
+  <text x="20" y="204" fill="#F5D0FE" font-size="12" font-weight="600" font-family="system-ui, sans-serif">Instant respawns • turbo energy tickets &amp; quick payouts</text>
+  <rect x="0.75" y="0.75" width="398.5" height="218.5" stroke="#E879F9" stroke-opacity="0.55" stroke-width="1.5"/>
 </svg>
