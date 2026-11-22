@@ -75,7 +75,7 @@ export DEBIAN_FRONTEND=noninteractive
 # --- 1. System Dependencies ---
 echo "[1/7] Installing base system utilities..."
 apt-get update -y
-apt-get install -y curl git build-essential ufw software-properties-common jq unzip
+apt-get install -y curl git build-essential ufw software-properties-common jq unzip tar
 
 # --- 2. Database Services (PostgreSQL 16 & Redis) ---
 if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
@@ -86,19 +86,26 @@ if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
 fi
 
 if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
-  echo "[2/7] Installing PostgreSQL 16 for Audit Log Engine..."
+  echo "[2/7] Configuring PostgreSQL 16 for Audit Log Engine..."
   apt-get install -y postgresql postgresql-contrib
   systemctl enable postgresql
   systemctl restart postgresql
 
-  echo "      Configuring database 'game_audit_logs' & user 'log_writer'..."
-  sudo -u postgres psql -tc "SELECT 1 FROM pg_user WHERE usename = 'log_writer'" | grep -q 1 || \\
-    sudo -u postgres psql -c "CREATE USER log_writer WITH PASSWORD 'local_dev_password_2026';"
-  
-  sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname = 'game_audit_logs'" | grep -q 1 || \\
-    sudo -u postgres psql -c "CREATE DATABASE game_audit_logs OWNER log_writer;"
-  
-  sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE game_audit_logs TO log_writer;"
+  echo "      Configuring database 'game_audit_logs' & user 'log_writer' (idempotent)..."
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='log_writer'" 2>/dev/null | grep -q 1; then
+    sudo -u postgres psql -c "CREATE USER log_writer WITH PASSWORD 'local_dev_password_2026';" || true
+  else
+    sudo -u postgres psql -c "ALTER USER log_writer WITH PASSWORD 'local_dev_password_2026';" || true
+  fi
+
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='game_audit_logs'" 2>/dev/null | grep -q 1; then
+    sudo -u postgres psql -c "CREATE DATABASE game_audit_logs OWNER log_writer;" || true
+  else
+    echo "      Database 'game_audit_logs' already exists."
+    sudo -u postgres psql -c "ALTER DATABASE game_audit_logs OWNER TO log_writer;" || true
+  fi
+
+  sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE game_audit_logs TO log_writer;" || true
 
   echo "      Applying financial logs schema..."
   sudo -u postgres psql -d game_audit_logs -c "
@@ -116,35 +123,82 @@ if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
     );
     CREATE INDEX IF NOT EXISTS idx_logs_user_date ON logs_2026_11(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_logs_action ON logs_2026_11(action_type);
-  "
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO log_writer;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO log_writer;
+  " || true
 fi
 
 # --- 3. Node.js 20 LTS, pnpm & PM2 ---
 echo "[3/7] Setting up Node.js 20 LTS, pnpm, and PM2..."
+export PATH="/usr/local/bin:$PATH"
+
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v)" != v20* ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
+  echo "      Attempting NodeSource repository install (with retry & IPv4)..."
+  NODE_SETUP_OK=0
+  set +e
+  curl -4 -fsSL --retry 5 --retry-delay 3 https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null
+  if [ $? -eq 0 ]; then
+    apt-get install -y nodejs 2>/dev/null
+    if command -v node >/dev/null 2>&1 && [[ "$(node -v)" == v20* ]]; then
+      NODE_SETUP_OK=1
+    fi
+  fi
+  set -e
+
+  if [ "\${NODE_SETUP_OK}" -eq 0 ]; then
+    echo "⚠️ NodeSource setup failed or reset connection. Falling back to official nodejs.org binary tarball..."
+    set +e
+    TAR_NAME=$(curl -4 -fsSL --retry 5 --retry-delay 3 https://nodejs.org/dist/latest-v20.x/SHASUMS256.txt 2>/dev/null | grep 'linux-x64\.tar\.gz$' | head -n 1 | awk '{print $2}')
+    if [ -z "\${TAR_NAME}" ]; then
+      TAR_NAME="node-v20.20.2-linux-x64.tar.gz"
+    fi
+    echo "      Downloading https://nodejs.org/dist/latest-v20.x/\${TAR_NAME}..."
+    curl -4 -fsSL --retry 5 --retry-delay 3 "https://nodejs.org/dist/latest-v20.x/\${TAR_NAME}" -o /tmp/node-v20.tar.gz
+    if [ -f /tmp/node-v20.tar.gz ]; then
+      echo "      Extracting Node.js binary tarball to /usr/local..."
+      tar -xzf /tmp/node-v20.tar.gz -C /usr/local --strip-components=1
+      rm -f /tmp/node-v20.tar.gz
+    fi
+    set -e
+  fi
 fi
 
-npm install -g pnpm pm2
+if ! command -v node >/dev/null 2>&1; then
+  echo "❌ Error: Failed to install Node.js 20. Please check internet connection." >&2
+  exit 1
+fi
+
+echo "      Node.js version: $(node -v), npm version: $(npm -v)"
+echo "      Installing pnpm & pm2 globally..."
+npm install -g pnpm pm2 || true
+if ! command -v pnpm >/dev/null 2>&1; then
+  corepack enable 2>/dev/null || npm install -g pnpm
+fi
 
 # --- 4. Cloudflare Tunnel Client (cloudflared) ---
 echo "[4/7] Ensuring Cloudflare Tunnel (cloudflared) is installed..."
 if ! command -v cloudflared >/dev/null 2>&1; then
-  curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-  dpkg -i /tmp/cloudflared.deb || apt-get install -f -y
-  rm -f /tmp/cloudflared.deb
+  curl -4 -fsSL --retry 5 --retry-delay 3 -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb || true
+  if [ -f /tmp/cloudflared.deb ]; then
+    dpkg -i /tmp/cloudflared.deb || apt-get install -f -y
+    rm -f /tmp/cloudflared.deb
+  fi
 fi
 
 # --- 5. Application Codebase & Build ---
 echo "[5/7] Deploying application codebase to /opt/mwar-node..."
-mkdir -p /opt/mwar-node
-if [ ! -d "/opt/mwar-node/.git" ]; then
-  git clone https://github.com/mmnnhla111/mwar.win.git /opt/mwar-node
-else
+if [ -d "/opt/mwar-node/.git" ]; then
+  echo "      Existing repository detected at /opt/mwar-node. Syncing with origin/main..."
   cd /opt/mwar-node
-  git fetch origin main
+  git remote set-url origin https://github.com/mmnnhla111/mwar.win.git || true
+  git fetch origin main --prune
   git reset --hard origin/main
+  git clean -fd
+else
+  echo "      Fresh clone into /opt/mwar-node..."
+  rm -rf /opt/mwar-node
+  git clone https://github.com/mmnnhla111/mwar.win.git /opt/mwar-node
+  cd /opt/mwar-node
 fi
 
 cd /opt/mwar-node
@@ -229,11 +283,12 @@ pm2 start /opt/mwar-node/heartbeat.sh --name "mwar-heartbeat" --interpreter bash
 
 # Enable auto-start on server boot / power cycle
 pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
-pm2 save
+pm2 save || true
 
 # Optional Cloudflare Tunnel auto-install
 ${tunnelToken ? `
 echo "🔒 Configuring Cloudflare Tunnel service with provided token..."
+cloudflared service uninstall 2>/dev/null || true
 cloudflared service install "${tunnelToken}" || true
 systemctl enable cloudflared || true
 systemctl restart cloudflared || true
