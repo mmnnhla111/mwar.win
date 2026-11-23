@@ -91,9 +91,20 @@ reward or ad-revenue value **V**:
 | 4.2 | Recharge **1 ticket per hour** up to the cap | [x] | `routes/auth.ts /me` (`ENERGY_RECHARGE_SECONDS = 3600`) |
 | 4.3 | **1 EC is spent** to enter a paid (cash) arena | [x] *was `[ ]`* (EC was never consumed anywhere) | `POST /api/game/enter`: atomic `energy_tickets >= 1` decrement, `arena_entries` row, `EC_CONSUME` log |
 | 4.4 | When a full (6/6) wallet spends a ticket, the hourly recharge clock starts at that moment | [x] *was `[ ]`* | `CASE WHEN energy_tickets >= max …` in `/enter` |
-| 4.5 | Practice / bot mode pays **zero cash** and only recharges EC (+25 % per 10-kill round, 4 rounds = 1 EC) | [x] | Bots run in the browser and nothing is sent to the payout API; `routes/practice.ts` |
-| 4.6 | Practice EC rate limit | [x] *was `[ ]`* (1 claim per 15 s let a script farm 1 EC a minute) | `PRACTICE_MIN_ROUND_SECONDS = 60`; the update is conditional on `last_practice_claim` (no parallel double-claim) |
+| 4.5 | Practice / bot mode pays **zero cash and zero EC** (owner addendum 2026-11-23): bot kills, bot-mode chests → 0 EC, 0 Micro-USD | [x] | Web client no longer claims; `POST /api/practice/claim-ec` returns **410 Gone** |
+| 4.6 | EC recharge comes **from ads only**: passive banner (Practice / Solo Bot + Ghost Spectator) reports 1 impression per 20 s of visible tab → EC % in proportion to the banner's value vs a 30 s video in that country; rewarded video 15 s = +50 %, 30 s = +100 % (1 EC) | [x] | `POST /api/ads/video/start` + `POST /api/ads/simulate-view`; `utils/ad-value.ts` `creditEcProgress` (10 000 bp = 1 EC, `users.energy_progress_bp`, migration 0007); `AD_EC_RECHARGE` log |
+| 4.6a | Ad EC anti-abuse | [x] | Banner ≥ 18 s server gap per user; videos need a server-side session and the full 15/30 s before credit, credited once; 30 EC videos / user / UTC day |
 | 4.7 | Only paid seats earn money in the arena | [x] *was `[ ]`* | The game server pays only sessions that joined with a valid signed entry token |
+
+### 4b. Ad value engine (every ad event)
+
+| Tier | Value used | Where |
+|---|---|---|
+| P1 | Exact network payout (`reward_usd` / `payout`, USD) → micro-USD | `resolveAdValue` (`utils/ad-value.ts`), postbacks pass `?reward_usd=` / `?payout=` and `?format=` |
+| P2 | Yesterday's average network payout for the same `country_code` + `ad_format` | `ad_impressions` (`value_source='network'`) |
+| P3 | Statistical country eCPM table: `round(ecpm_usd / 1000 × 1 000 000)` | `@mwar/shared` `getStatisticalAdMicroUsd` (Agy, `docs/AD_ECPM_BY_COUNTRY.md`); country = `request.cf.country` → `GLOBAL` |
+
+Every ad event is logged in `ad_impressions` (purpose `ec_recharge` or `monetized`, value and value source). A "Monetized Ad Postback Test" (`purpose: 'monetized'`) runs the full 75 / 15 (5-4-3-2-1) / 5 / 5 split and is limited to admin / auditor accounts or local `wrangler dev`, because it mints wallet money.
 
 ## 5. Combat, chests and the game server (MSS §5)
 
@@ -159,7 +170,7 @@ reward or ad-revenue value **V**:
 |---|---|---|---|
 | 9.1 | Monthly tables **`logs_YYYY_MM`** | [x] *was `[ ]`* (hard-coded `logs_2026_11`) | `log-receiver tableFor(created_at)` |
 | 9.2 | Audit rows are **immutable** (append-only) | [x] *was `[ ]`* | PostgreSQL triggers reject `UPDATE`, `DELETE` and `TRUNCATE`; `ON CONFLICT (transaction_id) DO NOTHING` makes delivery idempotent |
-| 9.3 | Action types include GAME_KILL, CHEST_OPEN, AD_WATCH, MLM_COMMISSION, MARKET_BUY (+ CASHOUT_*, QUEST_REWARD, MARKET_SELL, AFK_FORFEIT, EC_CONSUME, MLM_COMMISSION_PENDING, MLM_FORFEIT, PRACTICE_EC_RECHARGE, BOUNTY_ACCRUE, BOUNTY_CLAIM, BOUNTY_PAYOUT, PLATFORM_FEE) | [x] | `FinancialActionType` |
+| 9.3 | Action types include GAME_KILL, CHEST_OPEN, AD_WATCH, MLM_COMMISSION, MARKET_BUY (+ CASHOUT_*, QUEST_REWARD, MARKET_SELL, AFK_FORFEIT, EC_CONSUME, MLM_COMMISSION_PENDING, MLM_FORFEIT, PRACTICE_EC_RECHARGE, AD_EC_RECHARGE, BOUNTY_ACCRUE, BOUNTY_CLAIM, BOUNTY_PAYOUT, PLATFORM_FEE) | [x] | `FinancialActionType` |
 | 9.4 | `balance_after_micro_usd` holds the real balance | [x] *was `[ ]`* (mostly `0`) | `walletBalance()` after each wallet change |
 | 9.5 | D1 is written first, then the log goes to the **Cloudflare Queue** | [x] | `logFinancialTransaction()` |
 | 9.6 | The queue holds logs while the Mini PC is offline (up to **14 days**) and catches up FIFO | [x] *was `[ ]`* (there was no consumer binding, and messages were acked even when delivery failed) | `[[queues.consumers]]`; `ack()` only on HTTP 2xx, `retry()` with back-off; the receiver answers 503 to queue deliveries while PostgreSQL is down |

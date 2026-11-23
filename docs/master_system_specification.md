@@ -257,6 +257,14 @@ $$\text{Calculated Balance} = \sum \text{Earnings (Game, Ads, MLM)} - \sum \text
 
 *(ตัวอย่าง: ถ้ามีสายงานเพียงชั้นที่ 1–2 ส่วนของชั้นที่ 3–5 รวม $6\%$ = 600,000 Micro-USD จะเข้า Platform ทำให้ Platform ได้รับ $11\%$ = 1,100,000 Micro-USD)*
 
+### 7.1 การเติม Energy Ticket (EC) จากโฆษณาเท่านั้น — อัปเดต 2026-11-23
+
+* การฆ่าบอทในโหมด Practice / Solo Bot ได้ **0 EC และ 0 Micro-USD** (ยกเลิก `/api/practice/claim-ec`)
+* **แบนเนอร์** ด้านล่าง (Practice / Solo Bot และ Ghost Spectator): ทุก 20 วินาทีที่แท็บมองเห็นอยู่ นับ 1 impression และเพิ่ม EC % ตามมูลค่าแบนเนอร์เทียบกับวิดีโอ 30 วินาทีของประเทศเดียวกัน (100% = +1 EC)
+* **วิดีโอรางวัล**: 15 วินาที = +50% (ดู 2 ครั้ง = 1 EC), 30 วินาที = +100% (1 EC) — ปุ่มอยู่บน HUD Practice/Spectator และหน้าเลือก Arena เมื่อ EC = 0
+* **มูลค่าโฆษณา 3 ชั้น**: P1 ยอดจ่ายจริงจากเครือข่าย → P2 ค่าเฉลี่ยของเมื่อวาน (ประเทศ + รูปแบบโฆษณา) → P3 ตาราง eCPM ตามประเทศ (`@mwar/shared`, `docs/AD_ECPM_BY_COUNTRY.md`)
+* ทุก ad event ถูกบันทึกในตาราง `ad_impressions` (migration 0007) และ EC ที่เพิ่มจะถูกบันทึกเป็น `AD_EC_RECHARGE` ใน audit log
+
 ---
 
 ## 8. ระบบสำรองข้อมูลและจัดการคิว (Disaster Recovery & Queuing System)

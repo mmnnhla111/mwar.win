@@ -30,6 +30,7 @@ import {
 } from '../components/icons';
 import { preloadGameAssets } from '../lib/cache';
 import ArenaModeCard from '../components/ArenaModeCard';
+import { RechargeVideoButtons, RewardedVideoModal } from '../game/ui/AdEngine';
 import type { TodayQuestsResponse, DailyMlmSummary } from '@mwar/shared';
 
 const RANK_BADGE_MAP: Record<string, string> = {
@@ -42,6 +43,7 @@ const RANK_BADGE_MAP: Record<string, string> = {
 
 export default function LobbyPage() {
   const [user, setUser] = useState<any>(null);
+  const [arenaVideoAd, setArenaVideoAd] = useState<null | 'video_15s' | 'video_30s'>(null);
   const [wallet, setWallet] = useState<any>(null);
   const [networkStats, setNetworkStats] = useState<any>(null);
   const [questData, setQuestData] = useState<TodayQuestsResponse | null>(null);
@@ -616,6 +618,19 @@ export default function LobbyPage() {
               </button>
             </div>
 
+            {/* Out of EC: recharge with rewarded video ads (15 s = +50 %, 30 s = +100 % = 1 EC) */}
+            {user && (user.energy_tickets ?? 0) === 0 && (
+              <div className="bg-amber-500/10 border border-amber-400/50 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-black text-amber-300">⚡ Out of Energy Tickets (EC 0/{user.max_energy_tickets ?? 6})</div>
+                  <div className="text-[11px] text-slate-400">
+                    Paid arenas need 1 EC. Recharge {Math.floor(user.energy_progress_pct ?? 0)}% • watch a video ad, or play Practice / Spectator with the banner on.
+                  </div>
+                </div>
+                <RechargeVideoButtons onPick={setArenaVideoAd} />
+              </div>
+            )}
+
             {/* Arena Mode Grid (uniform 400x220 artwork + automatic SVG fallback) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
               <ArenaModeCard
@@ -655,7 +670,7 @@ export default function LobbyPage() {
                 onSelect={() => setIsFightModalOpen(false)}
                 highlight={
                   <div className="text-[10.5px] font-black leading-snug text-amber-300 bg-amber-500/10 border border-amber-400/40 rounded-lg px-2 py-1">
-                    ⚡ ENERGY RECHARGE / TRAINING MODE (70% Skill AI Bots • No Micro-USD / Coin Payouts)
+                    ⚡ TRAINING MODE (free-for-all AI bots • kills give 0 EC / 0 Micro-USD • recharge EC with ads)
                   </div>
                 }
               />
@@ -682,6 +697,18 @@ export default function LobbyPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {arenaVideoAd && (
+        <RewardedVideoModal
+          format={arenaVideoAd}
+          onClose={() => setArenaVideoAd(null)}
+          onResult={(r) =>
+            setUser((u: any) =>
+              u ? { ...u, energy_tickets: r.energy_tickets ?? u.energy_tickets, energy_progress_pct: r.energy_progress_pct ?? u.energy_progress_pct } : u
+            )
+          }
+        />
       )}
 
       {/* 4. Story / Reels Preview Modal */}

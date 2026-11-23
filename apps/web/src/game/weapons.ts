@@ -124,25 +124,25 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   uzi: {
     id: 'uzi',
     name: 'Uzi',
-    blurb: 'Bullet hose SMG. Fast movement, close range.',
+    blurb: 'Fast-firing SMG with M16-like accuracy and low recoil.',
     slot: 'primary',
     damage: 17,
     headMult: 1.6,
-    fireInterval: 0.05,
+    fireInterval: 0.058,
     mode: 'auto',
-    magSize: 32,
-    reserve: 128,
-    hipSpread: 0.045,
-    adsSpread: 0.024,
+    magSize: 40,
+    reserve: 160,
+    hipSpread: 0.024,
+    adsSpread: 0.003,
     moveSpread: 0.012,
-    recoilPitch: 0.008,
-    recoilYaw: 0.009,
-    recoilRecover: 10,
-    adsFov: 62,
+    recoilPitch: 0.0095,
+    recoilYaw: 0.0035,
+    recoilRecover: 9,
+    adsFov: 52,
     reloadTime: 1.8,
     moveMult: 1.1,
-    range: 18,
-    stats: { damage: 0.35, rate: 1, control: 0.55, mobility: 1 },
+    range: 24,
+    stats: { damage: 0.35, rate: 1, control: 0.85, mobility: 1 },
     tag: 'UZI',
   },
   pistol: {
@@ -257,7 +257,7 @@ function redDot(parent: THREE.Object3D, metal: THREE.Material, y: number, z: num
   parent.add(lens);
   const dotMat = new THREE.SpriteMaterial({ color: 0xff2a2a, depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
   const dot = new THREE.Sprite(dotMat);
-  dot.scale.setScalar(0.0045);
+  dot.scale.setScalar(0.0027); // ~40 % smaller ADS dot
   dot.position.set(0, y, z - 0.035);
   dot.renderOrder = 10;
   parent.add(dot);

@@ -15,6 +15,7 @@ import { animateBountyChest, createBountyChest } from '../../game/assets/props';
 import { Viewmodel } from '../../game/viewmodel';
 import { CombatEffects } from '../../game/effects';
 import { BotManager } from '../../game/ai/bots';
+import { animateMedkit, createMedkitModel, MEDKIT_CAST_SECONDS, MEDKIT_DROP_CHANCE, MEDKIT_TTL_MS, rollMedkitHeal } from '../../game/assets/medkit';
 import {
   animateCharacter,
   CharacterId,
@@ -42,6 +43,7 @@ import {
 import { BrowserGuard, keyboardLockSupported } from '../../game/input/browserGuard';
 import RadialPropMenu, { propIndexAt, RADIAL } from '../../game/ui/RadialPropMenu';
 import LoadoutScreen from '../../game/ui/LoadoutScreen';
+import { RechargeVideoButtons, RewardedVideoModal, SimulatedAdBanner, type AdEcResult } from '../../game/ui/AdEngine';
 import { BLIP_LIFETIME_MS, drawMinimap, RadarBlip } from '../../game/ui/minimap';
 import {
   BulletIcon,
@@ -92,9 +94,6 @@ const LOADOUT_STORAGE_KEY = 'mwar_fps_loadout_v2';
 const FALL_SAFE_SPEED = 13; // m/s landing speed before fall damage (~3.8 m drop)
 const BOT_COUNT = 10; // 8–12 bots
 const BOT_ACCURACY = 0.7; // 70 % skill
-const PRACTICE_ROUND_GOAL = 10; // eliminations per practice round
-const EC_PROGRESS_PER_ROUND = 25; // % of one Energy Ticket recharged per completed round
-const EC_STORAGE_KEY = 'mwar_practice_ec_recharge_progress';
 
 type ArenaMode = 'mini_30' | 'standard_100' | 'fast_mini' | 'practice' | 'spectator';
 
@@ -147,6 +146,11 @@ interface HudState {
   crouching: boolean;
   stance: Stance;
   keyboardLocked: boolean;
+  weaponId: WeaponId | null;
+  medkits: number;
+  /** Medkit cast progress 0..1, or -1 when not casting. */
+  medkitCast: number;
+  leaderboard: { name: string; kills: number }[];
 }
 
 type Slot = 'primary' | 'pistol' | 'grenade';
@@ -198,6 +202,10 @@ export default function GamePage() {
     alive: true,
     respawnIn: 0,
     leanDir: 0,
+    weaponId: null,
+    medkits: 0,
+    medkitCast: -1,
+    leaderboard: [],
     crouching: false,
     stance: 'stand',
     keyboardLocked: false,
@@ -215,6 +223,7 @@ export default function GamePage() {
   const [damageIndicators, setDamageIndicators] = useState<DamageIndicator[]>([]);
   const [hitMarker, setHitMarker] = useState<{ at: number; kill: boolean; head: boolean } | null>(null);
   const [roundBanner, setRoundBanner] = useState<string | null>(null);
+  const [videoAd, setVideoAd] = useState<null | 'video_15s' | 'video_30s'>(null);
   const [kbLockSupported, setKbLockSupported] = useState(false);
 
   // Loadout / deploy, prop wheel, fullscreen, scope, command bar
@@ -268,6 +277,7 @@ export default function GamePage() {
   const equipRef = useRef<(slot: Slot) => void>(() => {});
   const throwWeaponRef = useRef<() => void>(() => {});
   const pickupRef = useRef<() => void>(() => {});
+  const medkitRef = useRef<() => void>(() => {});
   const quickGrenadeRef = useRef<() => void>(() => {});
   const commandRef = useRef<(cmd: string) => void>(() => {});
   const commandOpenRef = useRef(false);
@@ -662,6 +672,7 @@ export default function GamePage() {
       isProp: false,
       roundKills: 0,
       roundsCompleted: 0,
+      medkits: 0,
       speed: 0,
       orbitPitch: 0.35,
       propYaw: 0,
@@ -717,12 +728,6 @@ export default function GamePage() {
       else if (inv.grenades > 0) equip('grenade');
     };
 
-    let ecProgress = 0;
-    try {
-      ecProgress = Number(localStorage.getItem(EC_STORAGE_KEY) || '0') || 0;
-    } catch {
-      ecProgress = 0;
-    }
 
     const keys: Record<string, boolean> = {};
 
@@ -742,60 +747,9 @@ export default function GamePage() {
       prone: false,
     };
 
-    let roundStartTime = Date.now();
-    const awardPracticeProgress = (points: number, reason: string) => {
-      // ENERGY RECHARGE RULE: no Micro-USD / coins in solo bot mode — only EC recharge progress.
-      player.roundKills += points;
-      if (player.roundKills >= PRACTICE_ROUND_GOAL) {
-        player.roundKills -= PRACTICE_ROUND_GOAL;
-        player.roundsCompleted += 1;
-        const roundDurationSeconds = Math.max(15, Math.round((Date.now() - roundStartTime) / 1000));
-        roundStartTime = Date.now();
-
-        ecProgress += EC_PROGRESS_PER_ROUND;
-        let msg = `⚡ Practice round complete! +${EC_PROGRESS_PER_ROUND}% Energy Ticket recharge`;
-        if (ecProgress >= 100) {
-          ecProgress -= 100;
-          msg = '⚡ +1 ENERGY TICKET (EC) recharged from practice!';
-        }
-        try {
-          localStorage.setItem(EC_STORAGE_KEY, String(ecProgress));
-        } catch {
-          /* storage unavailable */
-        }
-        soundFX.playQuestComplete();
-        setRoundBanner(msg);
-        setTimeout(() => setRoundBanner(null), 3500);
-        feed(msg);
-
-        // Sync EC progress and Energy Tickets to Cloudflare D1 & PostgreSQL Audit Logs
-        apiFetch('/api/practice/claim-ec', {
-          method: 'POST',
-          body: JSON.stringify({
-            roundKills: 10,
-            roundDurationSeconds,
-          }),
-        })
-          .then((res: any) => {
-            if (res && res.success) {
-              ecProgress = res.energy_progress_pct;
-              setHudStats((prev) => ({
-                ...prev,
-                ecProgress: res.energy_progress_pct,
-                energyTickets: res.energy_tickets,
-                maxEnergyTickets: res.max_energy_tickets,
-              }));
-              if (res.ticketAwarded) {
-                feed('⚡ +1 ENERGY TICKET (EC) credited to your account!');
-              }
-            }
-          })
-          .catch((err) => {
-            console.warn('Practice EC claim failed (guest mode or offline):', err.message);
-          });
-      } else if (reason) {
-        feed(reason);
-      }
+    // Bot kills / practice chests give 0 EC and 0 Micro-USD. EC recharges from ads only.
+    const awardPracticeProgress = (_points: number, reason: string) => {
+      if (reason) feed(reason);
     };
 
     // ---- World weapon drops (5-minute despawn, glow + name tag) ----------------------------
@@ -942,6 +896,92 @@ export default function GamePage() {
       syncViewmodelWeapon();
     };
 
+    // ---- Medkits: 20 % drop on any death, 10-minute despawn, walk-over / F pickup ------------
+    const worldMedkits = new Map<string, { group: THREE.Group; expiresAt: number }>();
+    let medkitSeq = 0;
+    const pendingMedkitPickups = new Set<string>();
+    const addMedkit = (id: string, x: number, y: number, z: number, expiresAt: number) => {
+      if (worldMedkits.has(id)) return;
+      const g = createMedkitModel();
+      g.position.set(x, world.groundHeightAt(x, z, 0.3, y + 0.5), z);
+      scene.add(g);
+      worldMedkits.set(id, { group: g, expiresAt });
+    };
+    const removeMedkit = (id: string) => {
+      const m = worldMedkits.get(id);
+      if (!m) return;
+      scene.remove(m.group);
+      disposeObject(m.group);
+      worldMedkits.delete(id);
+      pendingMedkitPickups.delete(id);
+    };
+    /** Solo / practice drop (multiplayer drops are server-authoritative in ShootingRoom). */
+    const maybeDropMedkit = (pos: THREE.Vector3) => {
+      if (!botMode || Math.random() >= MEDKIT_DROP_CHANCE) return;
+      addMedkit(`local_medkit_${medkitSeq++}`, pos.x + 0.5, pos.y, pos.z - 0.3, Date.now() + MEDKIT_TTL_MS);
+    };
+    const nearestMedkit = (maxDist: number) => {
+      let best: string | null = null;
+      let bd = maxDist;
+      worldMedkits.forEach((m, id) => {
+        const d = Math.hypot(m.group.position.x - body.x, m.group.position.z - body.z);
+        if (d < bd && Math.abs(m.group.position.y - body.y) < 1.4) {
+          bd = d;
+          best = id;
+        }
+      });
+      return best as string | null;
+    };
+    const pickupMedkit = (id: string) => {
+      if (!player.alive || player.isProp || isGhostSpectator) return;
+      if (botMode || !currentRoom) {
+        player.medkits += 1;
+        removeMedkit(id);
+        soundFX.playClink(0.12);
+        feed(`✚ Picked up a medkit (${player.medkits}) — press 4 to heal`);
+      } else if (!pendingMedkitPickups.has(id)) {
+        pendingMedkitPickups.add(id);
+        currentRoom.send('player_pickup_medkit', { medkitId: id });
+      }
+    };
+    let medkitCastStart = -1;
+    const cancelMedkit = (why?: string) => {
+      if (medkitCastStart < 0) return;
+      medkitCastStart = -1;
+      if (currentRoom && !botMode) currentRoom.send('player_medkit_cancel', {});
+      if (why) feed(why);
+    };
+    const startMedkit = () => {
+      if (medkitCastStart >= 0) return;
+      if (!player.alive || player.isProp || isGhostSpectator || !deployedRef.current) return;
+      if (player.medkits <= 0) {
+        feed('✚ No medkits — enemies drop them 20 % of the time');
+        return;
+      }
+      if (player.hp >= 100) {
+        feed('✚ Already at full health');
+        return;
+      }
+      medkitCastStart = performance.now() / 1000;
+      firingRef.current = false;
+      if (currentRoom && !botMode) currentRoom.send('player_medkit_start', {});
+      feed('✚ Healing… stay still for 4 s');
+    };
+    const completeMedkit = () => {
+      medkitCastStart = -1;
+      if (currentRoom && !botMode) {
+        // Server validates the 4 s stationary cast, rolls 40–80 HP and syncs health / count
+        currentRoom.send('player_medkit_complete', {});
+        return;
+      }
+      const heal = rollMedkitHeal();
+      player.medkits = Math.max(0, player.medkits - 1);
+      player.hp = Math.min(100, player.hp + heal);
+      soundFX.playQuestComplete();
+      feed(`✚ Healed +${heal} HP (${player.medkits} medkit${player.medkits === 1 ? '' : 's'} left)`);
+    };
+    medkitRef.current = startMedkit;
+
     // ---- Death / respawn rules ---------------------------------------------------------------
     const chestMeshes = new Map<string, THREE.Group>();
     let chestCounter = 0;
@@ -978,11 +1018,14 @@ export default function GamePage() {
       firingRef.current = false;
       if (player.isProp) setProp(null);
       closePropMenu();
+      cancelMedkit();
+      maybeDropMedkit(player.deathPos);
       // Drop the primary where we fell (bots can't use it, but you can grab it back)
       if (inv.primary) dropWeapon(inv.primary, player.deathPos.clone().add(new THREE.Vector3(0.4, 0, 0.2)));
       inv.primary = null;
       if (cause.kind === 'bot') {
-        feed(`☠️ You were eliminated by BOT ${cause.name}`);
+        bots?.creditKill(cause.name);
+        feed(`☠️ You were eliminated by ${cause.name}`);
         return;
       }
       const label = cause.reason === 'grenade' ? 'your own grenade' : cause.reason === 'fall' ? 'a fall' : '/suicide';
@@ -1002,6 +1045,7 @@ export default function GamePage() {
       firingRef.current = false;
       if (player.isProp) setProp(null, false);
       closePropMenu();
+      medkitCastStart = -1;
       stanceRef.current = 'stand';
       inv.primary = null;
       setIsAdsActive(false);
@@ -1050,6 +1094,12 @@ export default function GamePage() {
       botMode = true;
       bots = new BotManager(scene, world, layout.nav, layout.posts, effects, {
         onPlayerHit,
+        onBotKilledByBot: (victimId, killerName) => {
+          if (!bots) return;
+          const v = bots.botById(victimId);
+          maybeDropMedkit(new THREE.Vector3(v.body.x, v.body.y, v.body.z));
+          feed(`☠️ ${killerName} eliminated ${v.name}`);
+        },
         onShot: (from) => {
           soundFX.playEnemyShot(from.distanceTo(camera.position));
           addBlip(from.x, from.z);
@@ -1057,17 +1107,19 @@ export default function GamePage() {
       }, { count: BOT_COUNT, accuracy: BOT_ACCURACY, playerHalf: PLAY_HALF, spawnPoints: layout.spawnPoints });
       setConnectionStatus(reason === 'practice' ? 'solo_bots' : 'offline_practice');
       feed(`🤖 ${BOT_COUNT} AI bots deployed (70% skill)`);
-      feed('⚡ ENERGY RECHARGE MODE • No Micro-USD / Coin payouts');
+      feed('⚔️ FREE-FOR-ALL • bots fight each other too • 0 EC / 0 Micro-USD per kill');
     };
 
     const onBotKilled = (botId: number, how: string) => {
       if (!bots) return;
       const bot = bots.botById(botId);
       player.kills += 1;
+      bots.creditKill('You');
+      maybeDropMedkit(new THREE.Vector3(bot.body.x, bot.body.y, bot.body.z));
       // Killed opponents drop their primary (glowing pickup, 5-minute despawn). No chest.
       const def = WEAPONS[bot.weapon];
       dropWeapon({ id: bot.weapon, mag: def.magSize, reserve: def.magSize }, new THREE.Vector3(bot.body.x, bot.body.y, bot.body.z));
-      awardPracticeProgress(1, `🎯 ${how}Eliminated BOT ${bot.name} (+EC progress • no coins)`);
+      awardPracticeProgress(1, `🎯 ${how}Eliminated ${bot.name}`);
     };
 
     // ---- Colyseus multiplayer ---------------------------------------------------------------
@@ -1203,6 +1255,7 @@ export default function GamePage() {
           p.onChange(() => {
             if (key === roomInstance.sessionId) {
               player.hp = p.health;
+              if (typeof p.medkits === 'number') player.medkits = p.medkits;
               // Killed on the server (another player / grenade): enter the clean 3 s death state
               if (p.isGhost && player.alive && !isGhostSpectator) serverDeath();
               setHudStats((prev) => ({
@@ -1249,6 +1302,8 @@ export default function GamePage() {
         state.chests.onRemove((_c: any, key: string) => removeChest(key));
 
         if (state.droppedWeapons) {
+          state.medkits?.onAdd?.((kit: any, key: string) => addMedkit(key, kit.x, kit.y, kit.z, Number(kit.expiresAt) || Date.now() + MEDKIT_TTL_MS));
+          state.medkits?.onRemove?.((_kit: any, key: string) => removeMedkit(key));
           state.droppedWeapons.onAdd((dw: any, key: string) => {
             const exists = worldWeapons.some((w) => String(w.uid) === key || String(w.uid) === dw.id);
             if (!exists && (dw.magAmmo > 0 || dw.reserveAmmo > 0)) {
@@ -1274,6 +1329,24 @@ export default function GamePage() {
             scene.add(w.group);
             worldWeapons.push(w);
           }
+        });
+        roomInstance.onMessage('medkit_spawned', (data: any) => {
+          if (typeof data?.medkitId === 'string') addMedkit(data.medkitId, data.x, data.y, data.z, Number(data.expiresAt) || Date.now() + MEDKIT_TTL_MS);
+        });
+        roomInstance.onMessage('medkit_expired', (data: any) => removeMedkit(String(data?.medkitId)));
+        roomInstance.onMessage('medkit_picked_up', (data: any) => {
+          removeMedkit(String(data?.medkitId));
+          if (data?.sessionId === roomInstance.sessionId) {
+            if (typeof data.count === 'number') player.medkits = data.count;
+            soundFX.playClink(0.12);
+            feed(`✚ Picked up a medkit (${player.medkits}) — press 4 to heal`);
+          }
+        });
+        roomInstance.onMessage('medkit_used', (data: any) => {
+          if (typeof data?.health === 'number') player.hp = data.health;
+          if (typeof data?.count === 'number') player.medkits = data.count;
+          soundFX.playQuestComplete();
+          feed(`✚ Healed +${data?.heal ?? 0} HP`);
         });
         roomInstance.onMessage('weapon_picked_up', (data: any) => {
           const w = worldWeapons.find((x) => String(x.uid) === data.dropId);
@@ -1630,7 +1703,7 @@ export default function GamePage() {
             soundFX.playChestPickup();
             player.chests += 1;
             removeChest(foundId);
-            awardPracticeProgress(1, '📦 Death-drop Bounty Chest opened (+EC progress • no coins)');
+            awardPracticeProgress(1, '📦 Death-drop Bounty Chest opened (practice • no coins / EC)');
           }
         }
       } else if (wallHit) {
@@ -1704,6 +1777,9 @@ export default function GamePage() {
         command: (c: string) => commandRef.current(c),
         fire: (on: boolean) => (firingRef.current = on),
         ads: (on: boolean) => setIsAdsActive(on),
+        medkits: worldMedkits,
+        dropMedkitHere: () => addMedkit(`dbg_${Date.now()}`, body.x + 0.3, body.y, body.z, Date.now() + MEDKIT_TTL_MS),
+        startMedkit,
       };
     }
 
@@ -1721,7 +1797,9 @@ export default function GamePage() {
       if (e.code === 'Escape' && propMenuOpenRef.current) closePropMenu();
       if (e.code === 'KeyF' && !e.repeat) {
         // F = pick up a nearby weapon (falls back to fire when nothing is near)
-        if (nearestWeapon(2.0) && !player.isProp) pickupRef.current();
+        const kitId = !player.isProp ? nearestMedkit(2.0) : null;
+        if (kitId) pickupMedkit(kitId);
+        else if (nearestWeapon(2.0) && !player.isProp) pickupRef.current();
         else firingRef.current = true;
       }
       if ((e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === 'KeyZ') && !e.repeat) cycleStance();
@@ -1731,6 +1809,7 @@ export default function GamePage() {
       if (e.code === 'Digit1') equip('primary');
       if (e.code === 'Digit2') equip('pistol');
       if (e.code === 'Digit3') equip('grenade');
+      if (e.code === 'Digit4' && !e.repeat) startMedkit();
       if (e.code === 'KeyR') startReload();
       if ((e.code === 'Enter' || e.code === 'Slash') && !e.repeat) {
         e.preventDefault();
@@ -1943,6 +2022,13 @@ export default function GamePage() {
       forward.set(-Math.sin(look.yaw), 0, -Math.cos(look.yaw));
       right.set(Math.cos(look.yaw), 0, -Math.sin(look.yaw));
 
+      // Medkit cast: 4 s stationary; any movement / jump / shooting cancels without consuming
+      if (medkitCastStart >= 0) {
+        if (!player.alive) medkitCastStart = -1;
+        else if (Math.hypot(mx, mz) > 0.05 || keys.Space || firingRef.current) cancelMedkit('✚ Healing cancelled (you moved) — medkit kept');
+        else if (tSec - medkitCastStart >= MEDKIT_CAST_SECONDS) completeMedkit();
+      }
+
       if (isGhostSpectator) {
         // Free flight, bounded to the arena
         const fly = 12;
@@ -1998,9 +2084,8 @@ export default function GamePage() {
           respawnRequested = true;
           currentRoom.send('player_respawn', {});
         }
-      } else if (botMode && player.hp < 100 && tSec - player.lastDamageAt > 6) {
-        player.hp = Math.min(100, player.hp + 10 * dt);
       }
+      // No passive HP regeneration in any mode — heal with medkits (slot 4)
 
       // --- Eye height (crouch smoothing + stair step smoothing)
       player.eyeHeight = THREE.MathUtils.damp(player.eyeHeight, !player.alive ? 0.4 : stance === 'prone' ? PRONE_EYE : stance === 'crouch' ? CROUCH_EYE : STAND_EYE, 8, dt);
@@ -2196,6 +2281,17 @@ export default function GamePage() {
       updateGrenades(dt);
       updateWorldWeapons(dt, tSec);
 
+      // Medkits: despawn after 10 min, bob / glow, walk-over pickup
+      const nowEpoch = Date.now();
+      worldMedkits.forEach((m, id) => {
+        if (nowEpoch >= m.expiresAt) removeMedkit(id);
+        else animateMedkit(m.group, tSec);
+      });
+      if (player.alive && !player.isProp && active && !isGhostSpectator) {
+        const kitId = nearestMedkit(1.1);
+        if (kitId) pickupMedkit(kitId);
+      }
+
       // Walk-over auto pickup when the matching slot is empty
       let pickupPrompt: string | null = null;
       if (player.alive && !player.isProp && active) {
@@ -2295,8 +2391,11 @@ export default function GamePage() {
           reloading: player.reloadTimer >= 0,
           botsAlive: bots ? bots.aliveCount() : 0,
           roundKills: player.roundKills,
-          ecProgress,
           roundsCompleted: player.roundsCompleted,
+          weaponId: inv.slot === 'grenade' ? null : g ? g.id : null,
+          medkits: player.medkits,
+          medkitCast: medkitCastStart >= 0 ? Math.min(1, (tSec - medkitCastStart) / MEDKIT_CAST_SECONDS) : -1,
+          leaderboard: bots ? bots.leaderboard(5) : [],
           alive: player.alive,
           respawnIn: Math.max(0, Math.ceil(player.respawnTimer)),
           leanDir: player.leanT < -0.3 ? -1 : player.leanT > 0.3 ? 1 : 0,
@@ -2380,7 +2479,24 @@ export default function GamePage() {
     { slot: 'pistol', key: '2', label: hudStats.pistolLabel, ammo: hudStats.pistolAmmo },
     { slot: 'grenade', key: '3', label: hudStats.grenades > 0 ? 'FRAG' : null, ammo: `x${hudStats.grenades}` },
   ];
-  const ecRoundPct = Math.min(100, Math.round((hudStats.roundKills / PRACTICE_ROUND_GOAL) * 100));
+  const applyEcResult = (r: AdEcResult) => {
+    setHudStats((prev) => ({
+      ...prev,
+      energyTickets: r.energy_tickets ?? prev.energyTickets,
+      maxEnergyTickets: r.max_energy_tickets ?? prev.maxEnergyTickets,
+      ecProgress: r.energy_progress_pct ?? prev.ecProgress,
+    }));
+    if (r.ticketsAwarded) {
+      setRoundBanner(`⚡ +${r.ticketsAwarded} ENERGY TICKET (EC) recharged from ads!`);
+      setTimeout(() => setRoundBanner(null), 3500);
+    }
+  };
+  const openVideoAd = (f: 'video_15s' | 'video_30s') => {
+    if (document.pointerLockElement) document.exitPointerLock?.();
+    firingRef.current = false;
+    setVideoAd(f);
+  };
+  const adsDot = isAdsActive && !hudStats.isProp && hudStats.alive && (hudStats.weaponId === 'ak47' || hudStats.weaponId === 'uzi');
   // Bottom banner ad: only in Solo Bot / Practice and Ghost Spectator (never in paid PvP)
   const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld && (deployed || isGhostSpectator);
   const liftForAd = showAdBanner && isMobile && !compactLandscape; // portrait phones: raise thumbs above the ad
@@ -2493,6 +2609,7 @@ export default function GamePage() {
               <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-rose-500" />
             </div>
           )}
+          {adsDot && <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[3px] h-[3px] rounded-full bg-rose-500 shadow-[0_0_3px_rgba(244,63,94,0.9)]" />}
           {hitMarker && (
             <div className={`absolute w-7 h-7 ${hitMarker.kill ? 'text-rose-500' : hitMarker.head ? 'text-amber-300' : 'text-white'}`}>
               <div className="absolute left-1/2 top-1/2 w-6 h-0.5 bg-current -translate-x-1/2 -translate-y-1/2 rotate-45" />
@@ -2512,25 +2629,52 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Energy Recharge Mode banner (solo bots — zero cash payout) */}
-      {isBotMode && (
-        <div className={`absolute left-1/2 -translate-x-1/2 z-20 pointer-events-none ${isMobile ? 'hidden' : 'bottom-[4.5rem] w-[min(92vw,560px)]'}`}>
-          <div className="bg-slate-950/85 border border-amber-400/60 backdrop-blur-md rounded-2xl px-4 py-2 shadow-xl shadow-amber-500/10">
-            <div className="text-[11px] font-black text-amber-300 text-center tracking-wide flex items-center justify-center gap-2">
-              <span>⚡ ENERGY RECHARGE MODE</span>
+      {/* EC recharge (Practice / Solo Bot + Ghost Spectator): ads only — bot kills give 0 EC / 0 Micro-USD */}
+      {(isBotMode || isGhostSpectator) && (deployed || isGhostSpectator) && (
+        <div
+          className={`absolute left-1/2 -translate-x-1/2 z-20 pointer-events-none ${
+            isMobile ? (compactLandscape ? 'top-14 scale-90' : 'top-[8.5rem]') : 'bottom-[4.6rem] w-[min(92vw,600px)]'
+          }`}
+        >
+          <div className="bg-slate-950/80 border border-amber-400/50 backdrop-blur-md rounded-2xl px-3 py-1.5 shadow-xl flex flex-col items-center gap-1">
+            <div className="text-[10px] font-black text-amber-300 tracking-wide flex items-center gap-2 whitespace-nowrap">
+              <span>⚡ EC {hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
               <span className="text-amber-400/60">•</span>
-              <span className="text-yellow-300 font-extrabold">EC TICKETS: {hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
+              <span className="text-yellow-300">RECHARGE {Math.floor(hudStats.ecProgress)}%</span>
+              {!isMobile && <span className="text-slate-400 font-bold">• banner every 20 s / video ads</span>}
             </div>
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
-                ROUND {hudStats.roundKills}/{PRACTICE_ROUND_GOAL}
-              </span>
-              <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-amber-400 to-yellow-300 transition-all" style={{ width: `${ecRoundPct}%` }} />
-              </div>
-              <span className="text-[10px] font-black text-yellow-300 whitespace-nowrap">EC RECHARGE {Math.round(hudStats.ecProgress)}%</span>
+            <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-amber-400 to-yellow-300 transition-all" style={{ width: `${Math.min(100, hudStats.ecProgress)}%` }} />
             </div>
+            <RechargeVideoButtons compact={isMobile} onPick={openVideoAd} />
           </div>
+        </div>
+      )}
+
+      {videoAd && <RewardedVideoModal format={videoAd} onClose={() => setVideoAd(null)} onResult={applyEcResult} />}
+
+      {/* Free-for-all kill leaderboard (Top 5) — faint text, no box */}
+      {isBotMode && deployed && hudStats.leaderboard.length > 0 && (
+        <div className={`absolute left-4 z-20 pointer-events-none text-[11px] text-slate-300/60 leading-[1.35] font-semibold ${compactLandscape ? 'top-[7.2rem]' : 'top-[8.6rem]'}`} style={{ textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}>
+          {hudStats.leaderboard.map((r, i) => (
+            <div key={r.name} className={r.name === 'You' ? 'text-amber-200/70' : undefined}>
+              {i + 1}. {r.name} — {r.kills}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Medkit cast progress (4 s, stand still) */}
+      {hudStats.medkitCast >= 0 && hudStats.alive && (
+        <div className="absolute left-1/2 top-[58%] -translate-x-1/2 z-30 pointer-events-none flex flex-col items-center gap-1">
+          <div className="relative w-14 h-14">
+            <svg viewBox="0 0 36 36" className="w-14 h-14 -rotate-90">
+              <circle cx="18" cy="18" r="15.5" fill="rgba(2,6,23,0.6)" stroke="rgba(255,255,255,0.15)" strokeWidth="3" />
+              <circle cx="18" cy="18" r="15.5" fill="none" stroke="#34d399" strokeWidth="3" strokeLinecap="round" strokeDasharray={`${hudStats.medkitCast * 97.4} 97.4`} />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center"><MedkitIcon size={22} /></div>
+          </div>
+          <div className="text-[10px] font-black text-emerald-300 bg-slate-950/60 px-2 py-0.5 rounded-full">HEALING… DON&apos;T MOVE</div>
         </div>
       )}
 
@@ -2771,6 +2915,17 @@ export default function GamePage() {
               <DropIcon />
               <span className="text-[8px] font-black">DROP</span>
             </button>
+            {!isMobile && (
+              <button
+                onClick={() => medkitRef.current()}
+                title="Use medkit (4) — 4 s, stand still"
+                aria-label="Use medkit"
+                className={`px-2 rounded-xl border flex flex-col items-center justify-center text-[8px] font-black ${hudStats.medkits > 0 ? 'bg-slate-900/80 border-emerald-500/50 text-emerald-200' : 'bg-slate-900/40 border-slate-800 text-slate-600'}`}
+              >
+                <MedkitIcon size={16} />
+                <span>4 · ×{hudStats.medkits}</span>
+              </button>
+            )}
           </div>
           <div className="bg-slate-950/70 border border-slate-700/70 backdrop-blur-md rounded-xl px-2.5 py-0.5 text-right shadow-xl">
             {hudStats.slot === 'grenade' ? (
@@ -2911,6 +3066,25 @@ export default function GamePage() {
               <div className="w-3.5 h-3.5 rounded-full bg-white/70" />
             </div>
           </div>
+          {!isGhostSpectator && deployed && hudStats.alive && !hudStats.isProp && (
+            <button
+              aria-label="Use medkit"
+              onTouchStart={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                medkitRef.current();
+              }}
+              onClick={() => medkitRef.current()}
+              className={`absolute bottom-1 rounded-full border flex items-center justify-center backdrop-blur-sm shadow-lg active:scale-95 ${
+                compactLandscape ? 'left-[7.6rem] w-11 h-11' : 'left-[8.6rem] w-12 h-12'
+              } ${hudStats.medkits > 0 ? 'bg-slate-900/55 border-emerald-400/60' : 'bg-slate-900/35 border-white/20 opacity-70'}`}
+            >
+              <MedkitIcon size={22} />
+              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-black flex items-center justify-center border border-white/70">
+                {hudStats.medkits}
+              </span>
+            </button>
+          )}
         </div>
       )}
       {isGhostSpectator && isMobile && (
@@ -3004,13 +3178,10 @@ export default function GamePage() {
       {/* Compact bottom banner ad slot — Solo Bot / Practice and Ghost Spectator only (never paid PvP) */}
       {showAdBanner && (
         <div className="absolute bottom-0 left-1/2 -translate-x-1/2 z-[15] pointer-events-auto">
-          <div
-            id="mwar-ad-banner"
-            data-ad-slot="game-bottom"
-            className={`${isMobile ? 'w-[320px] h-[50px]' : 'w-[468px] h-[60px]'} bg-slate-950/70 border border-slate-700/70 border-b-0 rounded-t-lg flex items-center justify-center text-[10px] font-bold tracking-widest text-slate-500`}
-          >
-            ADVERTISEMENT
-          </div>
+          <SimulatedAdBanner
+            onResult={applyEcResult}
+            className={`${isMobile ? 'w-[320px] h-[50px]' : 'w-[468px] h-[60px]'} border border-slate-700/70 border-b-0 rounded-t-lg`}
+          />
         </div>
       )}
 
@@ -3044,5 +3215,15 @@ export default function GamePage() {
         </div>
       )}
     </div>
+  );
+}
+
+function MedkitIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="6" width="18" height="14" rx="3" fill="#f8fafc" stroke="#0f172a" strokeWidth="1.2" />
+      <path d="M9 6V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V6" fill="none" stroke="#f8fafc" strokeWidth="1.6" />
+      <path d="M12 9v8M8 13h8" stroke="#e11d48" strokeWidth="2.6" strokeLinecap="round" />
+    </svg>
   );
 }

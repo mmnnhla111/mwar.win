@@ -21,7 +21,7 @@ import {
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
-import { GameState, PlayerState, ChestState, DroppedWeaponState } from '../schema/GameState';
+import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState } from '../schema/GameState';
 
 interface RoomOptions {
   mode?: 'mini_30' | 'standard_100';
@@ -116,7 +116,7 @@ export const WEAPON_SPECS: Record<
   sniper: { magSize: 5, reserve: 20, damage: 92, headMult: 2.5, range: 200 },
   ak47: { magSize: 30, reserve: 90, damage: 34, headMult: 2.0, range: 45 },
   m16: { magSize: 30, reserve: 90, damage: 27, headMult: 2.0, range: 55 },
-  uzi: { magSize: 32, reserve: 128, damage: 17, headMult: 1.6, range: 18 },
+  uzi: { magSize: 40, reserve: 160, damage: 17, headMult: 1.6, range: 22 },
   pistol: { magSize: 15, reserve: 45, damage: 24, headMult: 2.0, range: 25 },
 };
 
@@ -138,6 +138,9 @@ interface SessionMeta {
 
 /** Combat death → respawn delay (ELIMINATED overlay on the client). */
 const RESPAWN_DELAY_MS = 3000;
+const MEDKIT_DROP_CHANCE = 0.2;
+const MEDKIT_TTL_MS = 600_000;
+const MEDKIT_CAST_MS = 4000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -169,6 +172,8 @@ export class ShootingRoom extends Room<GameState> {
   /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
   private pairKills = new Map<string, number[]>();
   private usedEntryIds = new Set<string>();
+  /** sessionId → medkit cast in progress (start time + position; any movement cancels). */
+  private medkitCasts = new Map<string, { startedAt: number; x: number; z: number }>();
 
   maxClients = 30;
   private gameId: string = '';
@@ -224,6 +229,38 @@ export class ShootingRoom extends Room<GameState> {
   }
 
   private registerMessageHandlers() {
+    // ---- Medkits: walk-over / F pickup, 4 s stationary cast, +40–80 HP (cap 100) ----
+    this.onMessage('player_pickup_medkit', (client, data: { medkitId: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      const kit = data && this.state.medkits.get(String(data.medkitId));
+      if (!player || !kit || player.isGhost || player.isSpectator || player.health <= 0) return;
+      if (Math.hypot(player.x - kit.x, player.z - kit.z) > 3) return;
+      this.state.medkits.delete(kit.id);
+      player.medkits += 1;
+      this.broadcast('medkit_picked_up', { medkitId: kit.id, sessionId: client.sessionId, count: player.medkits });
+    });
+    this.onMessage('player_medkit_start', (client) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.medkits <= 0 || player.health <= 0 || player.health >= 100) return;
+      this.medkitCasts.set(client.sessionId, { startedAt: Date.now(), x: player.x, z: player.z });
+    });
+    this.onMessage('player_medkit_cancel', (client) => {
+      this.medkitCasts.delete(client.sessionId);
+    });
+    this.onMessage('player_medkit_complete', (client) => {
+      const player = this.state.players.get(client.sessionId);
+      const cast = this.medkitCasts.get(client.sessionId);
+      this.medkitCasts.delete(client.sessionId);
+      if (!player || !cast || player.medkits <= 0 || player.health <= 0 || player.isGhost) return;
+      // Server-validated cast: ≥ 3.8 s elapsed (network slack) and the player stayed put
+      if (Date.now() - cast.startedAt < MEDKIT_CAST_MS - 200) return;
+      if (Math.hypot(player.x - cast.x, player.z - cast.z) > 0.6) return;
+      const heal = 40 + Math.floor(Math.random() * 41);
+      player.medkits -= 1;
+      player.health = Math.min(100, player.health + heal);
+      client.send('medkit_used', { heal, health: player.health, count: player.medkits });
+    });
+
     this.onMessage('ping', (client, data) => {
       client.send('pong', { reply: 'pong', echo: data });
     });
@@ -555,6 +592,9 @@ export class ShootingRoom extends Room<GameState> {
     target.deaths += 1;
     const tm = this.meta.get(targetSessionId) as (SessionMeta & { diedAt?: number }) | undefined;
     if (tm) tm.diedAt = Date.now();
+    this.medkitCasts.delete(targetSessionId);
+    // Any death: 20 % chance to drop a medkit (10-minute despawn)
+    if (Math.random() < MEDKIT_DROP_CHANCE) this.spawnMedkit(target.x + 0.5, target.y, target.z - 0.3);
 
     // Drop carried weapon on death with 5-minute despawn (if it has ammo)
     if (target.magAmmo > 0 || target.reserveAmmo > 0) {
@@ -699,6 +739,17 @@ export class ShootingRoom extends Room<GameState> {
     });
   }
 
+  private spawnMedkit(x: number, y: number, z: number) {
+    const kit = new MedkitState();
+    kit.id = `medkit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    kit.x = Math.round(x * 100) / 100;
+    kit.y = Math.round(y * 100) / 100;
+    kit.z = Math.round(z * 100) / 100;
+    kit.expiresAt = Date.now() + MEDKIT_TTL_MS;
+    this.state.medkits.set(kit.id, kit);
+    this.broadcast('medkit_spawned', { medkitId: kit.id, x: kit.x, y: kit.y, z: kit.z, expiresAt: kit.expiresAt });
+  }
+
   private spawnDroppedWeapon(weaponId: string, magAmmo: number, reserveAmmo: number, x: number, y: number, z: number) {
     if (magAmmo <= 0 && reserveAmmo <= 0) return; // Empty weapon rule
 
@@ -796,6 +847,18 @@ export class ShootingRoom extends Room<GameState> {
         this.state.droppedWeapons.delete(id);
         this.broadcast('weapon_expired', { dropId: id });
       }
+    });
+
+    // 2b. Expire 10-minute medkits; cancel casts when the player moved
+    this.state.medkits.forEach((kit, id) => {
+      if (now >= kit.expiresAt) {
+        this.state.medkits.delete(id);
+        this.broadcast('medkit_expired', { medkitId: id });
+      }
+    });
+    this.medkitCasts.forEach((cast, sid) => {
+      const p = this.state.players.get(sid);
+      if (!p || Math.hypot(p.x - cast.x, p.z - cast.z) > 0.6) this.medkitCasts.delete(sid);
     });
     this.state.activeDroppedWeaponsCount = this.state.droppedWeapons.size;
 

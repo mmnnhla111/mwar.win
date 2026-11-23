@@ -45,6 +45,8 @@ export class PlayerState extends Schema {
   @type('number') sessionEarningsMicroUsd: number = 0;
   // Head bounty: 5 % of every reward this player earns; claimed by whoever eliminates them
   @type('number') bountyMicroUsd: number = 0;
+  // Medkits carried (slot 4). Healing is a 4 s stationary cast validated by the server.
+  @type('number') medkits: number = 0;
 
   // Internal anti-AFK timestamp (not serialized to network)
   lastActiveTime: number = Date.now();
@@ -62,6 +64,14 @@ export class DroppedWeaponState extends Schema {
   @type('number') reserveAmmo: number = 90;
   @type('number') droppedAt: number = 0;
   @type('number') expiresAt: number = 0; // 300s (5-minute despawn timer)
+}
+
+export class MedkitState extends Schema {
+  @type('string') id: string = '';
+  @type('number') x: number = 0;
+  @type('number') y: number = 0;
+  @type('number') z: number = 0;
+  @type('number') expiresAt: number = 0; // 600 s (10-minute despawn)
 }
 
 export class ChestState extends Schema {
@@ -83,6 +93,7 @@ export class GameState extends Schema {
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
   @type({ map: ChestState }) chests = new MapSchema<ChestState>();
   @type({ map: DroppedWeaponState }) droppedWeapons = new MapSchema<DroppedWeaponState>();
+  @type({ map: MedkitState }) medkits = new MapSchema<MedkitState>();
 
   @type('string') mapMode: string = 'mini_30';
   @type('number') mapSizeX: number = 240;

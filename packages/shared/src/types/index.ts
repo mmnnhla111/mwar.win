@@ -89,6 +89,8 @@ export type FinancialActionType =
   | 'CASHOUT_REJECT_REFUND'
   | 'DEV_MOCK_FAUCET'
   | 'PRACTICE_EC_RECHARGE'
+  /** EC recharge progress earned from a banner impression / rewarded video (no money moves; informational). */
+  | 'AD_EC_RECHARGE'
   /** Daily quest coin reward credited to the wallet (inflow). */
   | 'QUEST_REWARD'
   /** MLM commission accrued into the daily grey/green ledger — NOT yet in the wallet (informational). */

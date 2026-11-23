@@ -146,3 +146,16 @@ export const CHAT_RETENTION_MONTHS = 12;
 
 // Ad eCPM and Statistical Country Rewards (docs/AD_ECPM_BY_COUNTRY.md)
 export * from './adEcpm';
+
+// ---- EC recharge from ads (bot kills give 0 EC / 0 Micro-USD) --------------------------------
+/** EC progress is stored in basis points: 10 000 bp = 100 % = +1 Energy Ticket. */
+export const EC_PROGRESS_BP_PER_TICKET = 10_000;
+/** Passive banner: one verified impression every 20 s while the tab is visible. */
+export const AD_BANNER_INTERVAL_SECONDS = 20;
+/** Server-side minimum gap between two banner impressions of one user (network slack). */
+export const AD_BANNER_MIN_GAP_SECONDS = 18;
+/** Rewarded video EC credit: 15 s = +50 % (2 views = 1 EC), 30 s = +100 % (1 view = 1 EC). */
+export const AD_VIDEO_EC_BP: Record<'video_15s' | 'video_30s', number> = { video_15s: 5_000, video_30s: 10_000 };
+export const AD_VIDEO_SECONDS: Record<'video_5s' | 'video_15s' | 'video_30s', number> = { video_5s: 5, video_15s: 15, video_30s: 30 };
+/** Anti-abuse cap on EC-recharge rewarded videos per user per UTC day. */
+export const AD_VIDEO_EC_DAILY_CAP = 30;

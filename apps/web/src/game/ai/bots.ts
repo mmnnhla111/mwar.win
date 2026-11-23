@@ -36,6 +36,8 @@ export interface BotTargetInfo {
 export interface BotEvents {
   onPlayerHit(damage: number, from: THREE.Vector3, botName: string): void;
   onShot?(from: THREE.Vector3): void;
+  /** Free-for-all: a bot eliminated another bot. */
+  onBotKilledByBot?(victimId: number, killerName: string): void;
 }
 
 interface Bot {
@@ -71,9 +73,10 @@ interface Bot {
   alertedUntil: number;
   speed: number;
   animT: number;
+  /** Current target: -1 = player, otherwise another bot id (free-for-all). */
+  targetId: number;
 }
 
-const CALLSIGNS = ['Viper', 'Ghost', 'Rook', 'Falcon', 'Havoc', 'Nomad', 'Raven', 'Specter', 'Bishop', 'Cobra', 'Wolf', 'Echo'];
 
 export interface BotManagerOptions {
   count: number;
@@ -117,14 +120,16 @@ export class BotManager {
     for (let i = 0; i < opts.count; i++) {
       const overwatch = i < overwatchCount;
       const weapon = pickBotWeapon(overwatch);
-      const rig = createCharacter(randomCharacterId(), { name: `BOT ${CALLSIGNS[i % CALLSIGNS.length]}`, weapon });
+      const botName = `Bot_${String(i + 1).padStart(2, '0')}`;
+      const rig = createCharacter(randomCharacterId(), { name: botName, weapon });
       rig.hitMeshes.forEach((m) => (m.userData.botId = i));
       this.hitMeshes.push(...rig.hitMeshes);
       this.group.add(rig.root);
       const node = Math.floor(Math.random() * nav.length);
       const bot: Bot = {
         id: i,
-        name: CALLSIGNS[i % CALLSIGNS.length],
+        name: botName,
+        targetId: -1,
         rig,
         weapon,
         crouchT: 0,
@@ -159,6 +164,20 @@ export class BotManager {
       this.bots.push(bot);
       this.respawn(bot, null);
     }
+  }
+
+  /** Kill counts for the free-for-all leaderboard (player = 'You'). */
+  readonly kills = new Map<string, number>();
+  private botInfos: (BotTargetInfo & { id: number })[] = [];
+
+  creditKill(name: string) {
+    this.kills.set(name, (this.kills.get(name) ?? 0) + 1);
+  }
+
+  /** Top N killers (bots + player), highest first. */
+  leaderboard(n = 5): { name: string; kills: number }[] {
+    const rows = [{ name: 'You', kills: this.kills.get('You') ?? 0 }, ...this.bots.map((b) => ({ name: b.name, kills: this.kills.get(b.name) ?? 0 }))];
+    return rows.sort((a, b) => b.kills - a.kills || a.name.localeCompare(b.name)).slice(0, n);
   }
 
   get targets(): THREE.Object3D[] {
@@ -322,7 +341,41 @@ export class BotManager {
     return this.world.lineOfSight(eye.x, eye.y, eye.z, player.position.x, player.position.y + (player.prone ? 0.25 : 1.0), player.position.z);
   }
 
-  private shoot(bot: Bot, player: BotTargetInfo) {
+  private refreshBotInfos() {
+    for (const b of this.bots) {
+      let info = this.botInfos[b.id];
+      if (!info) {
+        info = { id: b.id, position: new THREE.Vector3(), eye: new THREE.Vector3(), speed: 0, crouching: false, prone: false, alive: true, disguised: false };
+        this.botInfos[b.id] = info;
+      }
+      info.position.set(b.body.x, b.body.y, b.body.z);
+      info.eye.set(b.body.x, b.body.y + 1.6 - b.crouchT * 0.5, b.body.z);
+      info.speed = b.speed;
+      info.crouching = b.crouchT > 0.5;
+      info.alive = b.state !== 'dead';
+    }
+  }
+
+  /** Free-for-all target selection: nearest visible hostile (player or any other bot). */
+  private pickTarget(bot: Bot, player: BotTargetInfo): { id: number; info: BotTargetInfo } | null {
+    let best: { id: number; info: BotTargetInfo } | null = null;
+    let bestD = Infinity;
+    const consider = (id: number, info: BotTargetInfo) => {
+      if (!info.alive) return;
+      const d = Math.hypot(info.position.x - bot.body.x, info.position.z - bot.body.z);
+      // Slight stickiness to the current target avoids flicking between enemies
+      const score = id === bot.targetId ? d * 0.8 : d;
+      if (score >= bestD) return;
+      if (!this.canSee(bot, info)) return;
+      bestD = score;
+      best = { id, info };
+    };
+    consider(-1, player);
+    for (const o of this.bots) if (o !== bot) consider(o.id, this.botInfos[o.id]);
+    return best;
+  }
+
+  private shoot(bot: Bot, player: BotTargetInfo, targetId: number) {
     const muzzle = bot.rig.muzzle.getWorldPosition(tmpA);
     const dist = muzzle.distanceTo(player.eye);
     // 70 % skill: base accuracy with fall-off for range and target / shooter movement
@@ -354,12 +407,23 @@ export class BotManager {
     }
     this.effects.tracer(muzzle.clone(), end, true);
     this.events.onShot?.(muzzle.clone());
-    if (hit) this.events.onPlayerHit(Math.max(4, Math.round(def.damage * 0.3 * (0.85 + Math.random() * 0.3))), muzzle.clone(), bot.name);
+    if (!hit) return;
+    const dmg = Math.max(4, Math.round(def.damage * 0.3 * (0.85 + Math.random() * 0.3)));
+    if (targetId < 0) {
+      this.events.onPlayerHit(dmg, muzzle.clone(), bot.name);
+      return;
+    }
+    // Bot vs bot: slightly harder hits so free-for-all fights resolve
+    if (this.damage(targetId, Math.round(dmg * 1.6), muzzle.clone())) {
+      this.creditKill(bot.name);
+      this.events.onBotKilledByBot?.(targetId, bot.name);
+    }
   }
 
   update(dt: number, player: BotTargetInfo) {
     this.time += dt;
     this.activeShooters = 0;
+    this.refreshBotInfos();
     for (const bot of this.bots) {
       bot.stateTime += dt;
       bot.animT += dt;
@@ -381,9 +445,11 @@ export class BotManager {
       bot.thinkTimer -= dt;
       if (bot.thinkTimer <= 0) {
         bot.thinkTimer = 0.16;
-        bot.hasLos = this.canSee(bot, player);
-        if (bot.hasLos) {
-          bot.lastSeen.copy(player.eye);
+        const tgt = this.pickTarget(bot, player);
+        bot.hasLos = !!tgt;
+        if (tgt) {
+          bot.targetId = tgt.id;
+          bot.lastSeen.copy(tgt.info.eye);
           bot.lastSeenAt = this.time;
           if (bot.state === 'patrol' || bot.state === 'search') {
             bot.state = 'engage';
@@ -456,15 +522,17 @@ export class BotManager {
             } else bot.strafeDir *= -1;
           }
           // Fire bursts after a human-like reaction delay
-          if (bot.hasLos && bot.seenTime >= bot.reaction && player.alive && this.activeShooters < 3) {
-            this.activeShooters++;
+          const target = bot.targetId < 0 ? player : this.botInfos[bot.targetId];
+          const vsPlayer = bot.targetId < 0;
+          if (bot.hasLos && bot.seenTime >= bot.reaction && target?.alive && (!vsPlayer || this.activeShooters < 3)) {
+            if (vsPlayer) this.activeShooters++;
             bot.shotTimer -= dt;
             if (bot.shotTimer <= 0) {
               const def = WEAPONS[bot.weapon];
               if (bot.burstLeft <= 0) {
                 bot.burstLeft = bot.weapon === 'sniper' ? 1 : bot.weapon === 'uzi' ? 5 + Math.floor(Math.random() * 4) : 3 + Math.floor(Math.random() * 3);
               }
-              this.shoot(bot, player);
+              this.shoot(bot, target, bot.targetId);
               bot.burstLeft--;
               const pause = bot.weapon === 'sniper' ? 1.8 + Math.random() * 1.2 : 0.55 + Math.random() * 0.7;
               bot.shotTimer = bot.burstLeft > 0 ? def.fireInterval * 1.15 + Math.random() * 0.03 : pause;
@@ -480,7 +548,6 @@ export class BotManager {
             if (d < 0.8 && bot.stateTime > 2.2 + Math.random()) {
               bot.state = 'search';
               bot.stateTime = 0;
-              bot.hp = Math.min(100, bot.hp + 25); // patched up behind cover
             }
           }
           if (bot.stateTime > 6) {
