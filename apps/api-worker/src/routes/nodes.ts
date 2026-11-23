@@ -46,6 +46,7 @@ nodesRouter.get('/install.sh', async (c) => {
   const nodeName = rawNodeName.replace(/[^a-zA-Z0-9_-]/g, '');
   const tunnelToken = (c.req.query('tunnel_token') || '').trim();
   const internalSecret = c.env.INTERNAL_API_SECRET || 'local_internal_secret_2026';
+  const logReceiverSecret = c.env.LOG_RECEIVER_SECRET || c.env.LOG_INGEST_SECRET || internalSecret;
   const apiBaseUrl = 'https://api.mwar.win';
 
   const script = `#!/usr/bin/env bash
@@ -226,6 +227,8 @@ GAME_PORT=2567
 LOG_PORT=3000
 API_BASE_URL=${apiBaseUrl}
 INTERNAL_API_SECRET=${internalSecret}
+LOG_RECEIVER_SECRET=${logReceiverSecret}
+LOG_INGEST_SECRET=${logReceiverSecret}
 DATABASE_URL=postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs
 REDIS_URL=redis://127.0.0.1:6379
 ENVEOF
@@ -292,6 +295,7 @@ cat << ECOSYSTEM_GAME >> /opt/mwar-node/ecosystem.config.cjs
         REDIS_URL: "redis://127.0.0.1:6379",
         API_BASE_URL: "${apiBaseUrl}",
         INTERNAL_API_SECRET: "${internalSecret}",
+        LOG_RECEIVER_SECRET: "${logReceiverSecret}",
         NODE_ID: "${nodeName}",
         NODE_ROLE: "${role}"
       }
@@ -316,6 +320,8 @@ cat << ECOSYSTEM_LOGS >> /opt/mwar-node/ecosystem.config.cjs
         DATABASE_URL: "postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs",
         API_BASE_URL: "${apiBaseUrl}",
         INTERNAL_API_SECRET: "${internalSecret}",
+        LOG_RECEIVER_SECRET: "${logReceiverSecret}",
+        LOG_INGEST_SECRET: "${logReceiverSecret}",
         NODE_ID: "${nodeName}",
         NODE_ROLE: "${role}"
       }
@@ -336,6 +342,7 @@ cat << ECOSYSTEM_TAIL >> /opt/mwar-node/ecosystem.config.cjs
         NODE_ENV: "production",
         API_BASE_URL: "${apiBaseUrl}",
         INTERNAL_API_SECRET: "${internalSecret}",
+        LOG_RECEIVER_SECRET: "${logReceiverSecret}",
         NODE_ID: "${nodeName}",
         NODE_ROLE: "${role}"
       }

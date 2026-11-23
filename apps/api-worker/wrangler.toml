@@ -33,8 +33,7 @@ binding = "LOG_QUEUE"
 queue = "mwar-financial-logs"
 
 # 4. Queue consumer: forwards logs to logs.mwar.win; failed deliveries are retried (queue keeps
-#    messages up to 14 days — set once with:
-#    npx wrangler queues update mwar-financial-logs --message-retention-period-secs 1209600)
+#    messages up to 4 days / 345600 seconds on standard Cloudflare plans)
 [[queues.consumers]]
 queue = "mwar-financial-logs"
 max_batch_size = 50
