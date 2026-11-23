@@ -88,7 +88,14 @@ export type FinancialActionType =
   | 'CASHOUT_REQUEST'
   | 'CASHOUT_REJECT_REFUND'
   | 'DEV_MOCK_FAUCET'
-  | 'PRACTICE_EC_RECHARGE';
+  | 'PRACTICE_EC_RECHARGE'
+  // Audit-only entries (do not change a wallet balance):
+  | 'MLM_PENDING' // upline commission recorded in the daily pending ledger (paid at midnight settlement)
+  | 'MLM_FORFEIT' // pending commission burned to the platform because the sponsor missed the daily quests
+  | 'PLATFORM_FEE' // 5 % platform fee + unclaimed MLM levels + rounding remainder (Platform Reserve)
+  // Balance-changing entries:
+  | 'QUEST_REWARD' // daily quest coin reward credited to the wallet
+  | 'MARKET_SALE'; // marketplace seller proceeds released after the 30-day escrow
 
 export interface FinancialLog {
   id?: number;

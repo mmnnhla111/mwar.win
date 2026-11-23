@@ -11,6 +11,28 @@ import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { logFinancialTransaction } from '../utils/audit-logger';
 import { getDailyMlmSummary, getUtcDateKey } from './quests';
+import { isLocalDev } from '../utils/guards';
+
+/**
+ * Layer 1 deterministic audit (spec §6.1): the D1 wallet balance must equal the balance recomputed
+ * from the PostgreSQL audit log (inflows − outflows) to the exact Micro-USD. Returns null when the
+ * log server is unreachable (the request then waits for manual review instead of auto-approval).
+ */
+async function layer1Audit(env: Env, userId: string, d1BalanceMicroUsd: number) {
+  const base = (env.LOG_RECEIVER_URL || 'http://localhost:3000/api/logs').replace(/\/api\/logs\/?$/, '');
+  try {
+    const res = await fetch(`${base}/api/logs/summary/${encodeURIComponent(userId)}`, {
+      headers: env.LOG_INGEST_SECRET ? { 'X-Log-Secret': env.LOG_INGEST_SECRET } : {},
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { calculatedBalanceMicroUsd?: string; source?: string };
+    if (data.calculatedBalanceMicroUsd === undefined) return null;
+    const calculated = BigInt(data.calculatedBalanceMicroUsd);
+    return { match: calculated === BigInt(d1BalanceMicroUsd), calculated: calculated.toString(), source: data.source };
+  } catch {
+    return null;
+  }
+}
 
 export const walletRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -80,15 +102,29 @@ walletRouter.post('/withdraw', async (c) => {
   const fee = Number(WITHDRAWAL_BASE_FEE_MICRO_USD);
   const newBalance = wallet.balance_micro_usd - amount_micro_usd;
 
-  // Atomic deduction from wallet and insertion of withdrawal request
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      'UPDATE wallets SET balance_micro_usd = balance_micro_usd - ?1, total_withdrawn_micro_usd = total_withdrawn_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND balance_micro_usd >= ?1'
-    ).bind(amount_micro_usd, now, user.userId),
-    c.env.DB.prepare(
-      'INSERT INTO withdrawal_requests (id, user_id, amount_micro_usd, fee_micro_usd, crypto_currency, payout_address, status, ai_audit_score, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
-    ).bind(withdrawalId, user.userId, amount_micro_usd, fee, crypto_currency, payout_address, 'ai_verifying', 0.98, now),
-  ]);
+  // Layer 1: D1 balance must match the PostgreSQL ledger exactly before the request can be auto-verified
+  const audit = await layer1Audit(c.env, user.userId, wallet.balance_micro_usd);
+  const status = audit?.match ? 'ai_verifying' : 'pending';
+  const auditReasons = JSON.stringify(
+    audit
+      ? { layer1Match: audit.match, ledgerBalanceMicroUsd: audit.calculated, d1BalanceMicroUsd: wallet.balance_micro_usd, source: audit.source }
+      : { layer1Match: null, note: 'Log server unreachable — held for manual review' }
+  );
+
+  // Guarded deduction first: if a concurrent request already spent the balance, nothing is inserted.
+  const debit = await c.env.DB.prepare(
+    'UPDATE wallets SET balance_micro_usd = balance_micro_usd - ?1, total_withdrawn_micro_usd = total_withdrawn_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND balance_micro_usd >= ?1'
+  )
+    .bind(amount_micro_usd, now, user.userId)
+    .run();
+  if (!debit.meta?.changes) {
+    return c.json({ error: 'Insufficient balance' }, 400);
+  }
+  await c.env.DB.prepare(
+    'INSERT INTO withdrawal_requests (id, user_id, amount_micro_usd, fee_micro_usd, crypto_currency, payout_address, status, ai_audit_score, audit_reasons, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)'
+  )
+    .bind(withdrawalId, user.userId, amount_micro_usd, fee, crypto_currency, payout_address, status, audit ? (audit.match ? 1 : 0) : null, auditReasons, now)
+    .run();
 
   // Log to financial audit pipeline
   await logFinancialTransaction(c.env, {
@@ -102,7 +138,8 @@ walletRouter.post('/withdraw', async (c) => {
   return c.json({
     success: true,
     withdrawalId,
-    status: 'ai_verifying',
+    status,
+    layer1Match: audit?.match ?? null,
     amountMicroUsd: amount_micro_usd,
     feeMicroUsd: fee,
     netPayoutMicroUsd: amount_micro_usd - fee,
@@ -132,8 +169,8 @@ walletRouter.get('/withdrawals', async (c) => {
 
 // 4. Dev Mock Faucet (Top-up balance for testing)
 walletRouter.post('/dev/faucet', async (c) => {
-  if (c.env.DEV_MOCK_MODE !== 'true') {
-    return c.json({ error: 'Faucet is only available in DEV_MOCK_MODE' }, 403);
+  if (!isLocalDev(c)) {
+    return c.json({ error: 'Faucet is only available on a local wrangler dev host' }, 403);
   }
 
   const user = c.get('user');

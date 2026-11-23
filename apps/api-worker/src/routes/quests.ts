@@ -5,7 +5,18 @@ import {
   QuestClaimSchema,
   formatMicroUsd,
   microUsdToCoins,
+  MAX_SPECTATE_HEARTBEAT_SECONDS,
 } from '@mwar/shared';
+import { hasInternalSecret, walletBalance, PLATFORM_ACCOUNT_ID } from '../utils/guards';
+
+/**
+ * Quests a client may report progress for directly. Everything else (play a match, watch ads,
+ * earn coins, community) is tracked server-side from the action itself, so it cannot be faked.
+ */
+const CLIENT_REPORTABLE_QUESTS: Record<string, number> = {
+  Q_SPECTATE: MAX_SPECTATE_HEARTBEAT_SECONDS, // max seconds credited per heartbeat (sent every 15 s)
+  Q_DAILY_CHECKIN: 1,
+};
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { logFinancialTransaction } from '../utils/audit-logger';
@@ -232,10 +243,15 @@ questsRouter.post('/progress', authMiddleware, async (c) => {
   }
 
   const { questId, increment } = parseResult.data;
-  const dateKey = body?.dateKey || getUtcDateKey();
+  // Progress always counts toward *today* (UTC); clients cannot back-fill other days.
+  const dateKey = getUtcDateKey();
+  const maxIncrement = CLIENT_REPORTABLE_QUESTS[questId];
+  if (maxIncrement === undefined) {
+    return c.json({ error: `Quest ${questId} is tracked server-side and cannot be reported by the client` }, 403);
+  }
 
   try {
-    const result = await updateQuestProgress(c.env.DB, authUser.userId, questId, increment, dateKey);
+    const result = await updateQuestProgress(c.env.DB, authUser.userId, questId, Math.min(increment, maxIncrement), dateKey);
     const unlocked = await isUserMlmUnlocked(c.env.DB, authUser.userId, dateKey);
 
     return c.json({
@@ -261,7 +277,7 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
   }
 
   const { questId } = parseResult.data;
-  const dateKey = body?.dateKey || getUtcDateKey();
+  const dateKey = getUtcDateKey();
 
   // If daily check-in is claimed, auto-increment progress to target
   if (questId === 'Q_DAILY_CHECKIN') {
@@ -297,6 +313,14 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
       'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
     ).bind(rewardMicroUsd, now, authUser.userId),
   ]);
+
+  await logFinancialTransaction(c.env, {
+    transaction_id: `tx_quest_${questId}_${dateKey}_${authUser.userId.slice(0, 8)}`,
+    user_id: authUser.userId,
+    action_type: 'QUEST_REWARD',
+    amount_micro_usd: BigInt(rewardMicroUsd),
+    balance_after_micro_usd: await walletBalance(c.env.DB, authUser.userId),
+  });
 
   return c.json({
     success: true,
@@ -430,7 +454,7 @@ export async function settleDailyMlm(
           user_id: u.user_id,
           action_type: 'MLM_COMMISSION',
           amount_micro_usd: BigInt(totalToSettle),
-          balance_after_micro_usd: 0n,
+          balance_after_micro_usd: await walletBalance(env.DB, u.user_id),
         });
 
         settledUsersCount++;
@@ -458,10 +482,11 @@ export async function settleDailyMlm(
         await logFinancialTransaction(env, {
           transaction_id: `tx_mlm_forfeit_${dateKey}_${u.user_id.substring(0, 6)}_${Date.now()}`,
           user_id: u.user_id,
-          action_type: 'MLM_COMMISSION',
+          // Audit-only: burned to the platform reserve (does not change the sponsor's balance)
+          action_type: 'MLM_FORFEIT',
           amount_micro_usd: BigInt(totalToBurn),
           balance_after_micro_usd: 0n,
-          related_user_id: 'SYSTEM_RESERVE_BURN',
+          related_user_id: PLATFORM_ACCOUNT_ID,
         });
 
         forfeitedUsersCount++;
@@ -484,8 +509,9 @@ export async function settleDailyMlm(
 
 // 5. POST /api/cron/settle-daily-mlm (Midnight Settlement)
 questsRouter.post('/settle-daily-mlm', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized: X-Internal-Secret required' }, 401);
   const body = await c.req.json().catch(() => ({}));
-  const dateKey = body.dateKey || getUtcDateKey();
+  const dateKey = body.dateKey || getUtcDateKey(new Date(Date.now() - 86_400_000));
   const targetUserId = body.targetUserId;
 
   const result = await settleDailyMlm(c.env, dateKey, targetUserId);

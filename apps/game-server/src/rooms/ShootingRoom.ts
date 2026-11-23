@@ -110,11 +110,17 @@ export const WEAPON_SPECS: Record<
   pistol: { magSize: 15, reserve: 45, damage: 24, headMult: 2.0, range: 25 },
 };
 
+/** Server-authoritative fire-rate floor (ms between accepted hits) per weapon. */
+const MIN_HIT_INTERVAL_MS: Record<string, number> = { sniper: 900, ak47: 85, m16: 70, uzi: 50, pistol: 110 };
+const MAX_CHEST_HIT_DAMAGE = 25;
+
+
 export class ShootingRoom extends Room<GameState> {
   maxClients = 30;
   private gameId: string = '';
   private workerApiUrl: string = 'http://127.0.0.1:8787';
   private internalSecret: string = 'local-dev-internal-game-secret-2026';
+  private lastHitAt = new Map<string, number>();
   private redis?: Redis;
   private pendingPayouts: BatchPayoutItem[] = [];
 
@@ -168,7 +174,7 @@ export class ShootingRoom extends Room<GameState> {
     });
 
     // Player Movement & Aiming
-    this.onMessage('player_move', (client, data: { x: number; y: number; z: number; rotationY?: number }) => {
+    this.onMessage('player_move', (client, data: { x: number; y: number; z: number; rotationY?: number; stance?: string }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
@@ -180,6 +186,9 @@ export class ShootingRoom extends Room<GameState> {
       player.z = Math.max(-halfZ, Math.min(halfZ, data.z));
       if (typeof data.rotationY === 'number') {
         player.rotationY = data.rotationY;
+      }
+      if (data.stance === 'stand' || data.stance === 'crouch' || data.stance === 'prone') {
+        player.stance = data.stance;
       }
 
       // Reset AFK timer
@@ -341,12 +350,20 @@ export class ShootingRoom extends Room<GameState> {
     });
 
     // Weapon Shooting & Hit Verification
-    this.onMessage('player_shoot', (client, data: { targetType: 'player' | 'chest'; targetId: string; damage: number }) => {
+    this.onMessage('player_shoot', (client, data: { targetType: 'player' | 'chest'; targetId: string; damage: number; weaponId?: string }) => {
       const shooter = this.state.players.get(client.sessionId);
-      if (!shooter || shooter.isGhost) return;
+      if (!shooter || shooter.isGhost || shooter.isProp) return;
 
-      shooter.lastActiveTime = Date.now();
-      const damage = Math.min(Math.max(1, data.damage || 25), 100);
+      const now = Date.now();
+      shooter.lastActiveTime = now;
+      // Only weapons the shooter actually holds (primary / picked-up weapon, or the universal pistol)
+      const weaponId = data.weaponId === 'pistol' ? 'pistol' : shooter.currentWeapon || shooter.primaryWeapon;
+      const spec = WEAPON_SPECS[weaponId] || WEAPON_SPECS.ak47;
+      const last = this.lastHitAt.get(client.sessionId) || 0;
+      if (now - last < (MIN_HIT_INTERVAL_MS[weaponId] ?? 60)) return; // faster than the weapon can fire
+      this.lastHitAt.set(client.sessionId, now);
+      const maxDamage = data.targetType === 'chest' ? MAX_CHEST_HIT_DAMAGE : Math.min(100, Math.ceil(spec.damage * spec.headMult));
+      const damage = Math.min(Math.max(1, Number(data.damage) || 1), maxDamage);
 
       if (data.targetType === 'player') {
         this.handlePlayerHit(shooter, client, data.targetId, damage);
@@ -448,13 +465,14 @@ export class ShootingRoom extends Room<GameState> {
     }
 
     if (killer && killerSessionId && killerSessionId !== targetSessionId) {
+      // Guests can fight but never earn Micro-USD (no verified account to credit)
       // 1. Weapon/Combat Kill by another player:
       // Kills by another player do NOT drop a Bounty Chest!
       killer.kills += 1;
       const killReward = Number(KILL_REWARD_BASE_MICRO_USD);
       killer.sessionEarningsMicroUsd += killReward;
 
-      this.pendingPayouts.push({
+      if (!killer.id.startsWith('guest_')) this.pendingPayouts.push({
         userId: killer.id,
         amountMicroUsd: killReward,
         actionType: 'GAME_KILL',
@@ -499,7 +517,7 @@ export class ShootingRoom extends Room<GameState> {
       shooter.chestsCollected += 1;
       shooter.sessionEarningsMicroUsd += reward;
 
-      this.pendingPayouts.push({
+      if (!shooter.id.startsWith('guest_')) this.pendingPayouts.push({
         userId: shooter.id,
         amountMicroUsd: reward,
         actionType: 'CHEST_OPEN',
@@ -613,6 +631,9 @@ export class ShootingRoom extends Room<GameState> {
 
       // 30-Minute Inactive Rule: Auto-Kick & Forfeit
       if (inactiveSec >= AFK_KICK_SECONDS) {
+        // Forfeit unflushed round earnings back to the system (anti bot-farm rule)
+        this.pendingPayouts = this.pendingPayouts.filter((p) => p.userId !== player.id);
+        player.sessionEarningsMicroUsd = 0;
         const client = this.clients.find((c) => c.sessionId === sessionId);
         if (client) {
           client.send('afk_kicked', {
@@ -650,15 +671,34 @@ export class ShootingRoom extends Room<GameState> {
     }
   }
 
+  /**
+   * Identity is verified server-side: the client sends its API JWT and we resolve it through the
+   * Worker (/api/auth/me). Client-supplied userIds are ignored, so nobody can earn into (or as)
+   * another account. No / invalid token = guest (can play, never earns).
+   */
+  async onAuth(_client: Client, options: { token?: string }) {
+    if (!options?.token) return { guest: true };
+    try {
+      const res = await fetch(`${this.workerApiUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${options.token}` } });
+      if (!res.ok) return { guest: true };
+      const data = (await res.json()) as { user?: { id?: string; username?: string } };
+      if (!data.user?.id) return { guest: true };
+      return { guest: false, userId: data.user.id, username: data.user.username };
+    } catch {
+      return { guest: true };
+    }
+  }
+
   onJoin(
     client: Client,
-    options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string }
+    options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string },
+    auth?: { guest?: boolean; userId?: string; username?: string }
   ) {
     console.log(`[ShootingRoom] Player joined: ${client.sessionId} (${options.username || 'Anon'})`);
     const player = new PlayerState();
-    player.id = options.userId || crypto.randomUUID();
+    player.id = auth && !auth.guest && auth.userId ? auth.userId : `guest_${client.sessionId}`;
     player.sessionId = client.sessionId;
-    player.username = options.username || `Player_${client.sessionId.substring(0, 4)}`;
+    player.username = (auth && !auth.guest && auth.username) || options.username || `Player_${client.sessionId.substring(0, 4)}`;
     player.avatarId = options.avatarId || 'specops';
 
     const chosenPrimary = options.primaryWeapon || 'ak47';
@@ -735,6 +775,8 @@ export class ShootingRoom extends Room<GameState> {
 
     this.state.players.delete(client.sessionId);
     this.state.activePlayersCount = this.state.players.size;
+    this.lastHitAt.delete(client.sessionId);
+    void this.flushPayoutBatch();
 
     if (this.redis) {
       this.redis

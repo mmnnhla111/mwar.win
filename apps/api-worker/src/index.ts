@@ -13,6 +13,16 @@ import { auditRouter } from './routes/audit';
 import { questsRouter, settleDailyMlm, getUtcDateKey } from './routes/quests';
 import { nodesRouter } from './routes/nodes';
 import { practiceRouter } from './routes/practice';
+import { releaseMarketplaceEscrow } from './routes/marketplace';
+import { hasInternalSecret } from './utils/guards';
+
+/** Daily 00:00 UTC job: settle *yesterday's* MLM ledger, then release matured marketplace escrow. */
+async function runDailyJobs(env: Env, dateKey?: string, targetUserId?: string) {
+  const key = dateKey || getUtcDateKey(new Date(Date.now() - 86_400_000));
+  const mlm = await settleDailyMlm(env, key, targetUserId);
+  const escrow = await releaseMarketplaceEscrow(env);
+  return { ...mlm, escrowReleased: escrow.released };
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -57,12 +67,11 @@ app.route('/api/nodes', nodesRouter);
 app.route('/api/practice', practiceRouter);
 
 // Cron endpoints (Direct trigger or Cloudflare Scheduled Event)
+// Manual trigger requires the internal secret (it moves money).
 app.post('/api/cron/settle-daily-mlm', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized: X-Internal-Secret required' }, 401);
   const body = await c.req.json().catch(() => ({}));
-  const dateKey = body.dateKey || getUtcDateKey();
-  const targetUserId = body.targetUserId;
-  const result = await settleDailyMlm(c.env, dateKey, targetUserId);
-  return c.json(result);
+  return c.json(await runDailyJobs(c.env, body.dateKey, body.targetUserId));
 });
 
 // Global Error Handler
@@ -79,19 +88,39 @@ app.onError((err, c) => {
 export default {
   fetch: app.fetch,
 
-  async queue(batch: { messages: Array<{ body: FinancialLog }> }, env: Env): Promise<void> {
+  // Cloudflare Cron Trigger (wrangler.toml [triggers] crons = ["0 0 * * *"])
+  async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
+    ctx.waitUntil(
+      runDailyJobs(env).then(
+        (r) => console.log('[Cron] daily settlement', JSON.stringify(r)),
+        (e) => console.error('[Cron] daily settlement failed', e)
+      )
+    );
+  },
+
+  // Spec §8: if the Mini PC is offline, logs must stay in the queue (up to 14 days) and be
+  // replayed FIFO when it returns — so failed deliveries are retried with back-off, never dropped.
+  async queue(
+    batch: { messages: Array<{ body: FinancialLog; attempts?: number; ack?: () => void; retry?: (o?: { delaySeconds?: number }) => void }> },
+    env: Env
+  ): Promise<void> {
     const receiverUrl = env.LOG_RECEIVER_URL || 'http://localhost:3000/api/logs';
     for (const msg of batch.messages) {
+      const retry = () => msg.retry?.({ delaySeconds: Math.min(43_200, 60 * 2 ** Math.min(10, msg.attempts ?? 1)) });
       try {
         const res = await fetch(receiverUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(msg.body),
+          headers: { 'Content-Type': 'application/json', ...(env.LOG_INGEST_SECRET ? { 'X-Log-Secret': env.LOG_INGEST_SECRET } : {}) },
+          body: JSON.stringify(msg.body, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
         });
         if (!res.ok) {
-          console.warn(`[Queue Consumer] Log receiver returned status ${res.status}`);
+          console.warn(`[Queue Consumer] Log receiver returned status ${res.status} — will retry`);
+          retry();
+        } else {
+          msg.ack?.();
         }
       } catch (err: any) {
+        retry();
         // Graceful fallback: when Mini PC / tunnel is not connected yet,
         // avoid crashing queue consumer loop
         console.warn(`[Queue Consumer Fallback] Log receiver offline (${receiverUrl}): ${err.message}. Message buffered in Cloudflare Queue.`);

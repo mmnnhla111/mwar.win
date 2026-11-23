@@ -7,7 +7,7 @@
  * So while playing on desktop we:
  *   1. enter fullscreen on the game container + request navigator.keyboard.lock() for game keys
  *   2. preventDefault every other Ctrl/Alt/Meta combo the browser allows us to cancel
- *   3. arm a beforeunload confirmation as a safety net (Firefox / Safari, or if fullscreen is exited)
+ *   (No beforeunload "Leave site?" prompt — it was annoying in windowed mode.)
  */
 
 type KeyboardLockApi = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
@@ -23,6 +23,9 @@ const LOCKED_CODES = [
   'KeyF',
   'KeyC',
   'KeyZ',
+  'KeyX',
+  'KeyG',
+  'KeyV',
   'KeyT',
   'KeyN',
   'KeyP',
@@ -44,14 +47,6 @@ export class BrowserGuard {
   private keyboardLocked = false;
 
   constructor(private container: HTMLElement) {}
-
-  private onBeforeUnload = (e: BeforeUnloadEvent) => {
-    if (!this.armed) return;
-    e.preventDefault();
-    // Legacy browsers need returnValue set to show the "Leave site?" prompt.
-    e.returnValue = '';
-    return '';
-  };
 
   /** Capture-phase keydown filter: blocks cancellable browser shortcuts while in-game. */
   private onKeyDown = (e: KeyboardEvent) => {
@@ -112,7 +107,6 @@ export class BrowserGuard {
   };
 
   attach() {
-    window.addEventListener('beforeunload', this.onBeforeUnload);
     window.addEventListener('keydown', this.onKeyDown, { capture: true });
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
     this.container.addEventListener('contextmenu', this.onContextMenu);
@@ -120,7 +114,6 @@ export class BrowserGuard {
 
   detach() {
     this.disarm();
-    window.removeEventListener('beforeunload', this.onBeforeUnload);
     window.removeEventListener('keydown', this.onKeyDown, { capture: true } as EventListenerOptions);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
     this.container.removeEventListener('contextmenu', this.onContextMenu);

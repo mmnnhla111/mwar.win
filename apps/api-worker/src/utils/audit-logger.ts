@@ -2,6 +2,8 @@ import type { FinancialLog } from '@mwar/shared';
 import type { Env } from '../types';
 
 export async function logFinancialTransaction(env: Env, log: FinancialLog): Promise<void> {
+  // Stamp the event time once so queue + direct deliveries land in the same logs_YYYY_MM table
+  if (!log.created_at) log.created_at = new Date().toISOString();
   // 1. Try sending to Cloudflare Queue if bound
   let queued = false;
   if (env.LOG_QUEUE && typeof env.LOG_QUEUE.send === 'function') {
@@ -19,7 +21,7 @@ export async function logFinancialTransaction(env: Env, log: FinancialLog): Prom
     try {
       await fetch(receiverUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(env.LOG_INGEST_SECRET ? { 'X-Log-Secret': env.LOG_INGEST_SECRET } : {}) },
         body: JSON.stringify(log, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
       }).catch((e) => {
         // Log receiver might be offline, which is expected during resilience tests

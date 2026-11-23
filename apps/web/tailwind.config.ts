@@ -5,6 +5,8 @@ const config: Config = {
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+    // Game UI (loadout screen, radial prop wheel) lives outside app/ — without this its classes were purged
+    './src/game/**/*.{js,ts,jsx,tsx}',
   ],
   theme: {
     extend: {

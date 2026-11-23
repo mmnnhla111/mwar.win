@@ -277,8 +277,8 @@ function buildM16(): WeaponModel {
   cyl(0.04, 0.04, 0.36, polymer, 0, 0.03, -0.4, g, 14);
   for (let i = 0; i < 6; i++) cyl(0.042, 0.042, 0.012, metal, 0, 0.03, -0.26 - i * 0.05, g, 14);
   cyl(0.011, 0.011, 0.34, steel, 0, 0.03, -0.74, g);
-  // Triangular front sight post
-  box(0.014, 0.07, 0.02, metal, 0, 0.09, -0.6, g);
+  // Front sight post — shortened so its tip stays below the red-dot line and never covers the target in ADS
+  box(0.012, 0.03, 0.016, metal, 0, 0.085, -0.6, g);
   const muzzle = cyl(0.017, 0.017, 0.07, metal, 0, 0.03, -0.92, g);
   const mag = new THREE.Group();
   box(0.04, 0.12, 0.072, polymer, 0, -0.06, 0, mag);
@@ -332,7 +332,7 @@ function buildAK(): WeaponModel {
   box(0.024, 0.03, 0.03, steel, 0, 0.05, -0.82, g);
   // Rear sight (iron notch) + front post on the same sight line
   rearNotch(g, steel, 0.095, -0.18);
-  box(0.006, 0.03, 0.006, steel, 0, 0.083, -0.82, g);
+  box(0.004, 0.018, 0.005, steel, 0, 0.074, -0.82, g); // short front post (tip sits below the sight line)
   const muzzle = cyl(0.016, 0.02, 0.06, steel, 0, 0.012, -0.9, g);
   // Banana magazine (3 angled segments)
   const mag = new THREE.Group();
@@ -440,7 +440,7 @@ function buildUzi(): WeaponModel {
   box(0.05, 0.015, 0.26, dark, 0, 0.068, -0.06, g);
   cyl(0.012, 0.012, 0.08, steel, 0, 0.02, -0.25, g);
   const muzzle = cyl(0.016, 0.016, 0.03, steel, 0, 0.02, -0.3, g);
-  box(0.006, 0.03, 0.006, steel, 0, 0.078, -0.19, g);
+  box(0.004, 0.01, 0.005, steel, 0, 0.0805, -0.19, g); // short front post
   rearNotch(g, steel, 0.088, 0.07);
   // Grip with magazine inside
   const grip = box(0.044, 0.13, 0.06, dark, 0, -0.08, 0.02, g);
@@ -476,7 +476,7 @@ function buildPistol(): WeaponModel {
   const mats: THREE.Material[] = [slide, frame];
   box(0.034, 0.036, 0.2, slide, 0, 0.03, -0.03, g);
   box(0.03, 0.02, 0.17, frame, 0, 0.0, -0.035, g);
-  box(0.005, 0.012, 0.006, slide, 0, 0.052, -0.12, g);
+  box(0.004, 0.007, 0.005, slide, 0, 0.0515, -0.12, g); // short front post
   rearNotch(g, slide, 0.058, 0.06, 0.01);
   const muzzle = cyl(0.008, 0.008, 0.01, slide, 0, 0.028, -0.135, g);
   const grip = box(0.032, 0.11, 0.045, frame, 0, -0.055, 0.045, g);

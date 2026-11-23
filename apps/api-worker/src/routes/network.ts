@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { formatMicroUsd } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { trackQuestAction } from './quests';
 
 export const networkRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -10,6 +11,8 @@ networkRouter.use('*', authMiddleware);
 // 1. Get 5-Level Downline Members
 networkRouter.get('/downline', async (c) => {
   const user = c.get('user');
+  // Daily quest Q_COMMUNITY: inspecting the network tree counts as a community interaction
+  await trackQuestAction(c.env.DB, user.userId, 'send_chat_or_network', 1).catch(() => {});
 
   const rows = await c.env.DB
     .prepare(

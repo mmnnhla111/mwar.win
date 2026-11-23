@@ -276,6 +276,11 @@ export class CollisionWorld {
     return best;
   }
 
+  /** True if the body could grow to `height` at its current position (used before standing up from crouch / prone). */
+  hasHeadroom(body: MoveBody, height: number): boolean {
+    return this.ceilingAbove(body.x, body.z, body.radius, body.y) >= body.y + height - 0.02;
+  }
+
   clampToBounds(p: { x: number; z: number }, margin = 0.5) {
     const lim = this.halfSize - margin;
     if (p.x > lim) p.x = lim;

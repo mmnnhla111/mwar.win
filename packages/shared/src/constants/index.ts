@@ -91,3 +91,21 @@ export const DAILY_QUESTS_REQUIRED_TO_UNLOCK = 4;
 export const MAX_ENERGY_TICKETS = 6;
 export const ENERGY_RECHARGE_SECONDS = 3600; // 1 hour per ticket
 export const MAX_AVATAR_UPLOAD_BYTES = 512 * 1024; // 512 KB
+
+// Layer-1 audit ledger: which audit-log action types add to / subtract from a wallet balance.
+// Audit-only entries (MLM_PENDING, MLM_FORFEIT, PLATFORM_FEE, PRACTICE_EC_RECHARGE) are excluded.
+export const LEDGER_INFLOW_ACTIONS = [
+  'GAME_KILL',
+  'CHEST_OPEN',
+  'AD_WATCH',
+  'MLM_COMMISSION',
+  'QUEST_REWARD',
+  'MARKET_SALE',
+  'DEV_MOCK_FAUCET',
+  'CASHOUT_REJECT_REFUND',
+] as const;
+export const LEDGER_OUTFLOW_ACTIONS = ['CASHOUT_REQUEST', 'MARKET_BUY'] as const;
+
+// Server-side reward caps (anti-cheat: the Worker rejects batch payouts above these)
+export const DEATH_CHEST_REWARD_MICRO_USD = CHEST_REWARD_BASE_MICRO_USD * 2n; // $0.10 death-drop chest
+export const MAX_SPECTATE_HEARTBEAT_SECONDS = 15; // Q_SPECTATE progress per heartbeat

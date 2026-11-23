@@ -3,10 +3,15 @@ import { WithdrawalReviewSchema, formatMicroUsd } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { logFinancialTransaction } from '../utils/audit-logger';
+import { isLocalDev, walletBalance } from '../utils/guards';
 
 export const auditRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
-// 1. Get Pending Withdrawals (For Admin / Auditor / Dev UI)
+// Withdrawal review is restricted to admin / auditor accounts (was previously unauthenticated).
+auditRouter.use('/pending', authMiddleware, requireRole(['admin', 'auditor']));
+auditRouter.use('/review', authMiddleware, requireRole(['admin', 'auditor']));
+
+// 1. Get Pending Withdrawals (For Admin / Auditor)
 auditRouter.get('/pending', async (c) => {
   const rows = await c.env.DB
     .prepare(
@@ -57,7 +62,7 @@ auditRouter.post('/review', async (c) => {
     // Approve withdrawal
     await c.env.DB
       .prepare("UPDATE withdrawal_requests SET status = 'approved', processed_at = ?1, audit_reasons = ?2 WHERE id = ?3")
-      .bind(now, JSON.stringify({ approvedBy: 'AI_AUDIT_PIPELINE', reason: reason || 'Clean audit trail' }), withdrawal.id)
+      .bind(now, JSON.stringify({ approvedBy: c.get('user').username, reason: reason || 'Clean audit trail' }), withdrawal.id)
       .run();
 
     return c.json({
@@ -71,7 +76,7 @@ auditRouter.post('/review', async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare(
         "UPDATE withdrawal_requests SET status = 'rejected', processed_at = ?1, audit_reasons = ?2 WHERE id = ?3"
-      ).bind(now, JSON.stringify({ rejectedBy: 'AI_AUDIT_PIPELINE', reason: reason || 'Audit policy violation' }), withdrawal.id),
+      ).bind(now, JSON.stringify({ rejectedBy: c.get('user').username, reason: reason || 'Audit policy violation' }), withdrawal.id),
       c.env.DB.prepare(
         'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_withdrawn_micro_usd = total_withdrawn_micro_usd - ?1, updated_at = ?2 WHERE user_id = ?3'
       ).bind(withdrawal.amount_micro_usd, now, withdrawal.user_id),
@@ -82,7 +87,7 @@ auditRouter.post('/review', async (c) => {
       user_id: withdrawal.user_id,
       action_type: 'CASHOUT_REJECT_REFUND',
       amount_micro_usd: BigInt(withdrawal.amount_micro_usd),
-      balance_after_micro_usd: 0n,
+      balance_after_micro_usd: await walletBalance(c.env.DB, withdrawal.user_id),
     });
 
     return c.json({
@@ -97,8 +102,8 @@ auditRouter.post('/review', async (c) => {
 
 // 3. Dev Mock Simulation for AI Audit Pipeline
 auditRouter.post('/dev/simulate-ai-review', async (c) => {
-  if (c.env.DEV_MOCK_MODE !== 'true') {
-    return c.json({ error: 'Available only in DEV_MOCK_MODE' }, 403);
+  if (!isLocalDev(c)) {
+    return c.json({ error: 'Available only on a local wrangler dev host' }, 403);
   }
 
   const body = await c.req.json().catch(() => ({}));

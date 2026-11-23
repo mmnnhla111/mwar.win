@@ -9,6 +9,10 @@ routes = [
   { pattern = "api.mwar.win", custom_domain = true }
 ]
 
+# Daily 00:00 UTC: settle yesterday's MLM pending ledger + release matured marketplace escrow
+[triggers]
+crons = ["0 0 * * *"]
+
 [vars]
 DEV_MOCK_MODE = "true"
 LOG_RECEIVER_URL = "https://logs.mwar.win/api/logs"
@@ -31,4 +35,12 @@ migrations_dir = "migrations/chat_2026_11"
 [[queues.producers]]
 binding = "LOG_QUEUE"
 queue = "mwar-financial-logs"
+
+# 4. Queue consumer: forwards buffered logs to the Mini PC log receiver (retries with back-off
+#    while it is offline; set the queue's retention to 14 days — see docs/ECONOMY_AND_SPEC_AUDIT.md)
+[[queues.consumers]]
+queue = "mwar-financial-logs"
+max_batch_size = 25
+max_batch_timeout = 5
+max_retries = 60
 

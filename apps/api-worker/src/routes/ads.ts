@@ -7,6 +7,15 @@ import type { Env, AuthUserPayload } from '../types';
 import { getUplines } from '../utils/mlm-tree';
 import { logFinancialTransaction } from '../utils/audit-logger';
 import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from './quests';
+import { isLocalDev, safeEqual, walletBalance, PLATFORM_ACCOUNT_ID } from '../utils/guards';
+import type { Context } from 'hono';
+
+/** S2S postbacks must carry ?secret=ADS_POSTBACK_SECRET (anyone could otherwise mint ad rewards). */
+function postbackAuthorized(c: Context<any>): boolean {
+  if (isLocalDev(c)) return true;
+  const secret = c.req.query('secret') || c.req.query('token') || c.req.header('X-Postback-Secret');
+  return safeEqual(secret, c.env.ADS_POSTBACK_SECRET);
+}
 
 export const adsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -42,7 +51,17 @@ async function processAdReward(
   ).bind(grossReward, now, userId).run();
 
   // 4. Record downline commission for each upline in daily_mlm_pending_ledger (Held as pending_grey until proof-of-activity unlock)
+  const txBase = `tx_ad_${provider}_${Date.now()}`;
   for (const p of mlm.payouts) {
+    await logFinancialTransaction(env, {
+      transaction_id: `${txBase}_L${p.depth}`,
+      user_id: p.userId,
+      action_type: 'MLM_PENDING',
+      amount_micro_usd: p.amountMicroUsd,
+      balance_after_micro_usd: 0n,
+      related_user_id: userId,
+      mlm_level: p.depth,
+    });
     await recordPendingMlmCommission(
       env.DB,
       p.userId,
@@ -62,13 +81,20 @@ async function processAdReward(
   }
 
   // 6. Log transactions to financial audit trail
-  const txBase = `tx_ad_${provider}_${Date.now()}`;
   await logFinancialTransaction(env, {
     transaction_id: `${txBase}_watcher`,
     user_id: userId,
     action_type: 'AD_WATCH',
     amount_micro_usd: BigInt(grossReward),
+    balance_after_micro_usd: await walletBalance(env.DB, userId),
+  });
+  await logFinancialTransaction(env, {
+    transaction_id: `${txBase}_platform`,
+    user_id: PLATFORM_ACCOUNT_ID,
+    action_type: 'PLATFORM_FEE',
+    amount_micro_usd: mlm.platformFeeMicroUsd + mlm.platformReserveMicroUsd,
     balance_after_micro_usd: 0n,
+    related_user_id: userId,
   });
 
   return {
@@ -85,6 +111,7 @@ async function processAdReward(
 
 // 1. AdswedMedia S2S Postback
 adsRouter.all('/postback/adswedmedia', async (c) => {
+  if (!postbackAuthorized(c)) return c.json({ error: 'Invalid postback secret' }, 401);
   const query = c.req.query();
   const userId = query.user_id || query.subid;
   const country = query.country || 'OTHER';
@@ -99,6 +126,7 @@ adsRouter.all('/postback/adswedmedia', async (c) => {
 
 // 2. OnClickA S2S Postback
 adsRouter.all('/postback/onclicka', async (c) => {
+  if (!postbackAuthorized(c)) return c.json({ error: 'Invalid postback secret' }, 401);
   const query = c.req.query();
   const userId = query.user_id || query.click_id;
   const country = query.country || 'OTHER';
@@ -113,6 +141,9 @@ adsRouter.all('/postback/onclicka', async (c) => {
 
 // 3. Dev Mock Simulation Endpoint (for Dev Panel UI)
 adsRouter.post('/dev/simulate-watch', async (c) => {
+  if (!isLocalDev(c)) {
+    return c.json({ error: 'Ad simulation is only available on a local wrangler dev host' }, 403);
+  }
   const body = await c.req.json().catch(() => ({}));
   const userId = body.userId;
   const country = (body.country || 'US').toUpperCase();

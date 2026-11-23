@@ -10,6 +10,8 @@ export class PlayerState extends Schema {
   @type('number') y: number = 0;
   @type('number') z: number = 0;
   @type('number') rotationY: number = 0;
+  // Stance: 'stand' | 'crouch' | 'prone' (drives the 3rd-person posture + hitbox on other clients)
+  @type('string') stance: string = 'stand';
 
   // Combat status
   @type('number') health: number = 100;

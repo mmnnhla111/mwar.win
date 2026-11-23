@@ -26,6 +26,8 @@ export interface BotTargetInfo {
   eye: THREE.Vector3;
   speed: number;
   crouching: boolean;
+  /** Lying flat: smallest silhouette, hardest to hit. */
+  prone?: boolean;
   alive: boolean;
   /** Prop disguise makes the player much harder to notice. */
   disguised: boolean;
@@ -328,13 +330,14 @@ export class BotManager {
     p *= THREE.MathUtils.clamp(1.12 - dist / 110, 0.5, 1);
     if (player.speed > 4) p *= 0.8;
     else if (player.speed > 1) p *= 0.9;
-    if (player.crouching) p *= 0.88;
+    if (player.prone) p *= 0.7;
+    else if (player.crouching) p *= 0.88;
     if (bot.speed > 1) p *= 0.88;
     if (bot.seenTime < bot.reaction + 0.6) p *= 0.75; // first shots less accurate
     const def = WEAPONS[bot.weapon];
     if (bot.weapon === 'uzi') p *= THREE.MathUtils.clamp(1.2 - dist / 40, 0.35, 1);
     if (bot.weapon === 'sniper') p = Math.min(0.9, p * (dist > 25 ? 1.15 : 0.8));
-    const chest = tmpB.set(player.position.x, player.position.y + (player.crouching ? 0.8 : 1.25), player.position.z);
+    const chest = tmpB.set(player.position.x, player.position.y + (player.prone ? 0.25 : player.crouching ? 0.8 : 1.25), player.position.z);
     const clear = this.world.lineOfSight(muzzle.x, muzzle.y, muzzle.z, chest.x, chest.y, chest.z);
     const hit = clear && Math.random() < p;
     const end = chest.clone();

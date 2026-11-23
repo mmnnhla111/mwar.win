@@ -18,6 +18,10 @@ export interface Env {
   INTERNAL_API_SECRET: string;
   NODE_PROVISION_KEY?: string;
   LOG_RECEIVER_URL?: string;
+  /** Shared secret appended to ad-network S2S postback URLs (?secret=...). Required in production. */
+  ADS_POSTBACK_SECRET?: string;
+  /** Shared secret sent to the Mini PC log receiver (X-Log-Secret header). */
+  LOG_INGEST_SECRET?: string;
 }
 
 export interface AuthUserPayload {

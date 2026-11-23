@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { logFinancialTransaction } from '../utils/audit-logger';
+import { trackQuestAction } from './quests';
 
 export const practiceRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -76,6 +77,9 @@ practiceRouter.post('/claim-ec', authMiddleware, async (c) => {
     )
     .bind(tickets, finalProgress, now, authUser.userId)
     .run();
+
+  // Daily quest Q_PLAY_MATCH: a completed practice round counts as finishing a match
+  await trackQuestAction(c.env.DB, authUser.userId, 'finish_game_match', 1).catch(() => {});
 
   // Audit log entry to logs.mwar.win (PostgreSQL) and Cloudflare Queue
   await logFinancialTransaction(c.env, {

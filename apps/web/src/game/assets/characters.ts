@@ -527,7 +527,7 @@ const lerp = THREE.MathUtils.lerp;
  * (rifle shouldered, both hands on the weapon) and low-ready while moving fast.
  * `blend` = per-call smoothing factor (0..1).
  */
-export function animateCharacter(rig: CharacterRig, t: number, speed: number, aiming: boolean, crouch = 0, blend = 0.2) {
+export function animateCharacter(rig: CharacterRig, t: number, speed: number, aiming: boolean, crouch = 0, blend = 0.2, prone = 0) {
   const run = Math.min(1, speed / 5.5);
   const walk = Math.min(1, speed / 2.5);
   const swing = walk * (0.45 + run * 0.35);
@@ -573,6 +573,32 @@ export function animateCharacter(rig: CharacterRig, t: number, speed: number, ai
   rig.gun.position.x = lerp(rig.gun.position.x, pistol ? 0.0 : 0.07, blend);
   rig.gun.rotation.x = lerp(rig.gun.rotation.x, aiming ? 0 : 0.35 + run * 0.1, blend);
   rig.gun.rotation.y = lerp(rig.gun.rotation.y, aiming ? 0 : -0.15, blend);
+
+  // Prone (lying flat + crawling): the whole body pivots forward at the feet so the head points
+  // along the facing direction; arms reach overhead (= forward when lying) holding the weapon.
+  const pr = THREE.MathUtils.clamp(prone, 0, 1);
+  if (pr > 0.001) {
+    const crawl = Math.sin(t * (2 + speed * 2.2)) * Math.min(1, speed / 1.2);
+    rig.body.rotation.x = lerp(rig.body.rotation.x, -Math.PI / 2 * pr, 0.35);
+    rig.body.position.y = lerp(rig.body.position.y, 0.16 * pr, 0.35);
+    rig.body.position.z = lerp(rig.body.position.z, 0.75 * pr, 0.35);
+    rig.torso.rotation.x = lerp(rig.torso.rotation.x, 0, 0.35);
+    rig.neck.rotation.x = lerp(rig.neck.rotation.x, -0.9 * pr, 0.35); // look ahead, not into the dirt
+    rig.legL.rotation.x = lerp(rig.legL.rotation.x, crawl * 0.25, 0.35);
+    rig.legR.rotation.x = lerp(rig.legR.rotation.x, -crawl * 0.25, 0.35);
+    rig.kneeL.rotation.x = lerp(rig.kneeL.rotation.x, -Math.max(0, crawl) * 0.6, 0.35);
+    rig.kneeR.rotation.x = lerp(rig.kneeR.rotation.x, -Math.max(0, -crawl) * 0.6, 0.35);
+    rig.armR.rotation.x = lerp(rig.armR.rotation.x, 2.75 + crawl * 0.15, 0.35);
+    rig.armL.rotation.x = lerp(rig.armL.rotation.x, 2.85 - crawl * 0.15, 0.35);
+    rig.elbowR.rotation.x = lerp(rig.elbowR.rotation.x, 0.5, 0.35);
+    rig.elbowL.rotation.x = lerp(rig.elbowL.rotation.x, 0.4, 0.35);
+    rig.gun.rotation.x = lerp(rig.gun.rotation.x, Math.PI / 2, 0.35);
+    rig.gun.position.y = lerp(rig.gun.position.y, 0.78, 0.35);
+    rig.gun.position.z = lerp(rig.gun.position.z, -0.12, 0.35);
+  } else {
+    rig.body.rotation.x = lerp(rig.body.rotation.x, 0, 0.35);
+    rig.body.position.z = lerp(rig.body.position.z, 0, 0.35);
+  }
 }
 
 /** Renders each character to a transparent PNG data URL for the avatar selector. */

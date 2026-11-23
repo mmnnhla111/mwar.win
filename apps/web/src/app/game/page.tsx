@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
-import { apiFetch, progressQuest } from '../../lib/api';
+import { apiFetch, getAuthToken, progressQuest } from '../../lib/api';
 import { formatMicroUsd } from '@mwar/shared';
 import { QuestSpectateIcon } from '../../components/icons';
 import { soundFX } from '../../game/audio';
@@ -46,8 +46,16 @@ import LoadoutScreen from '../../game/ui/LoadoutScreen';
 // ----------------------------------------------------------------------------
 // Tuning constants
 // ----------------------------------------------------------------------------
-const STAND_EYE = 1.62;
+const STAND_EYE = 1.7;
 const CROUCH_EYE = 1.05;
+const PRONE_EYE = 0.4;
+const STAND_HEIGHT = 1.78;
+const CROUCH_HEIGHT = 1.2;
+const PRONE_HEIGHT = 0.6;
+const CROUCH_SPEED = 2.8;
+const PRONE_SPEED = 1.2; // slow tactical crawl
+const PROP_ROTATE_SPEED = 1.5; // rad/s while holding Q / E (or the < > buttons)
+const STATUS_TTL_MS = 10_000; // status toast lifetime (fades during the last second)
 const LEAN_DISTANCE = 0.65; // metres sideways along the camera's horizontal right vector
 const LEAN_ROLL = THREE.MathUtils.degToRad(12);
 const LEAN_WALL_MARGIN = 0.28;
@@ -59,6 +67,17 @@ const BOT_ACCURACY = 0.7; // 70 % skill
 const PRACTICE_ROUND_GOAL = 10; // eliminations per practice round
 const EC_PROGRESS_PER_ROUND = 25; // % of one Energy Ticket recharged per completed round
 const EC_STORAGE_KEY = 'mwar_practice_ec_recharge_progress';
+
+type Stance = 'stand' | 'crouch' | 'prone';
+const STANCE_HEIGHT: Record<Stance, number> = { stand: STAND_HEIGHT, crouch: CROUCH_HEIGHT, prone: PRONE_HEIGHT };
+const STANCE_EYE: Record<Stance, number> = { stand: STAND_EYE, crouch: CROUCH_EYE, prone: PRONE_EYE };
+
+/** World-space AABB extents (x, z) of a prop footprint rotated by `yaw`. */
+function propExtents(size: ArrayLike<number>, yaw: number) {
+  const c = Math.abs(Math.cos(yaw));
+  const sn = Math.abs(Math.sin(yaw));
+  return { w: size[0] * c + size[1] * sn, d: size[0] * sn + size[1] * c };
+}
 
 type ArenaMode = 'mini_30' | 'standard_100' | 'fast_mini' | 'practice' | 'spectator';
 
@@ -107,6 +126,7 @@ interface HudState {
   respawnIn: number;
   leanDir: -1 | 0 | 1;
   crouching: boolean;
+  stance: Stance;
   keyboardLocked: boolean;
 }
 
@@ -159,9 +179,13 @@ export default function GamePage() {
     respawnIn: 0,
     leanDir: 0,
     crouching: false,
+    stance: 'stand',
     keyboardLocked: false,
   });
-  const [killFeed, setKillFeed] = useState<string[]>([]);
+  // Single latest status message (replaces the old stacked feed); fades + unmounts after 10 s.
+  const [statusMsg, setStatusMsg] = useState<{ id: number; text: string } | null>(null);
+  const [statusFading, setStatusFading] = useState(false);
+  const [isLandscape, setIsLandscape] = useState(false);
   const [afkPrompt, setAfkPrompt] = useState<string | null>(null);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -190,9 +214,7 @@ export default function GamePage() {
   const [isOverlayDismissed, setIsOverlayDismissed] = useState(false);
   const [isDragLookMode, setIsDragLookMode] = useState(false);
   const [isAdsActive, setIsAdsActive] = useState(false);
-  const [isCrouchActive, setIsCrouchActive] = useState(false);
   const [leanState, setLeanState] = useState<'none' | 'left' | 'right'>('none');
-  const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
 
   // Refs for real-time loops and cross-event communication
   const isPointerLockedRef = useRef(false);
@@ -201,7 +223,9 @@ export default function GamePage() {
   const isMobileRef = useRef(false);
   const isOverlayDismissedRef = useRef(false);
   const isAdsActiveRef = useRef(false);
-  const isCrouchActiveRef = useRef(false);
+  const stanceRef = useRef<Stance>('stand');
+  const stanceActionRef = useRef<(a: 'cycle' | 'crouch' | 'prone' | 'stand') => void>(() => {});
+  const propRotateRef = useRef(0); // -1 = clockwise (>), +1 = counter-clockwise (<) — mobile hold buttons
   const leanStateRef = useRef<'none' | 'left' | 'right'>('none');
   const firingRef = useRef(false);
   const lookRef = useRef({ yaw: 0, pitch: 0, dx: 0, dy: 0 });
@@ -222,7 +246,11 @@ export default function GamePage() {
   const commandOpenRef = useRef(false);
   const guardRef = useRef<BrowserGuard | null>(null);
   const joystickCenterRef = useRef<{ x: number; y: number } | null>(null);
+  const joystickKnobRef = useRef<HTMLDivElement>(null);
   const lastTouchLookRef = useRef<{ x: number; y: number } | null>(null);
+  // Independent multi-touch tracking: one finger steers the joystick while another swipes to look.
+  const joystickTouchIdRef = useRef<number | null>(null);
+  const lookTouchIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     isPointerLockedRef.current = isPointerLocked;
@@ -240,11 +268,32 @@ export default function GamePage() {
     isAdsActiveRef.current = isAdsActive;
   }, [isAdsActive]);
   useEffect(() => {
-    isCrouchActiveRef.current = isCrouchActive;
-  }, [isCrouchActive]);
-  useEffect(() => {
     leanStateRef.current = leanState;
   }, [leanState]);
+
+  // Status toast: only the latest message is shown; it fades during its last second and unmounts at 10 s.
+  useEffect(() => {
+    if (!statusMsg) return;
+    setStatusFading(false);
+    const fade = setTimeout(() => setStatusFading(true), STATUS_TTL_MS - 1000);
+    const clear = setTimeout(() => setStatusMsg(null), STATUS_TTL_MS);
+    return () => {
+      clearTimeout(fade);
+      clearTimeout(clear);
+    };
+  }, [statusMsg]);
+
+  // Landscape detection (mobile controls rearrange into a compact landscape layout)
+  useEffect(() => {
+    const update = () => setIsLandscape(window.innerWidth > window.innerHeight);
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', update);
+    };
+  }, []);
 
   // Spectator Mode Quest Tracking (90 seconds for Q_SPECTATE)
   const [spectatorSeconds, setSpectatorSeconds] = useState(0);
@@ -373,7 +422,13 @@ export default function GamePage() {
     }
   };
 
-  // Joystick touch handlers
+  // Joystick + look touch handlers — each finger is tracked by Touch.identifier so the left thumb
+  // keeps steering while the right thumb swipes to aim (and a third finger can tap FIRE / JUMP …).
+  const findTouch = (list: React.TouchList, id: number | null) => {
+    if (id === null) return null;
+    for (let i = 0; i < list.length; i++) if (list[i].identifier === id) return list[i];
+    return null;
+  };
   const updateJoystick = (clientX: number, clientY: number) => {
     if (!joystickCenterRef.current) return;
     const dx = clientX - joystickCenterRef.current.x;
@@ -384,38 +439,50 @@ export default function GamePage() {
     const clampedDist = Math.min(dist, maxRadius);
     const nx = Math.cos(angle) * clampedDist;
     const ny = Math.sin(angle) * clampedDist;
-    setJoystickPos({ x: nx, y: ny });
+    // Move the knob directly (no React re-render per touchmove)
+    if (joystickKnobRef.current) joystickKnobRef.current.style.transform = `translate(${nx}px, ${ny}px)`;
     mobileInputRef.current.moveX = nx / maxRadius;
     mobileInputRef.current.moveZ = ny / maxRadius;
   };
+  const resetJoystick = () => {
+    if (joystickKnobRef.current) joystickKnobRef.current.style.transform = 'translate(0px, 0px)';
+    mobileInputRef.current.moveX = 0;
+    mobileInputRef.current.moveZ = 0;
+    joystickCenterRef.current = null;
+    joystickTouchIdRef.current = null;
+  };
   const handleJoystickTouchStart = (e: React.TouchEvent) => {
     e.stopPropagation();
-    const touch = e.touches[0];
+    if (joystickTouchIdRef.current !== null) return; // already steering with another finger
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+    joystickTouchIdRef.current = touch.identifier;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     joystickCenterRef.current = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     updateJoystick(touch.clientX, touch.clientY);
   };
   const handleJoystickTouchMove = (e: React.TouchEvent) => {
     e.stopPropagation();
-    const touch = e.touches[0];
-    updateJoystick(touch.clientX, touch.clientY);
+    const touch = findTouch(e.changedTouches, joystickTouchIdRef.current);
+    if (touch) updateJoystick(touch.clientX, touch.clientY);
   };
   const handleJoystickTouchEnd = (e: React.TouchEvent) => {
     e.stopPropagation();
-    setJoystickPos({ x: 0, y: 0 });
-    mobileInputRef.current.moveX = 0;
-    mobileInputRef.current.moveZ = 0;
-    joystickCenterRef.current = null;
+    if (findTouch(e.changedTouches, joystickTouchIdRef.current)) resetJoystick();
   };
 
-  // Touch look (right side of the screen)
+  // Touch look (right side of the screen) — independent finger
   const handleTouchLookStart = (e: React.TouchEvent) => {
-    const touch = e.touches[0];
+    if (lookTouchIdRef.current !== null) return;
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+    lookTouchIdRef.current = touch.identifier;
     lastTouchLookRef.current = { x: touch.clientX, y: touch.clientY };
   };
   const handleTouchLookMove = (e: React.TouchEvent) => {
     if (!lastTouchLookRef.current) return;
-    const touch = e.touches[0];
+    const touch = findTouch(e.changedTouches, lookTouchIdRef.current);
+    if (!touch) return;
     const deltaX = touch.clientX - lastTouchLookRef.current.x;
     const deltaY = touch.clientY - lastTouchLookRef.current.y;
     lastTouchLookRef.current = { x: touch.clientX, y: touch.clientY };
@@ -426,7 +493,9 @@ export default function GamePage() {
     look.dx += deltaX;
     look.dy += deltaY;
   };
-  const handleTouchLookEnd = () => {
+  const handleTouchLookEnd = (e: React.TouchEvent) => {
+    if (!findTouch(e.changedTouches, lookTouchIdRef.current)) return;
+    lookTouchIdRef.current = null;
     lastTouchLookRef.current = null;
   };
 
@@ -623,7 +692,8 @@ export default function GamePage() {
     // ---- Bot mode (practice or offline) & economy ----------------------------------------------
     let bots: BotManager | null = null;
     let botMode = false;
-    const feed = (msg: string) => setKillFeed((prev) => [msg, ...prev.slice(0, 4)]);
+    let statusSeq = 0;
+    const feed = (msg: string) => setStatusMsg({ id: ++statusSeq, text: msg });
 
     const playerInfo = {
       position: new THREE.Vector3(),
@@ -632,6 +702,7 @@ export default function GamePage() {
       crouching: false,
       alive: true,
       disguised: false,
+      prone: false,
     };
 
     let roundStartTime = Date.now();
@@ -867,6 +938,7 @@ export default function GamePage() {
       player.respawnTimer = 4;
       player.deathPos.set(body.x, body.y, body.z);
       firingRef.current = false;
+      stanceRef.current = 'stand';
       if (player.isProp) setProp(null);
       closePropMenu();
       // Drop the primary where we fell (bots can't use it, but you can grab it back)
@@ -918,8 +990,7 @@ export default function GamePage() {
         onShot: (from) => soundFX.playEnemyShot(from.distanceTo(camera.position)),
       }, { count: BOT_COUNT, accuracy: BOT_ACCURACY, playerHalf: PLAY_HALF, spawnPoints: layout.spawnPoints });
       setConnectionStatus(reason === 'practice' ? 'solo_bots' : 'offline_practice');
-      feed(`🤖 ${BOT_COUNT} AI bots deployed (70% skill)`);
-      feed('⚡ ENERGY RECHARGE MODE • No Micro-USD / Coin payouts');
+      feed(`🤖 ${BOT_COUNT} AI bots (70% skill) • ⚡ Energy recharge mode — no Micro-USD / coin payouts`);
     };
 
     const onBotKilled = (botId: number, how: string) => {
@@ -940,6 +1011,9 @@ export default function GamePage() {
       speed: number;
       prop: THREE.Group | null;
       propId: PropId | null;
+      stance: Stance;
+      crouchT: number;
+      proneT: number;
     }
     const remotePlayers = new Map<string, Remote>();
     let currentRoom: Room | null = null;
@@ -983,6 +1057,8 @@ export default function GamePage() {
           username: meData?.user?.username || `Guest_${Math.floor(Math.random() * 900 + 100)}`,
           avatarId: loadoutCharacter,
           primaryWeapon: loadoutPrimary,
+          // Identity is verified by the game server through the Worker (client userIds are ignored)
+          token: getAuthToken() || undefined,
         });
         if (meData?.user) {
           const u = meData.user;
@@ -1017,7 +1093,17 @@ export default function GamePage() {
             rig.root.position.set(p.x, p.y || 0, p.z);
             rig.hitMeshes.forEach((m) => (m.userData.remoteId = key));
             scene.add(rig.root);
-            const rp: Remote = { rig, target: new THREE.Vector3(p.x, p.y || 0, p.z), yaw: p.rotationY || 0, speed: 0, prop: null, propId: null };
+            const rp: Remote = {
+              rig,
+              target: new THREE.Vector3(p.x, p.y || 0, p.z),
+              yaw: p.rotationY || 0,
+              speed: 0,
+              prop: null,
+              propId: null,
+              stance: p.stance === 'crouch' || p.stance === 'prone' ? p.stance : 'stand',
+              crouchT: 0,
+              proneT: 0,
+            };
             remotePlayers.set(key, rp);
             setRemoteProp(key, rp, !!p.isProp, p.propType);
           }
@@ -1038,6 +1124,7 @@ export default function GamePage() {
               if (rp) {
                 rp.target.set(p.x, p.y || 0, p.z);
                 rp.yaw = p.rotationY || 0;
+                rp.stance = p.stance === 'crouch' || p.stance === 'prone' ? p.stance : 'stand';
                 setRemoteProp(key, rp, !!p.isProp, p.propType);
               }
             }
@@ -1129,6 +1216,8 @@ export default function GamePage() {
     // ---- Prop disguise (radial C wheel) -------------------------------------------------------
     let propModel: THREE.Group | null = null;
     let propId: PropId | null = null;
+    // The disguise keeps its own orientation: looking around only orbits the camera.
+    let propYaw = 0;
     const setProp = (id: PropId | null, notifyServer = true) => {
       if (propModel) {
         scene.remove(propModel);
@@ -1141,11 +1230,14 @@ export default function GamePage() {
       viewmodel.setVisible(!id);
       if (id) {
         propModel = createPropModel(id);
+        propYaw = Math.round(look.yaw / (Math.PI / 2)) * (Math.PI / 2);
+        propModel.rotation.y = propYaw;
+        stanceRef.current = 'stand';
         scene.add(propModel);
         player.orbitPitch = 0.35;
         firingRef.current = false;
         player.reloadTimer = -1;
-        feed(`🎭 Disguised as ${propDef(id).name}${propDef(id).solid ? ' (solid)' : ' (small, pass-through)'}`);
+        feed(`🎭 Disguised as ${propDef(id).name}${propDef(id).solid ? ' (solid)' : ' (small, pass-through)'} • Q / E rotate`);
       }
       setCurrentProp(id);
       if (notifyServer && currentRoom) currentRoom.send('player_set_prop', { isProp: !!id, propType: id ?? undefined });
@@ -1171,7 +1263,37 @@ export default function GamePage() {
       openPropMenu();
     };
     triggerJumpRef.current = () => {
-      if (player.alive && deployedRef.current) world.jump(body, 7.4);
+      if (!player.alive || !deployedRef.current) return;
+      // Space while crouched / prone stands up first (no jump)
+      if (stanceRef.current !== 'stand' && body.onGround && !player.isProp) {
+        trySetStance('stand');
+        return;
+      }
+      world.jump(body, 7.4);
+    };
+
+    // ---- Stance: stand -> crouch -> prone -> stand (Ctrl / Z cycles, X toggles prone, Space stands)
+    const trySetStance = (want: Stance) => {
+      const cur = stanceRef.current;
+      if (want === cur) return true;
+      if (want === 'prone' && !body.onGround) return false; // can't go prone mid-air
+      if (STANCE_HEIGHT[want] > body.height && !world.hasHeadroom(body, STANCE_HEIGHT[want])) {
+        feed(want === 'stand' ? '⛔ No room to stand up here' : '⛔ No room to crouch here');
+        return false;
+      }
+      stanceRef.current = want;
+      return true;
+    };
+    stanceActionRef.current = (a) => {
+      if (!player.alive || player.isProp || !deployedRef.current || isGhostSpectator) return;
+      const s = stanceRef.current;
+      if (a === 'cycle') {
+        // Mid-air only toggles crouch (jump + crouch to vault through ground-floor windows)
+        if (!body.onGround) trySetStance(s === 'stand' ? 'crouch' : 'stand');
+        else trySetStance(s === 'stand' ? 'crouch' : s === 'crouch' ? 'prone' : 'stand');
+      } else if (a === 'crouch') trySetStance(s === 'crouch' ? 'stand' : 'crouch');
+      else if (a === 'prone') trySetStance(s === 'prone' ? 'stand' : 'prone');
+      else trySetStance('stand');
     };
     const startReload = () => {
       const gun = currentGun();
@@ -1240,16 +1362,7 @@ export default function GamePage() {
         if (g.byPlayer) killed.forEach((id) => onBotKilled(id, '💣 GRENADE • '));
         if (g.byPlayer && killed.length) setHitMarker({ at: performance.now(), kill: true, head: false });
       }
-      // Remote players (client reports blast damage)
-      if (g.byPlayer && currentRoom) {
-        remotePlayers.forEach((rp, key) => {
-          const p = rp.rig.root.position;
-          const d = Math.hypot(p.x - c.x, p.y + 1 - c.y, p.z - c.z);
-          if (d > GRENADE.radius || !world.lineOfSight(c.x, c.y + 0.2, c.z, p.x, p.y + 1, p.z)) return;
-          const dmg = Math.round(GRENADE.maxDamage * (1 - d / GRENADE.radius) ** 0.8);
-          currentRoom?.send('player_shoot', { targetType: 'player', targetId: key, damage: Math.min(100, dmg) });
-        });
-      }
+      // Remote players: grenade damage is computed server-side (handleGrenadeExplosion), never reported by the client.
       // Self / player damage
       if (player.alive && !isGhostSpectator) {
         const chest = new THREE.Vector3(body.x, body.y + 1.0, body.z);
@@ -1339,7 +1452,8 @@ export default function GamePage() {
       let spread = THREE.MathUtils.lerp(def.hipSpread, def.adsSpread, ads);
       if (player.speed > 1) spread += def.moveSpread * Math.min(1, player.speed / 6) * (1 - ads * 0.6);
       if (!body.onGround) spread += 0.03;
-      if (keys.ControlLeft || keys.KeyZ || isCrouchActiveRef.current) spread *= 0.75;
+      if (stanceRef.current === 'prone') spread *= 0.55;
+      else if (stanceRef.current === 'crouch') spread *= 0.75;
       ndc.set((Math.random() - 0.5) * spread * 2, (Math.random() - 0.5) * spread * 2);
       raycaster.setFromCamera(ndc, camera);
       const origin = raycaster.ray.origin;
@@ -1381,7 +1495,7 @@ export default function GamePage() {
           setHitMarker({ at: performance.now(), kill: killed, head });
           if (killed) onBotKilled(hit.object.userData.botId, head ? 'HEADSHOT • ' : '');
         } else if (hit.object.userData.remoteId && currentRoom) {
-          currentRoom.send('player_shoot', { targetType: 'player', targetId: hit.object.userData.remoteId, damage: Math.min(100, Math.round(dmg)) });
+          currentRoom.send('player_shoot', { targetType: 'player', targetId: hit.object.userData.remoteId, damage: Math.min(100, Math.round(dmg)), weaponId: gun.id });
           soundFX.playHitMarker();
           setHitMarker({ at: performance.now(), kill: false, head });
         }
@@ -1396,7 +1510,7 @@ export default function GamePage() {
         soundFX.playHitMarker();
         if (foundId) {
           if (currentRoom && !botMode) {
-            currentRoom.send('player_shoot', { targetType: 'chest', targetId: foundId, damage: 25 });
+            currentRoom.send('player_shoot', { targetType: 'chest', targetId: foundId, damage: 25, weaponId: gun.id });
           } else {
             soundFX.playChestPickup();
             player.chests += 1;
@@ -1464,6 +1578,12 @@ export default function GamePage() {
         get bots() {
           return bots;
         },
+        get stance() {
+          return stanceRef.current;
+        },
+        get propYaw() {
+          return propYaw;
+        },
         setProp: (id: PropId | null) => setProp(id),
         equip,
         throwGrenade: () => throwGrenade(false),
@@ -1485,6 +1605,8 @@ export default function GamePage() {
         e.preventDefault();
         if (!e.repeat) triggerJumpRef.current();
       }
+      if ((e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === 'KeyZ') && !e.repeat) stanceActionRef.current('cycle');
+      if (e.code === 'KeyX' && !e.repeat) stanceActionRef.current('prone');
       if (e.code === 'KeyC' && !e.repeat) togglePropRef.current();
       if (e.code === 'Escape' && propMenuOpenRef.current) closePropMenu();
       if (e.code === 'KeyF' && !e.repeat) {
@@ -1652,7 +1774,9 @@ export default function GamePage() {
       const tSec = now / 1000;
       const active = deployedRef.current || isGhostSpectator;
 
-      const crouching = active && !player.isProp && (keys.ControlLeft || keys.ControlRight || keys.KeyZ || isCrouchActiveRef.current);
+      const stance: Stance = active && !player.isProp && player.alive ? stanceRef.current : 'stand';
+      const crouching = stance !== 'stand';
+      const prone = stance === 'prone';
       const gunNow = currentGun();
       const adsWanted = isAdsActiveRef.current && !player.isProp && player.alive && inv.slot !== 'grenade' && !propMenuOpenRef.current;
       const heldDef = gunNow ? WEAPONS[gunNow.id] : WEAPONS.pistol;
@@ -1693,14 +1817,15 @@ export default function GamePage() {
       } else {
         let speed = 6.2 * (player.isProp ? 1 : heldDef.moveMult);
         if (keys.ShiftLeft || keys.ShiftRight) speed = 3.0; // walk slow (quiet)
-        if (crouching) speed = 2.8;
+        if (stance === 'crouch') speed = CROUCH_SPEED;
+        if (prone) speed = PRONE_SPEED;
         if (adsWanted) speed *= heldDef.scope ? 0.5 : 0.65;
         if (player.isProp) speed = 4.2;
         const dx = (forward.x * -mz + right.x * mx) * speed * dt;
         const dz = (forward.z * -mz + right.z * mx) * speed * dt;
         const px = body.x;
         const pz = body.z;
-        body.height = crouching ? 1.2 : 1.78;
+        body.height = STANCE_HEIGHT[stance];
         const wasAir = !body.onGround;
         const fallSpeed = -body.velY;
         world.moveBody(body, dx, dz, dt);
@@ -1713,12 +1838,14 @@ export default function GamePage() {
         // Solid prop disguise blocks other players / bots (owner 'local' is ignored for us)
         if (propModel && propId) {
           const def = propDef(propId);
-          const q = Math.round(look.yaw / (Math.PI / 2));
-          const swap = Math.abs(q) % 2 === 1;
-          const w = swap ? def.size[1] : def.size[0];
-          const d = swap ? def.size[0] : def.size[1];
+          // Q / E (or the mobile < > buttons) slowly rotate the prop; camera look never does.
+          let rot = propRotateRef.current;
+          if (keys.KeyQ) rot += 1;
+          if (keys.KeyE) rot -= 1;
+          propYaw += THREE.MathUtils.clamp(rot, -1, 1) * PROP_ROTATE_SPEED * dt;
+          const { w, d } = propExtents(def.size, propYaw);
           propModel.position.set(body.x, body.y, body.z);
-          propModel.rotation.y = q * (Math.PI / 2);
+          propModel.rotation.y = propYaw;
           if (def.solid) world.setDynamicBox('local', { minX: body.x - w / 2, maxX: body.x + w / 2, minZ: body.z - d / 2, maxZ: body.z + d / 2, minY: body.y, maxY: body.y + def.size[2] });
         }
       }
@@ -1732,7 +1859,7 @@ export default function GamePage() {
       }
 
       // --- Eye height (crouch smoothing + stair step smoothing)
-      player.eyeHeight = THREE.MathUtils.damp(player.eyeHeight, !player.alive ? 0.4 : crouching ? CROUCH_EYE : STAND_EYE, 12, dt);
+      player.eyeHeight = THREE.MathUtils.damp(player.eyeHeight, !player.alive ? 0.4 : STANCE_EYE[stance], prone ? 7 : 12, dt);
       const dy = body.y - player.renderY;
       player.renderY = dy > 0 && dy < 0.7 ? THREE.MathUtils.damp(player.renderY, body.y, 16, dt) : body.y;
 
@@ -1789,7 +1916,7 @@ export default function GamePage() {
         lookDeltaX: look.dx,
         lookDeltaY: look.dy,
         grounded: body.onGround,
-        crouching: !!crouching,
+        crouching,
         reload: player.reloadTimer >= 0 ? player.reloadTimer / player.reloadTime : -1,
       });
       look.dx = 0;
@@ -1881,7 +2008,8 @@ export default function GamePage() {
         playerInfo.position.set(body.x, body.y, body.z);
         playerInfo.eye.set(body.x, body.y + player.eyeHeight, body.z).addScaledVector(right, leanOffset);
         playerInfo.speed = player.speed;
-        playerInfo.crouching = !!crouching;
+        playerInfo.crouching = crouching;
+        playerInfo.prone = prone;
         playerInfo.alive = player.alive;
         playerInfo.disguised = player.isProp && player.speed < 0.5;
         bots.update(dt, playerInfo);
@@ -1899,16 +2027,18 @@ export default function GamePage() {
         if (rp.prop && rp.propId) {
           const p = rp.rig.root.position;
           rp.prop.position.copy(p);
-          const q = Math.round(rp.yaw / (Math.PI / 2));
-          rp.prop.rotation.y = q * (Math.PI / 2);
+          // While disguised, rotationY carries the prop's own yaw (not the camera)
+          rp.prop.rotation.y = rp.yaw;
           const def = propDef(rp.propId);
           if (def.solid) {
-            const swap = Math.abs(q) % 2 === 1;
-            const w = swap ? def.size[1] : def.size[0];
-            const d = swap ? def.size[0] : def.size[1];
+            const { w, d } = propExtents(def.size, rp.yaw);
             world.setDynamicBox(`remote_${key}`, { minX: p.x - w / 2, maxX: p.x + w / 2, minZ: p.z - d / 2, maxZ: p.z + d / 2, minY: p.y, maxY: p.y + def.size[2] });
           }
-        } else animateCharacter(rp.rig, tSec, rp.speed, false);
+        } else {
+          rp.crouchT = THREE.MathUtils.damp(rp.crouchT, rp.stance === 'crouch' ? 1 : 0, 8, dt);
+          rp.proneT = THREE.MathUtils.damp(rp.proneT, rp.stance === 'prone' ? 1 : 0, 6, dt);
+          animateCharacter(rp.rig, tSec, rp.speed, false, rp.crouchT, 0.2, rp.proneT);
+        }
       });
 
       chestMeshes.forEach((g) => animateBountyChest(g, now));
@@ -1919,10 +2049,11 @@ export default function GamePage() {
       netTimer -= dt;
       if (currentRoom && netTimer <= 0 && active) {
         netTimer = 0.05;
-        const key = `${body.x.toFixed(2)},${body.y.toFixed(2)},${body.z.toFixed(2)},${look.yaw.toFixed(2)}`;
+        const sendYaw = player.isProp ? propYaw : look.yaw;
+        const key = `${body.x.toFixed(2)},${body.y.toFixed(2)},${body.z.toFixed(2)},${sendYaw.toFixed(2)},${stance}`;
         if (key !== lastSentKey) {
           lastSentKey = key;
-          currentRoom.send('player_move', { x: body.x, y: body.y, z: body.z, rotationY: look.yaw });
+          currentRoom.send('player_move', { x: body.x, y: body.y, z: body.z, rotationY: sendYaw, stance });
         }
       }
 
@@ -1956,7 +2087,8 @@ export default function GamePage() {
           alive: player.alive,
           respawnIn: Math.max(0, Math.ceil(player.respawnTimer)),
           leanDir: player.leanT < -0.3 ? -1 : player.leanT > 0.3 ? 1 : 0,
-          crouching: !!crouching,
+          crouching,
+          stance,
           keyboardLocked: guard.isKeyboardLocked,
         }));
       }
@@ -2036,6 +2168,67 @@ export default function GamePage() {
     { slot: 'grenade', key: '3', label: hudStats.grenades > 0 ? 'FRAG' : null, ammo: `x${hudStats.grenades}` },
   ];
   const ecRoundPct = Math.min(100, Math.round((hudStats.roundKills / PRACTICE_ROUND_GOAL) * 100));
+  // Compact control sizes for phones held in landscape
+  const compact = isMobile && isLandscape;
+  const btn = compact ? 'w-10 h-10 text-[10px]' : 'w-12 h-12 text-xs';
+  const weaponHud =
+    !isGhostSpectator && !hudStats.isProp && deployed ? (
+      <div className={`${isMobile ? 'relative items-start mt-1' : 'absolute bottom-16 right-4 items-end'} z-20 pointer-events-none flex flex-col gap-1.5`}>
+          <div className={`${isMobile ? 'hidden' : 'flex'} gap-1`}>
+            {SLOT_KEYS.map((s) => (
+              <div
+                key={s.slot}
+                className={`px-2 py-1 rounded-lg border text-[9px] font-black leading-tight text-center min-w-[54px] ${
+                  hudStats.slot === s.slot ? 'bg-amber-400 text-slate-950 border-white' : s.label ? 'bg-slate-950/80 text-slate-300 border-slate-700' : 'bg-slate-950/50 text-slate-600 border-slate-800'
+                }`}
+              >
+                <div>
+                  {s.key} · {s.label ?? 'EMPTY'}
+                </div>
+                {s.label && <div className="font-mono opacity-80">{s.ammo}</div>}
+              </div>
+            ))}
+          </div>
+          <div className="bg-slate-950/85 border border-slate-800 backdrop-blur-md rounded-2xl px-4 py-2 text-right shadow-xl">
+            <div className="text-[10px] font-black text-slate-400 tracking-widest uppercase">{hudStats.weaponName}</div>
+            {hudStats.slot === 'grenade' ? (
+              <div className="font-mono font-black text-2xl leading-none text-white">💣 {hudStats.grenades}</div>
+            ) : (
+              <div className={`font-mono font-black text-2xl leading-none ${hudStats.ammo <= 3 ? 'text-rose-400' : 'text-white'}`}>
+                {hudStats.reloading ? 'RELOAD' : hudStats.ammo}
+                <span className={`text-sm ${hudStats.reserve === 0 ? 'text-rose-400' : 'text-slate-400'}`}> / {hudStats.reserve}</span>
+              </div>
+            )}
+            {hudStats.slot !== 'grenade' && hudStats.ammo === 0 && hudStats.reserve === 0 && !hudStats.reloading && (
+              <div className="text-[9px] font-black text-rose-400">EMPTY — G to discard, F to pick up</div>
+            )}
+          </div>
+          <div className="flex gap-1 pointer-events-auto">
+            <button
+              onClick={() => throwWeaponRef.current()}
+              onTouchStart={(e) => {
+                e.stopPropagation();
+                throwWeaponRef.current();
+              }}
+              className="bg-slate-900/90 hover:bg-slate-800 border border-slate-600 text-[10px] font-black text-slate-200 px-2.5 py-1 rounded-lg active:scale-95"
+            >
+              G · DROP
+            </button>
+            {hudStats.pickupPrompt && (
+              <button
+                onClick={() => pickupRef.current()}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  pickupRef.current();
+                }}
+                className="bg-amber-500 text-slate-950 border border-white text-[10px] font-black px-2.5 py-1 rounded-lg active:scale-95"
+              >
+                F · PICKUP
+              </button>
+            )}
+          </div>
+        </div>
+    ) : null;
 
   return (
     <div
@@ -2104,17 +2297,19 @@ export default function GamePage() {
 
       {/* Prop Disguise banner */}
       {hudStats.isProp && (
-        <div className="absolute top-24 left-1/2 transform -translate-x-1/2 pointer-events-none z-30">
+        <div className={`absolute ${isMobile ? 'top-36' : 'top-24'} left-1/2 transform -translate-x-1/2 pointer-events-none z-30`}>
           <div className="bg-amber-500/90 text-slate-950 font-black text-xs px-4 py-2 rounded-2xl shadow-xl shadow-amber-500/40 border-2 border-white flex items-center space-x-2">
             <span>🎭</span>
-            <span>DISGUISED AS {(hudStats.propName ?? 'PROP').toUpperCase()} • 3RD-PERSON VIEW • PRESS &apos;C&apos; TO REVERT</span>
+            <span>
+              DISGUISED AS {(hudStats.propName ?? 'PROP').toUpperCase()} • {isMobile ? '< > ROTATE PROP' : 'Q / E ROTATE PROP'} • {isMobile ? 'PROP' : "'C'"} TO REVERT
+            </span>
           </div>
         </div>
       )}
 
       {/* Energy Recharge Mode banner (solo bots — zero cash payout) */}
-      {isBotMode && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none w-[min(92vw,560px)]">
+      {isBotMode && !compact && (
+        <div className={`absolute ${isMobile ? 'top-[5.25rem] w-[min(52vw,560px)]' : 'bottom-4 w-[min(92vw,560px)]'} left-1/2 -translate-x-1/2 z-20 pointer-events-none`}>
           <div className="bg-slate-950/85 border border-amber-400/60 backdrop-blur-md rounded-2xl px-4 py-2 shadow-xl shadow-amber-500/10">
             <div className="text-[11px] font-black text-amber-300 text-center tracking-wide flex items-center justify-center gap-2">
               <span>⚡ ENERGY RECHARGE MODE</span>
@@ -2152,7 +2347,8 @@ export default function GamePage() {
 
       {/* Top HUD */}
       <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-20">
-        <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 p-3 sm:p-3.5 rounded-2xl flex flex-wrap items-center gap-3 shadow-xl pointer-events-auto max-w-[60%]">
+        <div className="flex flex-col items-start gap-1 max-w-[60%]">
+        <div className={`bg-slate-950/85 backdrop-blur-md border border-slate-800 ${compact ? 'p-2 gap-2' : 'p-3 sm:p-3.5 gap-3'} rounded-2xl flex flex-wrap items-center shadow-xl pointer-events-auto`}>
           <div>
             <div className="flex justify-between items-center text-[10px] text-slate-400 font-black uppercase">
               <span>HP</span>
@@ -2186,7 +2382,19 @@ export default function GamePage() {
               {hudStats.leanDir < 0 ? '◀ LEAN L' : 'LEAN R ▶'}
             </span>
           )}
-          {hudStats.crouching && <span className="bg-slate-700/60 text-slate-200 text-[10px] font-black px-2 py-0.5 rounded-full">CROUCH</span>}
+          {deployed && !hudStats.isProp && !isGhostSpectator && (
+            <span
+              className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                hudStats.stance === 'prone'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                  : hudStats.stance === 'crouch'
+                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                    : 'bg-slate-700/50 text-slate-300 border-slate-600/50'
+              }`}
+            >
+              {hudStats.stance === 'prone' ? '🐍 PRONE' : hudStats.stance === 'crouch' ? '🧎 CROUCH' : '🧍 STAND'}
+            </span>
+          )}
           <span className="bg-amber-500/20 text-yellow-300 border border-amber-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1">
             <span>⚡ EC:</span>
             <span>{hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
@@ -2195,6 +2403,19 @@ export default function GamePage() {
           {hudStats.isGhost && (
             <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">👻 GHOST</span>
           )}
+        </div>
+        {/* Single, low-profile status line: latest event only, fades out after 10 s */}
+        {statusMsg && (
+          <div
+            key={statusMsg.id}
+            className={`pointer-events-none max-w-full truncate text-xs text-slate-300/75 bg-slate-950/30 px-2 py-0.5 rounded-md transition-opacity duration-1000 ${
+              statusFading ? 'opacity-0' : 'opacity-100'
+            }`}
+          >
+            {statusMsg.text}
+          </div>
+        )}
+        {isMobile && weaponHud}
         </div>
 
         {isGhostSpectator && (
@@ -2271,73 +2492,7 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Weapon / ammo HUD (strict limited ammo: MAG / RESERVE) */}
-      {!isGhostSpectator && !hudStats.isProp && deployed && (
-        <div className={`absolute ${isMobile ? 'top-24 left-4' : 'bottom-16 right-4'} z-20 pointer-events-none flex flex-col items-end gap-1.5`}>
-          <div className="flex gap-1">
-            {SLOT_KEYS.map((s) => (
-              <div
-                key={s.slot}
-                className={`px-2 py-1 rounded-lg border text-[9px] font-black leading-tight text-center min-w-[54px] ${
-                  hudStats.slot === s.slot ? 'bg-amber-400 text-slate-950 border-white' : s.label ? 'bg-slate-950/80 text-slate-300 border-slate-700' : 'bg-slate-950/50 text-slate-600 border-slate-800'
-                }`}
-              >
-                <div>
-                  {s.key} · {s.label ?? 'EMPTY'}
-                </div>
-                {s.label && <div className="font-mono opacity-80">{s.ammo}</div>}
-              </div>
-            ))}
-          </div>
-          <div className="bg-slate-950/85 border border-slate-800 backdrop-blur-md rounded-2xl px-4 py-2 text-right shadow-xl">
-            <div className="text-[10px] font-black text-slate-400 tracking-widest uppercase">{hudStats.weaponName}</div>
-            {hudStats.slot === 'grenade' ? (
-              <div className="font-mono font-black text-2xl leading-none text-white">💣 {hudStats.grenades}</div>
-            ) : (
-              <div className={`font-mono font-black text-2xl leading-none ${hudStats.ammo <= 3 ? 'text-rose-400' : 'text-white'}`}>
-                {hudStats.reloading ? 'RELOAD' : hudStats.ammo}
-                <span className={`text-sm ${hudStats.reserve === 0 ? 'text-rose-400' : 'text-slate-400'}`}> / {hudStats.reserve}</span>
-              </div>
-            )}
-            {hudStats.slot !== 'grenade' && hudStats.ammo === 0 && hudStats.reserve === 0 && !hudStats.reloading && (
-              <div className="text-[9px] font-black text-rose-400">EMPTY — G to discard, F to pick up</div>
-            )}
-          </div>
-          <div className="flex gap-1 pointer-events-auto">
-            <button
-              onClick={() => throwWeaponRef.current()}
-              onTouchStart={(e) => {
-                e.stopPropagation();
-                throwWeaponRef.current();
-              }}
-              className="bg-slate-900/90 hover:bg-slate-800 border border-slate-600 text-[10px] font-black text-slate-200 px-2.5 py-1 rounded-lg active:scale-95"
-            >
-              G · DROP
-            </button>
-            {hudStats.pickupPrompt && (
-              <button
-                onClick={() => pickupRef.current()}
-                onTouchStart={(e) => {
-                  e.stopPropagation();
-                  pickupRef.current();
-                }}
-                className="bg-amber-500 text-slate-950 border border-white text-[10px] font-black px-2.5 py-1 rounded-lg active:scale-95"
-              >
-                F · PICKUP
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Killfeed */}
-      <div className="absolute top-20 right-4 space-y-1.5 pointer-events-none z-20">
-        {killFeed.map((f, idx) => (
-          <div key={idx} className="bg-slate-950/80 border border-slate-800 text-xs font-bold text-slate-200 px-3 py-1.5 rounded-xl backdrop-blur-md shadow-lg">
-            {f}
-          </div>
-        ))}
-      </div>
+      {!isMobile && weaponHud}
 
       {/* Pre-deploy loadout (primary weapon + operator avatar) */}
       {showLoadout && (
@@ -2432,9 +2587,9 @@ export default function GamePage() {
       {/* Mobile / Tablet Touch Controls */}
       {isMobile && deployed && (
         <>
-          <div className="absolute bottom-6 left-6 pointer-events-auto touch-none select-none z-20">
+          <div className={`absolute ${compact ? 'bottom-4 left-5' : 'bottom-6 left-6'} pointer-events-auto touch-none select-none z-20`}>
             <div
-              className="relative w-32 h-32 rounded-full border-2 border-white/20 bg-slate-900/60 backdrop-blur-md flex items-center justify-center shadow-2xl active:border-rose-500/50"
+              className={`relative ${compact ? 'w-28 h-28' : 'w-32 h-32'} rounded-full border-2 border-white/20 bg-slate-900/60 backdrop-blur-md flex items-center justify-center shadow-2xl active:border-rose-500/50`}
               onTouchStart={handleJoystickTouchStart}
               onTouchMove={handleJoystickTouchMove}
               onTouchEnd={handleJoystickTouchEnd}
@@ -2442,15 +2597,16 @@ export default function GamePage() {
             >
               <div className="absolute inset-2 rounded-full border border-dashed border-white/10 pointer-events-none" />
               <div
-                className="w-12 h-12 rounded-full bg-gradient-to-tr from-rose-600 to-amber-500 shadow-lg shadow-rose-600/40 border border-white/40 flex items-center justify-center pointer-events-none transition-transform duration-75"
-                style={{ transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)` }}
+                ref={joystickKnobRef}
+                className="w-12 h-12 rounded-full bg-gradient-to-tr from-rose-600 to-amber-500 shadow-lg shadow-rose-600/40 border border-white/40 flex items-center justify-center pointer-events-none"
+                style={{ transform: 'translate(0px, 0px)' }}
               >
                 <div className="w-3.5 h-3.5 rounded-full bg-white/70" />
               </div>
             </div>
           </div>
 
-          <div className="absolute bottom-16 right-5 pointer-events-auto flex flex-col items-end space-y-2.5 z-20 select-none">
+          <div className={`absolute ${compact ? 'bottom-3 right-3 space-y-1.5' : 'bottom-16 right-5 space-y-2.5'} pointer-events-auto flex flex-col items-end z-20 select-none touch-none`}>
             <div className="flex items-center space-x-1.5">
               {SLOT_KEYS.map((sl) => (
                 <button
@@ -2459,7 +2615,7 @@ export default function GamePage() {
                     e.stopPropagation();
                     equipRef.current(sl.slot);
                   }}
-                  className={`h-9 px-2 rounded-xl text-[10px] font-black border shadow ${
+                  className={`${compact ? 'h-8' : 'h-9'} px-2 rounded-xl text-[10px] font-black border shadow ${
                     hudStats.slot === sl.slot ? 'bg-amber-400 text-slate-950 border-white' : 'bg-slate-900/80 text-white border-slate-700'
                   }`}
                 >
@@ -2471,20 +2627,42 @@ export default function GamePage() {
                   e.stopPropagation();
                   quickGrenadeRef.current();
                 }}
-                className="h-9 px-2 rounded-xl text-[10px] font-black border shadow bg-emerald-800/90 text-white border-emerald-500/60"
+                className={`${compact ? 'h-8' : 'h-9'} px-2 rounded-xl text-[10px] font-black border shadow bg-emerald-800/90 text-white border-emerald-500/60`}
               >
                 💣 V
               </button>
             </div>
             <div className="flex items-center space-x-2">
-              {(['left', 'right'] as const).map((side) => (
+              {hudStats.isProp &&
+                ([
+                  { dir: 1, label: '<', title: 'Rotate prop left' },
+                  { dir: -1, label: '>', title: 'Rotate prop right' },
+                ] as const).map((b) => (
+                  <button
+                    key={b.label}
+                    aria-label={b.title}
+                    onTouchStart={(e) => {
+                      e.stopPropagation();
+                      propRotateRef.current = b.dir;
+                    }}
+                    onTouchEnd={(e) => {
+                      e.stopPropagation();
+                      propRotateRef.current = 0;
+                    }}
+                    onTouchCancel={() => (propRotateRef.current = 0)}
+                    className={`${btn} rounded-xl font-black text-lg flex items-center justify-center shadow-md border bg-amber-600/90 active:bg-amber-400 text-white border-amber-300/60`}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              {!hudStats.isProp && (['left', 'right'] as const).map((side) => (
                 <button
                   key={side}
                   onTouchStart={(e) => {
                     e.stopPropagation();
                     setLeanState((prev) => (prev === side ? 'none' : side));
                   }}
-                  className={`w-11 h-11 rounded-xl text-xs font-black flex items-center justify-center shadow-md border transition ${
+                  className={`${compact ? 'w-10 h-10' : 'w-11 h-11'} rounded-xl text-xs font-black flex items-center justify-center shadow-md border transition ${
                     leanState === side ? 'bg-amber-500 text-slate-950 border-white' : 'bg-slate-900/80 text-white border-slate-700'
                   }`}
                 >
@@ -2496,7 +2674,7 @@ export default function GamePage() {
                   e.stopPropagation();
                   setIsAdsActive((prev) => !prev);
                 }}
-                className={`w-12 h-12 rounded-2xl text-xs font-black flex items-center justify-center shadow-lg border transition ${
+                className={`${btn} rounded-2xl font-black flex items-center justify-center shadow-lg border transition ${
                   isAdsActive ? 'bg-emerald-500 text-slate-950 border-white shadow-emerald-500/50 scale-105' : 'bg-slate-900/80 text-white border-slate-700'
                 }`}
               >
@@ -2509,27 +2687,40 @@ export default function GamePage() {
                   e.stopPropagation();
                   togglePropRef.current?.();
                 }}
-                className="w-12 h-12 rounded-2xl bg-amber-600/90 active:bg-amber-500 text-white font-black text-xs flex items-center justify-center shadow-lg border border-amber-400/50 active:scale-95 transition"
+                className={`${btn} rounded-2xl bg-amber-600/90 active:bg-amber-500 text-white font-black flex items-center justify-center shadow-lg border border-amber-400/50 active:scale-95 transition`}
               >
                 📦 PROP
               </button>
               <button
                 onTouchStart={(e) => {
                   e.stopPropagation();
-                  setIsCrouchActive((prev) => !prev);
+                  stanceActionRef.current('crouch');
                 }}
-                className={`w-12 h-12 rounded-2xl text-xs font-black flex items-center justify-center shadow-lg border transition ${
-                  isCrouchActive ? 'bg-amber-500 text-slate-950 border-white scale-105' : 'bg-slate-900/80 text-white border-slate-700'
+                className={`${btn} rounded-2xl font-black flex flex-col items-center justify-center leading-tight shadow-lg border transition ${
+                  hudStats.stance === 'crouch' ? 'bg-amber-500 text-slate-950 border-white scale-105' : 'bg-slate-900/80 text-white border-slate-700'
                 }`}
               >
-                ⬇️ CROUCH
+                <span>🧎</span>
+                <span className="text-[9px]">CROUCH</span>
+              </button>
+              <button
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  stanceActionRef.current('prone');
+                }}
+                className={`${btn} rounded-2xl font-black flex flex-col items-center justify-center leading-tight shadow-lg border transition ${
+                  hudStats.stance === 'prone' ? 'bg-emerald-500 text-slate-950 border-white scale-105' : 'bg-slate-900/80 text-white border-slate-700'
+                }`}
+              >
+                <span>🐍</span>
+                <span className="text-[9px]">PRONE</span>
               </button>
               <button
                 onTouchStart={(e) => {
                   e.stopPropagation();
                   triggerJumpRef.current?.();
                 }}
-                className="w-12 h-12 rounded-2xl bg-indigo-600/90 active:bg-indigo-500 text-white font-black text-xs flex items-center justify-center shadow-lg border border-indigo-400/50 active:scale-95 transition"
+                className={`${btn} rounded-2xl bg-indigo-600/90 active:bg-indigo-500 text-white font-black flex items-center justify-center shadow-lg border border-indigo-400/50 active:scale-95 transition`}
               >
                 ⬆️ JUMP
               </button>
@@ -2538,7 +2729,7 @@ export default function GamePage() {
                   e.stopPropagation();
                   reloadRef.current?.();
                 }}
-                className="w-12 h-12 rounded-2xl bg-slate-800/90 text-white font-black text-xs flex items-center justify-center shadow-lg border border-slate-600 active:scale-95 transition"
+                className={`${btn} rounded-2xl bg-slate-800/90 text-white font-black flex items-center justify-center shadow-lg border border-slate-600 active:scale-95 transition`}
               >
                 🔄 R
               </button>
@@ -2555,7 +2746,7 @@ export default function GamePage() {
               onTouchCancel={() => {
                 firingRef.current = false;
               }}
-              className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-rose-600 via-rose-500 to-amber-500 active:scale-95 text-white font-black text-base flex flex-col items-center justify-center shadow-2xl shadow-rose-600/50 border-2 border-white/60 transition"
+              className={`${compact ? 'w-16 h-16' : 'w-20 h-20'} rounded-3xl bg-gradient-to-tr from-rose-600 via-rose-500 to-amber-500 active:scale-95 text-white font-black text-base flex flex-col items-center justify-center shadow-2xl shadow-rose-600/50 border-2 border-white/60 transition`}
             >
               <span>🔥</span>
               <span className="text-[11px] tracking-wider">FIRE</span>
@@ -2564,7 +2755,8 @@ export default function GamePage() {
         </>
       )}
 
-      {/* Dedicated fullscreen toggle (never automatic) */}
+      {/* Dedicated fullscreen toggle (never automatic): top-right of the viewport, just below the
+          header HUD, so it is never hidden by the bottom nav bar / dev panel on phones. */}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -2573,7 +2765,8 @@ export default function GamePage() {
         onMouseDown={(e) => e.stopPropagation()}
         title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
         aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-        className="fixed bottom-3 right-3 z-50 w-10 h-10 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-600 text-white text-lg font-black flex items-center justify-center shadow-lg active:scale-95 transition"
+        onTouchStart={(e) => e.stopPropagation()}
+        className="absolute top-[5.25rem] right-4 z-[100] w-10 h-10 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-600 text-white text-lg font-black flex items-center justify-center shadow-lg active:scale-95 transition"
       >
         {isFullscreen ? '🗗' : '⛶'}
       </button>
