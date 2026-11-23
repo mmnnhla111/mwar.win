@@ -89,7 +89,8 @@ export const BatchPayoutItemSchema = z.object({
   userId: z.string().uuid(),
   amountMicroUsd: z.number().int().positive(),
   // AFK_FORFEIT is a debit: the round earnings of a player kicked after 30 min AFK
-  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT']),
+  // BOUNTY_CLAIM: metadata.victimId's accumulated head bounty goes to userId (killer / chest opener)
+  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM']),
   gameId: z.string(),
   metadata: z.record(z.any()).optional(),
 });

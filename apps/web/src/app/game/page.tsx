@@ -95,6 +95,8 @@ interface HudState {
   deaths: number;
   chests: number;
   earningsMicroUsd: number;
+  /** Own head bounty (5 % of every reward) — whoever eliminates you claims it. */
+  bountyMicroUsd: number;
   isProp: boolean;
   isGhost: boolean;
   ammo: number;
@@ -148,6 +150,7 @@ export default function GamePage() {
     deaths: 0,
     chests: 0,
     earningsMicroUsd: 0,
+    bountyMicroUsd: 0,
     isProp: false,
     isGhost: false,
     ammo: 0,
@@ -1122,6 +1125,7 @@ export default function GamePage() {
                 kills: p.kills,
                 chests: p.chestsCollected,
                 earningsMicroUsd: p.sessionEarningsMicroUsd,
+                bountyMicroUsd: p.bountyMicroUsd ?? 0,
                 isGhost: p.isGhost,
               }));
               if (!p.isProp && player.isProp) setProp(null, false);
@@ -1201,7 +1205,13 @@ export default function GamePage() {
 
         roomInstance.onMessage('player_killed', (data: any) => {
           soundFX.playHitMarker();
-          feed(`⚔️ ${data.killerUsername} eliminated ${data.victimUsername} (+$0.10)`);
+          // Kill value split: 75 % to the shooter (+ the victim's accumulated head bounty)
+          const bounty = Number(data.bountyClaimedMicroUsd) || 0;
+          feed(
+            `⚔️ ${data.killerUsername} eliminated ${data.victimUsername} (+${formatMicroUsd(Number(data.rewardMicroUsd) || 0)}${
+              bounty > 0 ? ` incl. ${formatMicroUsd(bounty)} head bounty` : ''
+            })`
+          );
         });
         roomInstance.onMessage('player_suicide', (data: any) => feed(`💀 ${data.victimUsername} died (${data.cause}) — bounty chest dropped!`));
         roomInstance.onMessage('chest_destroyed', (data: any) => {
@@ -2380,6 +2390,12 @@ export default function GamePage() {
               <div>
                 <span className="text-[10px] text-slate-400 font-bold block uppercase">Round Earned</span>
                 <span className="text-sm sm:text-base font-black text-emerald-400 font-mono">{formatMicroUsd(hudStats.earningsMicroUsd)}</span>
+              </div>
+            )}
+            {!isBotMode && (
+              <div className="border-l border-slate-800 pl-3" title="5 % of every reward you earn — paid to whoever eliminates you">
+                <span className="text-[10px] text-slate-400 font-bold block uppercase">Head Bounty</span>
+                <span className="text-sm sm:text-base font-black text-rose-300 font-mono">{formatMicroUsd(hudStats.bountyMicroUsd)}</span>
               </div>
             )}
             <div className="border-l border-slate-800 pl-3">

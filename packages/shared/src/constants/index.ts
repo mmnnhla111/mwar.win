@@ -10,8 +10,24 @@ export const MICRO_USD_PER_COIN = 100n; // 1 Coin = 100 Micro-USD ($0.0001 USD)
 export const MIN_WITHDRAWAL_MICRO_USD = 10_000_000n; // $10.00 USD minimum withdrawal
 export const WITHDRAWAL_BASE_FEE_MICRO_USD = 500_000n; // $0.50 USD transaction fee
 
-// MLM 5-Level Distribution Specification
-// Platform Fee = 5%, Net Pool = 95%
+// ============================================================================
+// 100 % Revenue / Reward Split (owner formula, 2026-11-23) — basis points of V (10,000 = 100 %)
+//   75 % earner · 15 % uplines (L1 5 · L2 4 · L3 3 · L4 2 · L5 1) · 5 % earner's head bounty · 5 % platform
+//   Missing upline levels and integer rounding remainders roll over to the platform.
+// ============================================================================
+export const REWARD_SPLIT_TOTAL_BPS = 10_000n;
+export const REWARD_EARNER_BPS = 7_500n; // 75 % credited to the shooter / earner
+export const REWARD_UPLINE_BPS = {
+  1: 500n, // Level 1 (Direct upline): 5 %
+  2: 400n, // Level 2: 4 %
+  3: 300n, // Level 3: 3 %
+  4: 200n, // Level 4: 2 %
+  5: 100n, // Level 5: 1 %
+} as const; // 15 % total
+export const REWARD_BOUNTY_BPS = 500n; // 5 % added to the earner's own head bounty
+export const REWARD_PLATFORM_BPS = 500n; // 5 % platform / system fee
+
+// LEGACY (superseded by the split above; kept only for old tooling): Platform Fee = 5%, Net Pool = 95%
 export const PLATFORM_FEE_PERCENT = 5n;
 export const NET_POOL_PERCENT = 95n;
 

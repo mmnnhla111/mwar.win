@@ -41,6 +41,8 @@ export class PlayerState extends Schema {
   @type('number') deaths: number = 0;
   @type('number') chestsCollected: number = 0;
   @type('number') sessionEarningsMicroUsd: number = 0;
+  // Head bounty: 5 % of every reward this player earns; claimed by whoever eliminates them
+  @type('number') bountyMicroUsd: number = 0;
 
   // Internal anti-AFK timestamp (not serialized to network)
   lastActiveTime: number = Date.now();
@@ -69,6 +71,8 @@ export class ChestState extends Schema {
   @type('number') maxHealth: number = 50;
   @type('number') rewardMicroUsd: number = 50_000; // $0.05
   @type('boolean') isDeathDrop: boolean = false;
+  // The dead player's head bounty carried inside their suicide / environmental-death chest
+  @type('number') bountyMicroUsd: number = 0;
   @type('number') spawnedAt: number = 0;
   @type('number') expiresAt: number = 0; // 15s lifespan for suicide bounty chests
 }

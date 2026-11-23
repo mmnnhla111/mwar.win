@@ -100,7 +100,15 @@ export type FinancialActionType =
   /** Marketplace sale proceeds released to the seller after the 30-day escrow (inflow). */
   | 'MARKET_SELL'
   /** One Energy Ticket (EC) spent to enter a paid arena (no money moves). */
-  | 'EC_CONSUME';
+  | 'EC_CONSUME'
+  /** 5 % of a reward added to the earner's own head bounty (wallets.bounty_micro_usd, not spendable; informational). */
+  | 'BOUNTY_ACCRUE'
+  /** A victim's accumulated head bounty credited to whoever eliminated them / opened their chest (inflow). */
+  | 'BOUNTY_CLAIM'
+  /** A victim's head bounty paid out to their killer (informational, the bounty is not wallet balance). */
+  | 'BOUNTY_PAYOUT'
+  /** Platform / system share of a reward split: 5 % fee + unclaimed upline levels + rounding (informational). */
+  | 'PLATFORM_FEE';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
@@ -112,6 +120,7 @@ export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
   'CASHOUT_REJECT_REFUND',
   'QUEST_REWARD',
   'MARKET_SELL',
+  'BOUNTY_CLAIM',
 ];
 /** Action types that SUBTRACT from the wallet balance. */
 export const LEDGER_OUTFLOW_ACTIONS: FinancialActionType[] = ['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT'];

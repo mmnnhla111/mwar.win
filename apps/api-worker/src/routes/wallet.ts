@@ -22,9 +22,9 @@ walletRouter.get('/', async (c) => {
   const user = c.get('user');
 
   const wallet = await c.env.DB
-    .prepare('SELECT balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at FROM wallets WHERE user_id = ?1')
+    .prepare('SELECT balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, bounty_micro_usd, updated_at FROM wallets WHERE user_id = ?1')
     .bind(user.userId)
-    .first<{ balance_micro_usd: number; total_earned_micro_usd: number; total_withdrawn_micro_usd: number; updated_at: number }>();
+    .first<{ balance_micro_usd: number; total_earned_micro_usd: number; total_withdrawn_micro_usd: number; bounty_micro_usd: number; updated_at: number }>();
 
   if (!wallet) {
     return c.json({ error: 'Wallet not found' }, 404);
@@ -32,6 +32,9 @@ walletRouter.get('/', async (c) => {
 
   return c.json({
     balanceMicroUsd: wallet.balance_micro_usd,
+    // Head bounty: 5 % of every reward you earn, paid to whoever eliminates you (not withdrawable)
+    headBountyMicroUsd: wallet.bounty_micro_usd ?? 0,
+    formattedHeadBounty: formatMicroUsd(wallet.bounty_micro_usd ?? 0),
     coins: microUsdToCoins(wallet.balance_micro_usd).toString(),
     formattedBalance: formatMicroUsd(wallet.balance_micro_usd),
     formattedCoins: formatCoins(wallet.balance_micro_usd),

@@ -36,11 +36,11 @@ export default function NetworkPage() {
   }, []);
 
   const rates: Record<number, { percent: string; color: string; border: string; bg: string }> = {
-    1: { percent: '50% Net Share', color: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/10' },
-    2: { percent: '20% Net Share', color: 'text-sky-400', border: 'border-sky-500/40', bg: 'bg-sky-500/10' },
-    3: { percent: '15% Net Share', color: 'text-purple-400', border: 'border-purple-500/40', bg: 'bg-purple-500/10' },
-    4: { percent: '10% Net Share', color: 'text-emerald-400', border: 'border-emerald-500/40', bg: 'bg-emerald-500/10' },
-    5: { percent: '5% Net Share', color: 'text-rose-400', border: 'border-rose-500/40', bg: 'bg-rose-500/10' },
+    1: { percent: '5% of V', color: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/10' },
+    2: { percent: '4% of V', color: 'text-sky-400', border: 'border-sky-500/40', bg: 'bg-sky-500/10' },
+    3: { percent: '3% of V', color: 'text-purple-400', border: 'border-purple-500/40', bg: 'bg-purple-500/10' },
+    4: { percent: '2% of V', color: 'text-emerald-400', border: 'border-emerald-500/40', bg: 'bg-emerald-500/10' },
+    5: { percent: '1% of V', color: 'text-rose-400', border: 'border-rose-500/40', bg: 'bg-rose-500/10' },
   };
 
   const filteredMembers = members.filter((m) => {

@@ -19,22 +19,41 @@ Until those are done, production still runs in `DEV_MOCK_MODE`, where the dev sh
 | 1.1 | All money is stored as integer **Micro-USD**, 1 USD = 1,000,000 (MSS §2.4) | [x] | `packages/shared/src/constants` (`MICRO_USD_PER_USD`), D1 `INTEGER` columns, PostgreSQL `BIGINT` |
 | 1.2 | **1 Coin = 100 Micro-USD** (1 cent = 100 coins) | [x] | `MICRO_USD_PER_COIN = 100n`, `COINS_PER_CENT = 100n`, `microUsdToCoins()` |
 | 1.3 | Quest coin rewards are converted with the shared constant, not a literal | [x] *was `[ ]`* (hard-coded `* 100`) | `api-worker/src/routes/quests.ts` claim uses `MICRO_USD_PER_COIN` |
-| 1.4 | Exact BigInt math, no float rounding in splits | [x] | `shared/src/math/mlm.ts` (`calculateMlmDistribution` BigInt + invariant check) |
+| 1.4 | Exact BigInt math, no float rounding in splits | [x] | `shared/src/math/mlm.ts` (`calculateRewardSplit` BigInt + invariant check) |
 | 1.5 | BigInt values survive JSON to the log server | [x] *was `[ ]`* (queue consumer `JSON.stringify` threw on BigInt, so every queued log was dropped) | `api-worker/src/utils/audit-logger.ts` `stringifyLog()` used by producer and consumer |
 
-## 2. Revenue split: 5 % platform / 95 % net pool / 5-level MLM (MSS §7)
+## 2. Revenue / reward split: 100 % of V (MSS §7, owner formula of 2026-11-23)
+
+This replaces the earlier draft (5 % platform / 95 % net pool split 50/20/15/10/5). For every verified
+reward or ad-revenue value **V**:
+
+| Share | % of V | Goes to | When |
+|---|---|---|---|
+| Shooter / earner | **75 %** | Earner's wallet | Immediately |
+| Upline L1 (direct) | **5 %** | Daily grey/green ledger, paid at midnight if the sponsor did 4 quests, else forfeited to the platform | Midnight settlement |
+| Upline L2 | **4 %** | Same | Same |
+| Upline L3 | **3 %** | Same | Same |
+| Upline L4 | **2 %** | Same | Same |
+| Upline L5 | **1 %** | Same | Same |
+| Earner's head bounty | **5 %** | `wallets.bounty_micro_usd` of the **earner** (not withdrawable) | Claimed by whoever eliminates them, or by whoever opens their suicide / environmental-death bounty chest |
+| Platform / system fee | **5 %** | Platform ledger (`PLATFORM_FEE` on `SYSTEM_PLATFORM`) | Immediately |
+| **Total** | **100 %** | 75 + (5 + 4 + 3 + 2 + 1) + 5 + 5 | |
 
 | # | Rule | Status | Where |
 |---|---|---|---|
-| 2.1 | Platform fee **5 %** of each revenue transaction V | [x] | `PLATFORM_FEE_PERCENT = 5n` |
-| 2.2 | Net pool **95 %** of V | [x] | `NET_POOL_PERCENT = 95n`, `netPool = gross − fee` |
-| 2.3 | L1 **50 %**, L2 **20 %**, L3 **15 %**, L4 **10 %**, L5 **5 %** of the net pool | [x] | `MLM_LEVEL_RATES` |
-| 2.4 | Worked example V = 10 USD gives 500,000 fee, then 4,750,000 / 1,900,000 / 1,425,000 / 950,000 / 475,000 | [x] | Same formula; the integer invariant `fee + payouts + reserve == gross` is enforced |
-| 2.5 | Missing upline levels go to the **Platform Reserve** | [x] | `unclaimedLevels` and remainder go to `platformReserveMicroUsd` |
-| 2.6 | Integer-division remainders also go to the reserve (no Micro-USD lost) | [x] | `netPoolRemainder` |
-| 2.7 | Applied to kills, chests and ad views | [x] | `routes/game.ts` (GAME_KILL / CHEST_OPEN), `routes/ads.ts` (AD_WATCH) |
-| 2.8 | Interpretation used: the earning player is credited V, and the 5-level commissions are computed on V and funded by the platform. Commissions are held in the daily grey/green ledger (MDU), not paid straight away. | [x] | `recordPendingMlmCommission()` |
-| 2.9 | The 5-level closure tree is built at signup and re-built when a referral is bought | [x] | `utils/mlm-tree.ts`, `routes/marketplace.ts` |
+| 2.1 | Earner gets **75 %** of V | [x] | `REWARD_EARNER_BPS = 7500n`, `calculateRewardSplit()` in `packages/shared/src/math/mlm.ts`; credited by `applyRewardSplit()` in `api-worker/src/utils/reward-split.ts` |
+| 2.2 | Uplines **L1 5 % · L2 4 % · L3 3 % · L4 2 % · L5 1 %** (15 % total) | [x] | `REWARD_UPLINE_BPS`; amounts go to `daily_mlm_pending_ledger` (MDU unlock rule still applies) |
+| 2.3 | **5 %** onto the earner's own head bounty | [x] | `REWARD_BOUNTY_BPS = 500n`; `wallets.bounty_micro_usd` (migration `0006_head_bounty.sql`), logged as `BOUNTY_ACCRUE` |
+| 2.4 | **5 %** platform / system fee | [x] | `REWARD_PLATFORM_BPS = 500n`, logged as `PLATFORM_FEE` |
+| 2.5 | Missing upline levels roll over to the platform, so the total is always exactly 100 % of V | [x] | `unclaimedLevels` → `platformRolloverMicroUsd`; the invariant `earner + uplines + bounty + platform == V` throws if broken |
+| 2.6 | Integer-division remainders (Micro-USD dust) also go to the platform | [x] | Rollover = V − every allocated share |
+| 2.7 | Worked example V = 10,000,000 (10 USD): earner 7,500,000 · L1 500,000 · L2 400,000 · L3 300,000 · L4 200,000 · L5 100,000 · bounty 500,000 · platform 500,000 | [x] | `node packages/shared/scripts/verify-reward-split.js` (also checks partial uplines, no uplines, and rounding for odd amounts) |
+| 2.8 | Applied to game kills, bounty chests and ad revenue | [x] | `routes/game.ts` (GAME_KILL / CHEST_OPEN), `routes/ads.ts` (AD_WATCH), both via `applyRewardSplit()` |
+| 2.9 | Head bounty is claimed **in full** by the killer; a suicide / environmental death puts it into the bounty chest; an unopened or voided chest leaves it with its owner | [x] | Game server: `queueBountyClaim()`, `spawnDeathChest()`, `returnChestBounty()`; Worker: `BOUNTY_CLAIM` → `claimHeadBounty()` (compare-and-swap, so it can only be claimed once). Logged as `BOUNTY_PAYOUT` (victim) + `BOUNTY_CLAIM` (claimer, inflow) |
+| 2.10 | No bounty claim on collusion kills, by guests, from yourself, or by flagged sessions | [x] | `ShootingRoom.queueBountyClaim()` checks paid seat, flags, ids |
+| 2.11 | In-match HUD shows the credited 75 % and your current head bounty | [x] | `PlayerState.bountyMicroUsd` (seeded from the EC entry token), web HUD "Head Bounty" |
+| 2.12 | The 5-level closure tree is built at signup and re-built when a referral is bought | [x] | `utils/mlm-tree.ts`, `routes/marketplace.ts` |
+| 2.13 | The old 95 % net-pool function is no longer used for money | [x] | `calculateMlmDistribution()` is marked `@deprecated`; no route calls it |
 
 **Ad revenue per country tier** (`routes/ads.ts`):
 
@@ -140,7 +159,7 @@ Until those are done, production still runs in `DEV_MOCK_MODE`, where the dev sh
 |---|---|---|---|
 | 9.1 | Monthly tables **`logs_YYYY_MM`** | [x] *was `[ ]`* (hard-coded `logs_2026_11`) | `log-receiver tableFor(created_at)` |
 | 9.2 | Audit rows are **immutable** (append-only) | [x] *was `[ ]`* | PostgreSQL triggers reject `UPDATE`, `DELETE` and `TRUNCATE`; `ON CONFLICT (transaction_id) DO NOTHING` makes delivery idempotent |
-| 9.3 | Action types include GAME_KILL, CHEST_OPEN, AD_WATCH, MLM_COMMISSION, MARKET_BUY (+ CASHOUT_*, QUEST_REWARD, MARKET_SELL, AFK_FORFEIT, EC_CONSUME, MLM_COMMISSION_PENDING, MLM_FORFEIT, PRACTICE_EC_RECHARGE) | [x] | `FinancialActionType` |
+| 9.3 | Action types include GAME_KILL, CHEST_OPEN, AD_WATCH, MLM_COMMISSION, MARKET_BUY (+ CASHOUT_*, QUEST_REWARD, MARKET_SELL, AFK_FORFEIT, EC_CONSUME, MLM_COMMISSION_PENDING, MLM_FORFEIT, PRACTICE_EC_RECHARGE, BOUNTY_ACCRUE, BOUNTY_CLAIM, BOUNTY_PAYOUT, PLATFORM_FEE) | [x] | `FinancialActionType` |
 | 9.4 | `balance_after_micro_usd` holds the real balance | [x] *was `[ ]`* (mostly `0`) | `walletBalance()` after each wallet change |
 | 9.5 | D1 is written first, then the log goes to the **Cloudflare Queue** | [x] | `logFinancialTransaction()` |
 | 9.6 | The queue holds logs while the Mini PC is offline (up to **14 days**) and catches up FIFO | [x] *was `[ ]`* (there was no consumer binding, and messages were acked even when delivery failed) | `[[queues.consumers]]`; `ack()` only on HTTP 2xx, `retry()` with back-off; the receiver answers 503 to queue deliveries while PostgreSQL is down |

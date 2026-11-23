@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import {
   GameBatchPayoutSchema,
   BatchPayoutItemSchema,
-  calculateMlmDistribution,
   formatMicroUsd,
   EC_COST_PER_PAID_MATCH,
   MAX_ENERGY_TICKETS,
@@ -10,9 +9,9 @@ import {
 import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { getUplines } from '../utils/mlm-tree';
+import { applyRewardSplit, claimHeadBounty } from '../utils/reward-split';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
-import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from './quests';
+import { trackQuestAction, getUtcDateKey } from './quests';
 
 export const gameRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -63,9 +62,11 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     balance_after_micro_usd: await walletBalance(c.env.DB, user.userId),
     source_game_id: `${mode}:${entryId}`.slice(0, 64),
   });
+  const bountyRow = await c.env.DB.prepare('SELECT bounty_micro_usd FROM wallets WHERE user_id = ?1').bind(user.userId).first<{ bounty_micro_usd: number }>();
   const entryToken = await signEntryToken(c.env.INTERNAL_API_SECRET, {
     uid: user.userId,
     un: user.username,
+    bty: bountyRow?.bounty_micro_usd ?? 0, // current head bounty (shown in-match, claimed by the killer)
     eid: entryId,
     mode,
     exp: now + 120,
@@ -107,6 +108,8 @@ gameRouter.post('/batch-payout', async (c) => {
   const dateKey = getUtcDateKey();
   const statements: ReturnType<typeof c.env.DB.prepare>[] = [];
   const logItems: Parameters<typeof logFinancialTransaction>[1][] = [];
+  let earnerCredited = 0;
+  let bountyClaimed = 0;
 
   for (const item of payouts) {
     if (item.actionType === 'AFK_FORFEIT') {
@@ -126,58 +129,26 @@ gameRouter.post('/batch-payout', async (c) => {
       });
       continue;
     }
-    // 1. Credit player who performed the action (kill or chest)
-    statements.push(
-      c.env.DB.prepare(
-        'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-      ).bind(item.amountMicroUsd, now, item.userId)
-    );
+    if (item.actionType === 'BOUNTY_CLAIM') {
+      // The victim's accumulated head bounty (5 % of each of their past rewards) goes to the claimer
+      const victimId = typeof item.metadata?.victimId === 'string' ? item.metadata.victimId : '';
+      const got = await claimHeadBounty(c.env, item.userId, victimId, gameId);
+      if (got > 0) bountyClaimed += got;
+      continue;
+    }
 
-    logItems.push({
-      transaction_id: `tx_game_${gameId.slice(0, 8)}_${item.userId.slice(0, 6)}_${now}_${Math.random().toString(36).substring(2, 7)}`,
-      user_id: item.userId,
-      action_type: item.actionType,
-      amount_micro_usd: BigInt(item.amountMicroUsd),
-      balance_after_micro_usd: 0n,
-      source_game_id: gameId,
-    });
-
-    // Track daily quests for player: match played & coins earned
+    // Track daily quests for player: match played
     await trackQuestAction(c.env.DB, item.userId, 'finish_game_match', 1, dateKey);
-    const coinsEarned = Math.floor(item.amountMicroUsd / 100);
-    if (coinsEarned > 0) {
-      await trackQuestAction(c.env.DB, item.userId, 'earn_coins', coinsEarned, dateKey);
-    }
 
-    // 2. Compute 5-level MLM commission from this reward
-    const uplines = await getUplines(c.env.DB, item.userId);
-    if (uplines.length > 0) {
-      const mlm = calculateMlmDistribution(item.amountMicroUsd, uplines);
-      for (const p of mlm.payouts) {
-        // Record in daily_mlm_pending_ledger (pending_grey or unlocked_green)
-        await recordPendingMlmCommission(
-          c.env.DB,
-          p.userId,
-          item.userId,
-          p.depth,
-          Number(p.amountMicroUsd),
-          item.actionType === 'CHEST_OPEN' ? 'CHEST_OPEN' : 'GAME_KILL',
-          dateKey
-        );
-
-        logItems.push({
-          transaction_id: `tx_mlm_${gameId.slice(0, 8)}_L${p.depth}_${now}_${Math.random().toString(36).substring(2, 7)}`,
-          user_id: p.userId,
-          // Accrual into the grey/green ledger only — the wallet is credited (MLM_COMMISSION) at midnight
-          action_type: 'MLM_COMMISSION_PENDING',
-          amount_micro_usd: p.amountMicroUsd,
-          balance_after_micro_usd: 0n,
-          source_game_id: gameId,
-          related_user_id: item.userId,
-          mlm_level: p.depth,
-        });
-      }
-    }
+    // 100 % reward split of V: 75 % earner · 15 % uplines (5/4/3/2/1) · 5 % head bounty · 5 % platform
+    const split = await applyRewardSplit(c.env, {
+      earnerId: item.userId,
+      grossMicroUsd: item.amountMicroUsd,
+      actionType: item.actionType as 'GAME_KILL' | 'CHEST_OPEN',
+      sourceId: gameId,
+      dateKey,
+    });
+    earnerCredited += Number(split.earnerMicroUsd);
   }
 
   // Atomic batch commit in Cloudflare D1
@@ -188,7 +159,7 @@ gameRouter.post('/batch-payout', async (c) => {
   // Push audit logs (with the real post-batch wallet balance for wallet-affecting rows)
   const balances = new Map<string, bigint>();
   for (const log of logItems) {
-    if (log.action_type !== 'MLM_COMMISSION_PENDING') {
+    if (log.action_type === 'AFK_FORFEIT') {
       if (!balances.has(log.user_id)) balances.set(log.user_id, await walletBalance(c.env.DB, log.user_id));
       log.balance_after_micro_usd = balances.get(log.user_id)!;
     }
@@ -200,6 +171,8 @@ gameRouter.post('/batch-payout', async (c) => {
     gameId,
     processedItems: payouts.length,
     rejectedItems: rejected.length,
+    earnerCreditedMicroUsd: earnerCredited,
+    bountyClaimedMicroUsd: bountyClaimed,
     statementsExecuted: statements.length,
   });
 });

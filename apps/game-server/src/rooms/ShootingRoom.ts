@@ -17,6 +17,7 @@ import {
   COLLUSION_REPEAT_KILL_LIMIT,
   COLLUSION_WINDOW_MS,
   WEAPON_MIN_SHOT_INTERVAL_MS,
+  earnerAndBountyShares,
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
@@ -138,7 +139,7 @@ interface SessionMeta {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
-export function verifyEntryToken(token: unknown, secret: string): { uid: string; un: string; eid: string } | null {
+export function verifyEntryToken(token: unknown, secret: string): { uid: string; un: string; eid: string; bty: number } | null {
   if (typeof token !== 'string' || !token.includes('.')) return null;
   const [body, sig] = token.split('.');
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
@@ -147,7 +148,8 @@ export function verifyEntryToken(token: unknown, secret: string): { uid: string;
     const json = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
     if (typeof json.exp !== 'number' || json.exp < Date.now() / 1000) return null;
     if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid)) return null;
-    return { uid: json.uid, un: String(json.un ?? ''), eid: String(json.eid ?? '') };
+    const bty = Number(json.bty);
+    return { uid: json.uid, un: String(json.un ?? ''), eid: String(json.eid ?? ''), bty: Number.isFinite(bty) && bty > 0 ? Math.floor(bty) : 0 };
   } catch {
     return null;
   }
@@ -157,6 +159,8 @@ export class ShootingRoom extends Room<GameState> {
   private meta = new Map<string, SessionMeta>();
   /** chestId → (sessionId → damage dealt): the top-damage dealer gets the bounty. */
   private chestDamage = new Map<string, Map<string, number>>();
+  /** chestId → head bounty of the player whose suicide / environmental death dropped the chest. */
+  private chestBounty = new Map<string, { victimId: string; victimSession: string; amount: number }>();
   /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
   private pairKills = new Map<string, number[]>();
   private usedEntryIds = new Set<string>();
@@ -574,18 +578,22 @@ export class ShootingRoom extends Room<GameState> {
             victimId: target.id,
             victimSession: targetSessionId,
           });
+      // The killer claims the victim's whole accumulated head bounty (never on a collusion kill)
+      const bountyClaimed = collusion ? 0 : this.queueBountyClaim(killerSessionId, killer, target.bountyMicroUsd, target.id);
+      if (bountyClaimed > 0) target.bountyMicroUsd = 0;
 
       this.broadcast('player_killed', {
         killerId: killer.id,
         killerUsername: killer.username,
         victimId: target.id,
         victimUsername: target.username,
-        rewardMicroUsd: killReward,
+        rewardMicroUsd: killReward + bountyClaimed,
+        bountyClaimedMicroUsd: bountyClaimed,
       });
     } else {
       // 2. Suicide / Non-Player death:
       // Spawns 15-second Bounty Chest!
-      this.spawnDeathChest(target.x, target.y, target.z);
+      this.spawnDeathChest(target.x, target.y, target.z, target, targetSessionId);
       this.broadcast('player_suicide', {
         victimUsername: target.username,
         cause: suicideCause || 'environment_hazard',
@@ -635,7 +643,16 @@ export class ShootingRoom extends Room<GameState> {
       } else {
         winner.chestsCollected += 1;
         reward = this.queuePayout(topSession, winner, chest.rewardMicroUsd, 'CHEST_OPEN', { chestId, isDeathDrop: chest.isDeathDrop, topDamage });
+        const cb = this.chestBounty.get(chestId);
+        if (cb && cb.victimId !== winner.id) {
+          const got = this.queueBountyClaim(topSession, winner, cb.amount, cb.victimId);
+          if (got > 0) {
+            reward += got;
+            this.chestBounty.delete(chestId);
+          }
+        }
       }
+      this.returnChestBounty(chestId);
 
       this.broadcast('chest_destroyed', {
         chestId,
@@ -645,8 +662,13 @@ export class ShootingRoom extends Room<GameState> {
     }
   }
 
-  private spawnDeathChest(x: number, y: number, z: number) {
+  private spawnDeathChest(x: number, y: number, z: number, victim?: PlayerState, victimSession?: string) {
     const chestId = `death_chest_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    // The dead player's head bounty drops into their chest (claimed by whoever opens it)
+    if (victim && victimSession && victim.bountyMicroUsd > 0 && UUID_RE.test(victim.id)) {
+      this.chestBounty.set(chestId, { victimId: victim.id, victimSession, amount: victim.bountyMicroUsd });
+      victim.bountyMicroUsd = 0;
+    }
     const chest = new ChestState();
     chest.id = chestId;
     chest.x = Math.round(x);
@@ -655,6 +677,7 @@ export class ShootingRoom extends Room<GameState> {
     chest.health = 30; // Easier to break
     chest.rewardMicroUsd = Number(CHEST_REWARD_BASE_MICRO_USD) * 2; // Double reward for player loot drops
     chest.isDeathDrop = true;
+    chest.bountyMicroUsd = this.chestBounty.get(chestId)?.amount ?? 0;
     chest.spawnedAt = Date.now();
     chest.expiresAt = Date.now() + CHEST_LIFETIME_MS; // 15-second lifespan
 
@@ -667,6 +690,7 @@ export class ShootingRoom extends Room<GameState> {
       y: chest.y,
       z: chest.z,
       rewardMicroUsd: chest.rewardMicroUsd,
+      bountyMicroUsd: chest.bountyMicroUsd,
       isDeathDrop: true,
       expiresAt: chest.expiresAt,
     });
@@ -711,6 +735,7 @@ export class ShootingRoom extends Room<GameState> {
       if (chest.isDeathDrop && chest.expiresAt > 0 && now >= chest.expiresAt) {
         this.state.chests.delete(id);
         this.chestDamage.delete(id);
+        this.returnChestBounty(id);
         this.broadcast('chest_expired', { chestId: id });
       }
     });
@@ -763,7 +788,11 @@ export class ShootingRoom extends Room<GameState> {
     let unsent = 0;
     this.pendingPayouts = this.pendingPayouts.filter((p) => {
       if (p.userId === player.id && (p.actionType === 'GAME_KILL' || p.actionType === 'CHEST_OPEN')) {
-        unsent += p.amountMicroUsd;
+        unsent += earnerAndBountyShares(p.amountMicroUsd).earner; // only the 75 % was ever credited
+        return false;
+      }
+      if (p.userId === player.id && p.actionType === 'BOUNTY_CLAIM') {
+        unsent += p.amountMicroUsd; // not sent yet: the victim simply keeps that bounty
         return false;
       }
       return true;
@@ -823,17 +852,40 @@ export class ShootingRoom extends Room<GameState> {
       flagged: null,
       earned: 0,
     });
-    return entry ? { userId: entry.uid, username: entry.un } : { userId: null };
+    return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0 } : { userId: null };
   }
 
   /** Queue a payout only for verified paid seats that are not flagged by anti-cheat. */
   private queuePayout(sessionId: string, player: PlayerState, amount: number, actionType: 'GAME_KILL' | 'CHEST_OPEN', metadata: Record<string, unknown>) {
     const m = this.meta.get(sessionId);
     if (!m?.paid || m.flagged || !UUID_RE.test(player.id) || amount <= 0) return 0;
-    m.earned += amount;
-    player.sessionEarningsMicroUsd += amount;
+    // 100 % split of V (applied by the Worker): 75 % to this player · 15 % uplines · 5 % onto this
+    // player's own head bounty · 5 % platform. The HUD shows the 75 % actually credited.
+    const { earner, bounty } = earnerAndBountyShares(amount);
+    m.earned += earner;
+    player.sessionEarningsMicroUsd += earner;
+    player.bountyMicroUsd += bounty;
     this.pendingPayouts.push({ userId: player.id, amountMicroUsd: amount, actionType, gameId: this.gameId, metadata });
+    return earner;
+  }
+
+  /** Queue the transfer of a victim's accumulated head bounty to the claimer (paid seats only). */
+  private queueBountyClaim(sessionId: string, claimer: PlayerState, amount: number, victimId: string) {
+    const m = this.meta.get(sessionId);
+    if (!m?.paid || m.flagged || !UUID_RE.test(claimer.id) || !UUID_RE.test(victimId) || claimer.id === victimId || amount <= 0) return 0;
+    m.earned += amount;
+    claimer.sessionEarningsMicroUsd += amount;
+    this.pendingPayouts.push({ userId: claimer.id, amountMicroUsd: Math.floor(amount), actionType: 'BOUNTY_CLAIM', gameId: this.gameId, metadata: { victimId } });
     return amount;
+  }
+
+  /** An unclaimed chest bounty stays with its owner (it still lives in their wallet row). */
+  private returnChestBounty(chestId: string) {
+    const cb = this.chestBounty.get(chestId);
+    if (!cb) return;
+    this.chestBounty.delete(chestId);
+    const owner = this.state.players.get(cb.victimSession);
+    if (owner && owner.id === cb.victimId) owner.bountyMicroUsd += cb.amount;
   }
 
   /** Layer 3: same IP / device, or the same killer→victim pair farmed repeatedly, pays nothing. */
@@ -874,7 +926,7 @@ export class ShootingRoom extends Room<GameState> {
   onJoin(
     client: Client,
     options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string },
-    auth?: { userId: string | null; username?: string }
+    auth?: { userId: string | null; username?: string; bounty?: number }
   ) {
     console.log(`[ShootingRoom] Player joined: ${client.sessionId} (${options.username || 'Anon'})`);
     const player = new PlayerState();
@@ -882,6 +934,7 @@ export class ShootingRoom extends Room<GameState> {
     player.id = auth?.userId || `guest_${client.sessionId}`;
     player.sessionId = client.sessionId;
     player.username = (auth?.username || options.username || `Player_${client.sessionId.substring(0, 4)}`).slice(0, 24);
+    player.bountyMicroUsd = auth?.bounty ?? 0; // accumulated head bounty from the database
     player.avatarId = options.avatarId || 'specops';
 
     const chosenPrimary = options.primaryWeapon || 'ak47';
