@@ -1,19 +1,11 @@
 import { Hono } from 'hono';
-import { formatMicroUsd } from '@mwar/shared';
+import { formatMicroUsd, getStatisticalAdMicroUsd } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { applyRewardSplit } from '../utils/reward-split';
 import { trackQuestAction, getUtcDateKey } from './quests';
 import { isLocalDev, safeEqual } from '../utils/guards';
 
 export const adsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
-
-// Country tier rewards
-const TIER_REWARDS_MICRO_USD: Record<string, number> = {
-  US: 50_000,    // $0.05 USD = 500 Coins
-  EU: 30_000,    // $0.03 USD = 300 Coins
-  TH: 10_000,    // $0.01 USD = 100 Coins
-  OTHER: 5_000,  // $0.005 USD = 50 Coins
-};
 
 // S2S Postback Processor Helper
 async function processAdReward(
@@ -25,7 +17,8 @@ async function processAdReward(
   customAmountMicroUsd?: number,
   dateKey = getUtcDateKey()
 ) {
-  const grossReward = customAmountMicroUsd || TIER_REWARDS_MICRO_USD[country.toUpperCase()] || TIER_REWARDS_MICRO_USD.OTHER;
+  // Use explicit reward if provided by ad network, otherwise fall back to statistical country/format lookup (default 30s rewarded video)
+  const grossReward = customAmountMicroUsd || getStatisticalAdMicroUsd(country, 'video_30s');
   const now = Math.floor(Date.now() / 1000);
 
   // 0. Replay protection: each provider transaction id credits exactly once; unknown users are ignored

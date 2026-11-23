@@ -143,3 +143,6 @@ export const WEAPON_MIN_SHOT_INTERVAL_MS: Record<string, number> = {
 export const LOG_RETENTION_DAYS = 90;
 export const QUEUE_RETENTION_SECONDS = 14 * 86_400;
 export const CHAT_RETENTION_MONTHS = 12;
+
+// Ad eCPM and Statistical Country Rewards (docs/AD_ECPM_BY_COUNTRY.md)
+export * from './adEcpm';
