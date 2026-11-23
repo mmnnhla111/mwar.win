@@ -92,20 +92,38 @@ export const MAX_ENERGY_TICKETS = 6;
 export const ENERGY_RECHARGE_SECONDS = 3600; // 1 hour per ticket
 export const MAX_AVATAR_UPLOAD_BYTES = 512 * 1024; // 512 KB
 
-// Layer-1 audit ledger: which audit-log action types add to / subtract from a wallet balance.
-// Audit-only entries (MLM_PENDING, MLM_FORFEIT, PLATFORM_FEE, PRACTICE_EC_RECHARGE) are excluded.
-export const LEDGER_INFLOW_ACTIONS = [
-  'GAME_KILL',
-  'CHEST_OPEN',
-  'AD_WATCH',
-  'MLM_COMMISSION',
-  'QUEST_REWARD',
-  'MARKET_SALE',
-  'DEV_MOCK_FAUCET',
-  'CASHOUT_REJECT_REFUND',
-] as const;
-export const LEDGER_OUTFLOW_ACTIONS = ['CASHOUT_REQUEST', 'MARKET_BUY'] as const;
-
-// Server-side reward caps (anti-cheat: the Worker rejects batch payouts above these)
-export const DEATH_CHEST_REWARD_MICRO_USD = CHEST_REWARD_BASE_MICRO_USD * 2n; // $0.10 death-drop chest
-export const MAX_SPECTATE_HEARTBEAT_SECONDS = 15; // Q_SPECTATE progress per heartbeat
+// ---- Anti-cheat / audit rules (see docs/ECONOMY_AND_SPEC_AUDIT.md) ----------------------------
+/** Q_SPECTATE: 90 s of ghost spectating, reported as 15 s heartbeats. */
+export const SPECTATE_QUEST_SECONDS = 90;
+export const SPECTATE_HEARTBEAT_SECONDS = 15;
+/** Quests a client may self-report via POST /api/quests/progress (everything else is server-tracked). */
+export const SELF_REPORTED_QUESTS = ['Q_SPECTATE', 'Q_DAILY_CHECKIN'] as const;
+/** Practice/bot EC recharge: a 10-kill round may be claimed at most once per minute. */
+export const PRACTICE_ROUND_KILLS = 10;
+export const PRACTICE_MIN_ROUND_SECONDS = 60;
+export const PRACTICE_EC_PROGRESS_PER_ROUND = 25;
+/** EC spent to enter a paid (cash) arena. */
+export const EC_COST_PER_PAID_MATCH = 1;
+/** Death-drop bounty chest lifetime. */
+export const CHEST_LIFETIME_MS = 15_000;
+/** Layer 2: headshot ratio above this (after enough hits) flags the account and zeroes rewards. */
+export const HEADSHOT_RATIO_FLAG = 0.85;
+export const HEADSHOT_MIN_SAMPLE_HITS = 20;
+/** Layer 2: chest-collect rate above mean + 3σ of the room destroys the chest with no reward. */
+export const CHEST_RATE_SIGMA_LIMIT = 3;
+export const CHEST_RATE_MIN_SAMPLE_PLAYERS = 4;
+/** Layer 3: same IP / device kills pay 0; the same killer→victim pair pays at most this often per window. */
+export const COLLUSION_REPEAT_KILL_LIMIT = 3;
+export const COLLUSION_WINDOW_MS = 10 * 60_000;
+/** Server-side minimum ms between shots per weapon (fire-rate rate limit, with 20 % tolerance applied). */
+export const WEAPON_MIN_SHOT_INTERVAL_MS: Record<string, number> = {
+  sniper: 1100,
+  ak47: 100,
+  m16: 86,
+  uzi: 63,
+  pistol: 150,
+};
+/** Log retention: PostgreSQL 90 days then R2; Cloudflare Queue holds up to 14 days; chat 12 months. */
+export const LOG_RETENTION_DAYS = 90;
+export const QUEUE_RETENTION_SECONDS = 14 * 86_400;
+export const CHAT_RETENTION_MONTHS = 12;

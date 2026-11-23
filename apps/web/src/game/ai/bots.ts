@@ -26,7 +26,7 @@ export interface BotTargetInfo {
   eye: THREE.Vector3;
   speed: number;
   crouching: boolean;
-  /** Lying flat: smallest silhouette, hardest to hit. */
+  /** Lying flat — much smaller target, chest ~0.3 m off the ground. */
   prone?: boolean;
   alive: boolean;
   /** Prop disguise makes the player much harder to notice. */
@@ -319,7 +319,7 @@ export class BotManager {
     }
     // Check head and chest so peeking over cover still gets spotted.
     if (this.world.lineOfSight(eye.x, eye.y, eye.z, player.eye.x, player.eye.y, player.eye.z)) return true;
-    return this.world.lineOfSight(eye.x, eye.y, eye.z, player.position.x, player.position.y + 1.0, player.position.z);
+    return this.world.lineOfSight(eye.x, eye.y, eye.z, player.position.x, player.position.y + (player.prone ? 0.25 : 1.0), player.position.z);
   }
 
   private shoot(bot: Bot, player: BotTargetInfo) {
@@ -337,7 +337,7 @@ export class BotManager {
     const def = WEAPONS[bot.weapon];
     if (bot.weapon === 'uzi') p *= THREE.MathUtils.clamp(1.2 - dist / 40, 0.35, 1);
     if (bot.weapon === 'sniper') p = Math.min(0.9, p * (dist > 25 ? 1.15 : 0.8));
-    const chest = tmpB.set(player.position.x, player.position.y + (player.prone ? 0.25 : player.crouching ? 0.8 : 1.25), player.position.z);
+    const chest = tmpB.set(player.position.x, player.position.y + (player.prone ? 0.3 : player.crouching ? 0.8 : 1.25), player.position.z);
     const clear = this.world.lineOfSight(muzzle.x, muzzle.y, muzzle.z, chest.x, chest.y, chest.z);
     const hit = clear && Math.random() < p;
     const end = chest.clone();

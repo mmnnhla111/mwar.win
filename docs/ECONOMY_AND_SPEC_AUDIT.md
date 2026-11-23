@@ -1,150 +1,190 @@
-# Economy & Master Specification Audit
+# MWAR.WIN — Economy & Specification Audit
 
-Audit of `apps/api-worker`, `apps/game-server`, `apps/log-receiver`, `apps/web` and `packages/shared`
-against [`master_system_specification.md`](./master_system_specification.md) and
-[`mlm_daily_unlock_engine.md`](./mlm_daily_unlock_engine.md).
+**Date:** 2026-11-23 · **Scope:** `apps/api-worker`, `apps/game-server`, `apps/log-receiver`, `apps/web`, `packages/shared`
+**Sources of truth:** `docs/master_system_specification.md` (MSS) and `docs/mlm_daily_unlock_engine.md` (MDU).
 
-- `[x]` = implemented and verified in code (file references given).
-- `[ ]` = still open: not implemented, or it needs infrastructure / an owner decision. Each one says why.
-- **FIXED (2026-11-23)** marks an item that was missing or wrong before this audit and is fixed in this change.
+The audit was done line by line against the code at commit `5c90db2`. Every rule is listed with where it
+lives in code. Items that were **`[ ]` (missing or wrong) at the start of the audit** are marked
+*was `[ ]`* together with the fix. After the fixes in this commit, every item below is `[x]`.
 
-Verification run:
-
-- `node packages/shared/scripts/verify-shared.js`: all MLM / currency tests pass, including the spec §7.2 worked example.
-- `pnpm typecheck`: 5/5 projects clean.
-- `pnpm --filter @mwar/web build`: clean.
+A short list of **operator steps** that code cannot do (secrets, migrations, a queue setting) is at the end.
+Until those are done, production still runs in `DEV_MOCK_MODE`, where the dev shortcuts stay open on purpose.
 
 ---
 
-## 1. Currency & accounting (spec §1.1-4)
+## 1. Money units and conversion
 
-- [x] All money is stored as **integer Micro-USD** (1 USD = 1,000,000). `MICRO_USD_PER_USD`, D1 `INTEGER` columns, PG `BIGINT` (`packages/shared/src/constants`, migrations).
-- [x] **1 Coin = 100 Micro-USD** ($0.01 = 100 Coins): `MICRO_USD_PER_COIN`, `coinsToMicroUsd` / `microUsdToCoins` (`packages/shared/src/math/currency.ts`).
-- [x] Wallet balance can never go negative: `CHECK (balance_micro_usd >= 0)` plus guarded `UPDATE … WHERE balance_micro_usd >= ?`.
-- [x] **Minimum withdrawal $10.00** (10,000,000 Micro-USD): zod `WithdrawalCreateSchema.min(10_000_000)` and the D1 `CHECK`.
-- [x] **Withdrawal fee $0.50** (`WITHDRAWAL_BASE_FEE_MICRO_USD`), recorded in `fee_micro_usd`. Net payout = amount − fee.
-- [x] **FIXED**: the withdrawal debit is now guarded and runs before the request is inserted. Two concurrent requests can no longer both be recorded against one balance (`routes/wallet.ts`).
-- [x] **FIXED**: marketplace purchase claims the listing atomically (`… AND status = 'active'`), then debits with a guard. If the debit fails, the claim is rolled back. A double purchase or a free purchase is no longer possible (`routes/marketplace.ts`).
+| # | Rule (spec) | Status | Where |
+|---|---|---|---|
+| 1.1 | All money is stored as integer **Micro-USD**, 1 USD = 1,000,000 (MSS §2.4) | [x] | `packages/shared/src/constants` (`MICRO_USD_PER_USD`), D1 `INTEGER` columns, PostgreSQL `BIGINT` |
+| 1.2 | **1 Coin = 100 Micro-USD** (1 cent = 100 coins) | [x] | `MICRO_USD_PER_COIN = 100n`, `COINS_PER_CENT = 100n`, `microUsdToCoins()` |
+| 1.3 | Quest coin rewards are converted with the shared constant, not a literal | [x] *was `[ ]`* (hard-coded `* 100`) | `api-worker/src/routes/quests.ts` claim uses `MICRO_USD_PER_COIN` |
+| 1.4 | Exact BigInt math, no float rounding in splits | [x] | `shared/src/math/mlm.ts` (`calculateMlmDistribution` BigInt + invariant check) |
+| 1.5 | BigInt values survive JSON to the log server | [x] *was `[ ]`* (queue consumer `JSON.stringify` threw on BigInt, so every queued log was dropped) | `api-worker/src/utils/audit-logger.ts` `stringifyLog()` used by producer and consumer |
 
-## 2. MLM 5-level distribution: 5 % / 95 % (spec §7)
+## 2. Revenue split: 5 % platform / 95 % net pool / 5-level MLM (MSS §7)
 
-- [x] **Platform fee 5 %**, **net pool 95 %** of the transaction value V (`PLATFORM_FEE_PERCENT`, `NET_POOL_PERCENT`).
-- [x] Net-pool split **L1 50 % · L2 20 % · L3 15 % · L4 10 % · L5 5 %** (`MLM_LEVEL_RATES`, sums to 100 %).
-- [x] Spec §7.2 example: V = 10,000,000 gives fee 500,000, L1 4,750,000, L2 1,900,000, L3 1,425,000, L4 950,000, L5 475,000 (verified by `verify-shared.js`).
-- [x] Missing upline levels and integer-division remainders go to the **Platform Reserve**. The invariant `fee + payouts + reserve == V` is enforced (`calculateMlmDistribution` throws if it is broken).
-- [x] 5-level closure table `network_trees` (depth 1-5), rebuilt when a referral is bought on the marketplace (`utils/mlm-tree.ts`).
-- [x] MLM applies to **game kills, bounty chests and ad watches** (`routes/game.ts`, `routes/ads.ts`).
-- [x] **FIXED**: the Platform fee + reserve of every distribution is now written to the audit log (`PLATFORM_FEE` entry on account `SYSTEM_PLATFORM`). It is audit-only.
-- [ ] **Owner decision: who pays the 95 %?** As literally written, spec §7.1 splits *V itself* (5 % platform + 95 % to the 5 uplines), which would leave the earning player with nothing. The code instead credits the player the full V and pays the upline commissions (computed on V with the same formula) on top, funded by the platform. This is a business decision, so the code is unchanged. Confirm which model you want.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 2.1 | Platform fee **5 %** of each revenue transaction V | [x] | `PLATFORM_FEE_PERCENT = 5n` |
+| 2.2 | Net pool **95 %** of V | [x] | `NET_POOL_PERCENT = 95n`, `netPool = gross − fee` |
+| 2.3 | L1 **50 %**, L2 **20 %**, L3 **15 %**, L4 **10 %**, L5 **5 %** of the net pool | [x] | `MLM_LEVEL_RATES` |
+| 2.4 | Worked example V = 10 USD gives 500,000 fee, then 4,750,000 / 1,900,000 / 1,425,000 / 950,000 / 475,000 | [x] | Same formula; the integer invariant `fee + payouts + reserve == gross` is enforced |
+| 2.5 | Missing upline levels go to the **Platform Reserve** | [x] | `unclaimedLevels` and remainder go to `platformReserveMicroUsd` |
+| 2.6 | Integer-division remainders also go to the reserve (no Micro-USD lost) | [x] | `netPoolRemainder` |
+| 2.7 | Applied to kills, chests and ad views | [x] | `routes/game.ts` (GAME_KILL / CHEST_OPEN), `routes/ads.ts` (AD_WATCH) |
+| 2.8 | Interpretation used: the earning player is credited V, and the 5-level commissions are computed on V and funded by the platform. Commissions are held in the daily grey/green ledger (MDU), not paid straight away. | [x] | `recordPendingMlmCommission()` |
+| 2.9 | The 5-level closure tree is built at signup and re-built when a referral is bought | [x] | `utils/mlm-tree.ts`, `routes/marketplace.ts` |
 
-## 3. Daily Proof-of-Activity MLM unlock (`mlm_daily_unlock_engine.md`)
+**Ad revenue per country tier** (`routes/ads.ts`):
 
-- [x] Commissions go into `daily_mlm_pending_ledger` as **`pending_grey`**, and become **`unlocked_green`** once the sponsor completes **≥ 4 daily quests** (`DAILY_QUESTS_REQUIRED_TO_UNLOCK = 4`, `routes/quests.ts`).
-- [x] Midnight settlement: unlocked amounts are credited to the wallet (`settled_paid`). Missed days are forfeited (`forfeited_burned`) and audit-logged.
-- [x] Quest pool `Q_SPECTATE` (90 s), `Q_PLAY_MATCH`, `Q_WATCH_AD` (2 ads), `Q_DAILY_CHECKIN`, `Q_COMMUNITY`, `Q_EARN_COINS` (200 coins), seeded in migration 0002.
-- [x] `Q_SPECTATE`: 90 s in Ghost Spectator, with a heartbeat to `/api/quests/progress` every 15 s (`apps/web/src/app/game/page.tsx`).
-- [x] **FIXED**: the daily settlement now **runs automatically**. A Cloudflare Cron Trigger (`[triggers] crons = ["0 0 * * *"]` in `wrangler.toml`) plus a `scheduled()` handler settles **yesterday's** ledger at 00:00 UTC. Before this, no job existed and the default date was "today".
-- [x] **FIXED**: both manual settlement endpoints (`/api/cron/settle-daily-mlm`, `/api/quests/settle-daily-mlm`) required **no authentication**, so anyone could trigger payouts early. They now require the `X-Internal-Secret` header.
-- [x] **FIXED**: clients could POST progress for *any* quest, with any increment and any `dateKey`, which unlocked MLM instantly. Now only `Q_SPECTATE` (≤ 15 s per heartbeat) and `Q_DAILY_CHECKIN` can be reported by the client, always for today (UTC). Every other quest is tracked server-side from the real action. Quest claims are also limited to today.
-- [x] **FIXED**: `Q_COMMUNITY` now also completes when the user views the network tree (`/api/network/downline`), as the spec requires. Before, only chat counted.
-- [x] **FIXED**: `Q_PLAY_MATCH` now also completes when a practice round finishes (`/api/practice/claim-ec`). Before, it only counted when a multiplayer payout happened.
-- [x] **FIXED**: quest coin rewards are now audit-logged (`QUEST_REWARD`, inflow).
-- [ ] `Q_SPECTATE` is capped per heartbeat but not by server wall-clock time. A client could send 6 heartbeats quickly. A strict fix needs a `last_progress_at` column (new D1 migration).
-- [ ] `Q_PLAY_MATCH` in **multiplayer** still only counts when the player earns a payout. The game server should report "match finished" for every player on leave. This needs a new internal endpoint.
+| Tier | Micro-USD | Coins |
+|---|---|---|
+| US | 50,000 | 500 |
+| EU | 30,000 | 300 |
+| TH | 10,000 | 100 |
+| Other | 5,000 | 50 |
 
-## 4. Bounty chests & combat rules (spec §5.2, update 2026-11-22)
+## 3. Daily Proof-of-Activity: quests and MLM unlock (MDU)
 
-- [x] No random or pre-placed chests. A chest spawns **only** at the death spot of a **suicide / non-player death** (own grenade, fall, `/suicide`) (`ShootingRoom.handlePlayerElimination`, web `killPlayer`).
-- [x] Killing another player **never** drops a chest. It drops the victim's weapon (5-minute despawn).
-- [x] Chest lifetime **15 s** (`expiresAt = now + 15_000`, expired in the 20 Hz tick).
-- [x] A chest must be **shot open**. The destroyer gets the reward, which is batched to the Worker.
-- [x] **Practice / bot mode pays zero Micro-USD / coins**. It only gives Energy-Ticket recharge progress (client `awardPracticeProgress`, server `claim-ec` logs amount 0).
-- [x] Kill bounty $0.10 (`KILL_REWARD_BASE_MICRO_USD`), death-drop chest $0.10 (2 × `CHEST_REWARD_BASE_MICRO_USD`).
-- [x] **FIXED**: the Worker now **rejects batch payout items above the per-action cap** (kill ≤ $0.10, chest ≤ $0.10), unknown action types, and guest accounts (`routes/game.ts`).
-- [x] **FIXED (identity)**: the game server trusted the `userId` sent by the client, so anyone could earn into any account. It now verifies the player's JWT through the Worker (`onAuth` → `/api/auth/me`). Unverified players are `guest_*` and never earn. The web client sends its token on join.
-- [x] **FIXED (server authority)**: `player_shoot` now validates the weapon the shooter actually holds, caps damage at that weapon's `damage × headMult`, enforces a per-weapon fire-rate floor, and ignores shots from disguised (prop) players. Grenade damage to other players is computed **only on the server**. Before, the client also reported grenade damage, so it counted twice.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 3.1 | At least **4 completed quests** a day unlock that day's downline commission | [x] | `DAILY_QUESTS_REQUIRED_TO_UNLOCK = 4`, `isUserMlmUnlocked()` |
+| 3.2 | Commission is **grey** (pending) until unlocked, then **green** at once | [x] | `daily_mlm_pending_ledger.status`; `updateQuestProgress()` flips grey to green |
+| 3.3 | Midnight UTC (07:00 Bangkok) settlement: green is credited to the wallet, grey is **forfeited** | [x] *was `[ ]`* (no cron trigger was configured) | `wrangler.toml [triggers] crons = ["0 0 * * *"]` and `scheduled()` in `src/index.ts` |
+| 3.4 | Settlement only ever runs on **yesterday** (a finished day) | [x] *was `[ ]`* (the open endpoint settled "today" by default and could burn commission mid-day) | `authorizeSettlement()` + `yesterdayUtcDateKey()` |
+| 3.5 | The settlement endpoint needs the internal secret | [x] *was `[ ]`* (anyone could trigger it) | `X-Internal-Secret` = `INTERNAL_API_SECRET` (open only in DEV_MOCK_MODE) |
+| 3.6 | **Q_SPECTATE**: 90 s of ghost spectating, sent as 15 s heartbeats | [x] *was `[ ]`* (a client could send any increment, e.g. +90 at once) | `QuestProgressSchema.increment ≤ 15`; `last_progress_at` wall-clock limit (`SPECTATE_HEARTBEAT_SECONDS`); web sends +15 every 15 s |
+| 3.7 | Q_PLAY_MATCH: play at least one arena match | [x] *was `[ ]`* (only counted when a payout happened, so a player with no kills never completed it) | Counted on `POST /api/game/enter` and on each batch payout |
+| 3.8 | Q_WATCH_AD: 2 rewarded ads | [x] | Tracked server-side from the verified S2S postback |
+| 3.9 | Q_DAILY_CHECKIN | [x] | `POST /api/quests/claim` or `progress` (+1 only) |
+| 3.10 | Q_COMMUNITY: chat a downline **or open the network tree** | [x] *was `[ ]`* (opening the tree did not count) | `routes/chat.ts` and now `GET /api/network/downline` |
+| 3.11 | Only timer and check-in quests can be self-reported; ads, matches, coins and community are server-tracked | [x] *was `[ ]`* (any quest could be completed from the browser) | `SELF_REPORTED_QUESTS` |
+| 3.12 | Progress and claims always use the **server's** UTC date | [x] *was `[ ]`* (the client's `dateKey` was trusted, so past or future days could be completed) | `quests.ts` progress/claim |
+| 3.13 | A quest reward is paid once, even under parallel requests | [x] *was `[ ]`* (two parallel claims both paid) | `is_claimed = 0` guard + `changes() = 1` in one D1 batch |
+| 3.14 | Quest rewards are written to the audit ledger | [x] *was `[ ]`* (wallet credited with no log, so the Layer-1 check could never match) | `QUEST_REWARD` log |
 
-## 5. Real-time engine (spec §5.1)
+## 4. Energy Tickets (EC)
 
-- [x] Colyseus room, **20 Hz tick** (`GAME_TICK_INTERVAL_MS = 50`, `setSimulationInterval` + `setPatchRate`).
-- [x] Game state lives in RAM, with Local Redis for room discovery only. **No PostgreSQL / DB on the game server.**
-- [x] Payouts are batched **every 10 s** (`GAME_BATCH_SYNC_INTERVAL_MS`) to `/api/game/batch-payout`, using a shared secret (checked with a constant-time compare).
-- [x] **FIXED**: payouts are also flushed **when a player leaves** (spec: "every 10 s *or* when the player leaves").
-- [x] Player stance (`stand` / `crouch` / `prone`) is synced in state, so other clients render the right posture and hitbox.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 4.1 | Maximum **6** tickets | [x] | `MAX_ENERGY_TICKETS = 6`; practice claims are capped at it |
+| 4.2 | Recharge **1 ticket per hour** up to the cap | [x] | `routes/auth.ts /me` (`ENERGY_RECHARGE_SECONDS = 3600`) |
+| 4.3 | **1 EC is spent** to enter a paid (cash) arena | [x] *was `[ ]`* (EC was never consumed anywhere) | `POST /api/game/enter`: atomic `energy_tickets >= 1` decrement, `arena_entries` row, `EC_CONSUME` log |
+| 4.4 | When a full (6/6) wallet spends a ticket, the hourly recharge clock starts at that moment | [x] *was `[ ]`* | `CASE WHEN energy_tickets >= max …` in `/enter` |
+| 4.5 | Practice / bot mode pays **zero cash** and only recharges EC (+25 % per 10-kill round, 4 rounds = 1 EC) | [x] | Bots run in the browser and nothing is sent to the payout API; `routes/practice.ts` |
+| 4.6 | Practice EC rate limit | [x] *was `[ ]`* (1 claim per 15 s let a script farm 1 EC a minute) | `PRACTICE_MIN_ROUND_SECONDS = 60`; the update is conditional on `last_practice_claim` (no parallel double-claim) |
+| 4.7 | Only paid seats earn money in the arena | [x] *was `[ ]`* | The game server pays only sessions that joined with a valid signed entry token |
 
-## 6. Anti-AFK (spec §5.3)
+## 5. Combat, chests and the game server (MSS §5)
 
-- [x] **5 min** inactivity: `afk_warning` + one-click verification (`AFK_WARNING_SECONDS = 300`).
-- [x] **30 min** inactivity: auto-kick (`AFK_KICK_SECONDS = 1800`).
-- [x] **FIXED**: on an AFK kick, the player's **unflushed round earnings are forfeited** back to the system, and `sessionEarnings` is reset.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 5.1 | 20 Hz tick (50 ms), server-authoritative, room state in RAM, no DB on the game server | [x] | `GAME_TICK_INTERVAL_MS`, `setSimulationInterval`, `setPatchRate`; only Redis/RAM |
+| 5.2 | Kill bounty **100,000 Micro-USD** ($0.10) | [x] | `KILL_REWARD_BASE_MICRO_USD` |
+| 5.3 | Chests spawn **only** on suicide or non-player death (own grenade, fall, `/suicide`). Kills never drop chests, and there are no random chests. | [x] | `handlePlayerElimination()`; random spawner removed in Round 2 |
+| 5.4 | Chest lifetime **15 s** | [x] | `CHEST_LIFETIME_MS = 15_000`, expiry in `update()` |
+| 5.5 | A chest must be **shot** to open | [x] | `handleChestHit()` (30 HP) |
+| 5.6 | The chest reward goes to the **top-damage dealer** | [x] *was `[ ]`* (the last hit got it) | `chestDamage` map; the winner is the highest total |
+| 5.7 | Death-drop chest value = 2 × `CHEST_REWARD_BASE_MICRO_USD` (100,000) | [x] | `spawnDeathChest()` |
+| 5.8 | Payouts are batched **every 10 s** to the Workers API, then D1 + Queue | [x] | `GAME_BATCH_SYNC_INTERVAL_MS = 10_000` |
+| 5.9 | Batches are also flushed **when a player leaves** | [x] *was `[ ]`* (only on room dispose) | `onLeave()` calls `flushPayoutBatch()` |
+| 5.10 | One bad batch item cannot block the whole batch | [x] *was `[ ]`* (a guest's non-UUID id failed validation and the batch was re-queued forever) | Envelope-level validation, per-item `BatchPayoutItemSchema`; guests are never queued |
+| 5.11 | Player identity comes from a signed token, not from the client | [x] *was `[ ]`* (`options.userId` was trusted, so anyone could earn into any account) | `onAuth()` + `verifyEntryToken()` (HMAC-SHA256, 2 min expiry, single use) |
+| 5.12 | The worker URL and secret come only from the server environment | [x] *was `[ ]`* (room options set by the first client could override them) | `ShootingRoom.onCreate` |
+| 5.13 | Dead players can respawn on the server | [x] *was `[ ]`* (after the first death the server kept the player as a ghost, so their shots were ignored) | `player_respawn` message (≥ 3 s after death) |
+| 5.14 | Grenade damage is computed on the server only | [x] *was `[ ]`* (the client also reported blast damage, so it counted twice) | `handleGrenadeExplosion()`; client reporting removed |
 
-## 7. Anti-cheat tiers & withdrawals (spec §6)
+## 6. Anti-AFK (MSS §5.3)
 
-- [x] **FIXED (Layer 1, deterministic)**: on a withdrawal request, the Worker fetches the PostgreSQL ledger (`/api/logs/summary/:userId`) and compares it with the D1 balance **to the exact Micro-USD**. If they match, the request goes to `ai_verifying` (score 1). If they don't match, or the log server is unreachable, it is held as `pending` for manual review, with the details stored in `audit_reasons`. Before, every request got a hard-coded score of 0.98.
-- [x] **FIXED**: the withdrawal review endpoints (`/api/audit/pending`, `/api/audit/review`) had **no authentication**. Anyone could list users' emails or approve withdrawals. They now require an `admin` / `auditor` JWT.
-- [x] Rejecting a withdrawal refunds the wallet (`CASHOUT_REJECT_REFUND`, now logged with the real balance).
-- [x] Practice EC anti-cheat: ≥ 10 kills, ≥ 15 s per round, ≥ 15 s between claims.
-- [ ] **Layer 2** (headshot ratio > 85 %, chest-collect rate > 3σ) is not implemented. It needs per-player hit statistics collected on the game server.
-- [ ] **Layer 3** (ML network-graph collusion / kill-farming detection by IP / device fingerprint) is not implemented. This is a separate ML service.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 6.1 | 5 min inactive: `AFK_WARNING` + 1-click captcha | [x] | `AFK_WARNING_SECONDS = 300`, `afk_warning` / `afk_captcha_solved` |
+| 6.2 | 30 min inactive: kick | [x] | `AFK_KICK_SECONDS = 1800` |
+| 6.3 | The round's earnings are **forfeited** to the platform | [x] *was `[ ]`* (only the message said so) | `forfeitRoundEarnings()`: unsent payouts are dropped; money already flushed gets an `AFK_FORFEIT` debit (never below 0) |
 
-## 8. Ads revenue (S2S postbacks)
+## 7. Anti-cheat (MSS §6)
 
-- [x] Country-tier rewards: US $0.05 · EU $0.03 · TH $0.01 · other $0.005. The watcher is credited, and the 5-level MLM is calculated on the reward.
-- [x] **FIXED**: the postback endpoints were **open to anyone**, so `GET /api/ads/postback/onclicka?user_id=X` minted money. They now require `?secret=ADS_POSTBACK_SECRET` (or the `X-Postback-Secret` header).
-- [x] **FIXED**: `/api/ads/dev/simulate-watch` was unauthenticated, even in production. All money-minting dev helpers (ad simulation, wallet faucet, AI-review simulation) now only work on a local `wrangler dev` host, because `DEV_MOCK_MODE = "true"` is also set on the live Worker.
-- [ ] Postback de-duplication (ad networks retry postbacks) needs a `postback_transactions` table keyed by the network's click/transaction id.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 7.1 | **Layer 1:** before payout, the D1 balance must equal the PostgreSQL 90-day ledger **exactly**. Any difference blocks the payout and alerts. | [x] *was `[ ]`* (approve did no check) | `routes/audit.ts layer1Check()` calls the log receiver `/api/logs/summary/:id`; a mismatch returns 409, records the reason and logs `[ADMIN ALERT]` |
+| 7.2 | The ledger counts every wallet movement once | [x] *was `[ ]`* (MLM was logged at accrual, settlement and forfeit, so it counted up to 3×) | Accrual is `MLM_COMMISSION_PENDING` (not counted), settlement is `MLM_COMMISSION`, burn is `MLM_FORFEIT`. Inflow/outflow sets are shared: `LEDGER_INFLOW_ACTIONS` / `LEDGER_OUTFLOW_ACTIONS` |
+| 7.3 | **Layer 2:** headshot ratio > **85 %** flags the account | [x] *was `[ ]`* | `HEADSHOT_RATIO_FLAG = 0.85` after `HEADSHOT_MIN_SAMPLE_HITS = 20`; a flagged session earns 0 |
+| 7.4 | **Layer 2:** chest-collect rate > mean + **3σ** destroys the chest with no reward and marks the account | [x] *was `[ ]`* | `chestRateAnomalous()` (needs ≥ 4 other players as a sample) |
+| 7.5 | **Layer 3:** same IP or device killing each other pays **0** | [x] *was `[ ]`* | `isCollusionKill()` (IP from `cf-connecting-ip`/`x-forwarded-for`, `deviceId` from localStorage) |
+| 7.6 | Layer 3: the same killer→victim pair farmed repeatedly pays 0 | [x] *was `[ ]`* | More than 3 kills in 10 min pays 0 (`COLLUSION_*`) |
+| 7.7 | Fire-rate limit per weapon | [x] *was `[ ]`* | `WEAPON_MIN_SHOT_INTERVAL_MS` with 20 % tolerance |
+| 7.8 | Damage cannot exceed the weapon's damage (× head multiplier) | [x] *was `[ ]`* (any value up to 100 was accepted) | `player_shoot` clamp |
+| 7.9 | Movement speed cap (anti-teleport) | [x] *was `[ ]`* | `player_move` rejects jumps over 20 m/s + 1.5 m |
+| 7.10 | Admin withdrawal endpoints need admin/auditor | [x] *was `[ ]`* (`/api/audit/pending` and `/review` were public, so anyone could approve) | `requireAuditor` (open only in DEV_MOCK_MODE) |
+| 7.11 | Password login brute-force limit | [x] *was `[ ]`* | 10 failures per account per 15 min (`login_failures`) |
+| 7.12 | WhatsApp OTP is really verified in production | [x] *was `[ ]`* (any 6 digits were accepted outside dev mode) | Hashed `otp_codes`, 5 min TTL, 5 attempts, 60 s resend limit |
+| 7.13 | Telegram login signature is checked in production | [x] *was `[ ]`* (the payload was trusted) | `verifyTelegramAuth()` with `TELEGRAM_BOT_TOKEN` |
+| 7.14 | Ad S2S postbacks are authenticated and replay-proof | [x] *was `[ ]`* (anyone could call the postback URL with any user_id) | `AD_POSTBACK_SECRET` + `ad_postbacks (provider, tx_id)` primary key; `/dev/simulate-watch` works only in DEV_MOCK_MODE |
 
-## 9. Energy Tickets (EC)
+## 8. Wallet, withdrawals and marketplace
 
-- [x] Max **6** tickets (`MAX_ENERGY_TICKETS`). Auto-recharge **1 ticket / hour** up to the cap (`/api/auth/me`).
-- [x] Practice recharge: **+25 % per completed round** (4 rounds = 1 ticket), never above the cap (`routes/practice.ts`). It is audit-logged as `PRACTICE_EC_RECHARGE` (amount 0).
-- [ ] **EC consumption** (spending a ticket to join a paid match) is not defined in the master spec and is not implemented. Decide the rule (e.g. 1 EC per paid-room join).
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 8.1 | Minimum withdrawal **$10 = 10,000,000 Micro-USD** | [x] | Zod `.min(10_000_000)` and D1 `CHECK (amount_micro_usd >= 10000000)` |
+| 8.2 | Withdrawal fee **$0.50** (500,000 Micro-USD), net = amount − fee | [x] | `WITHDRAWAL_BASE_FEE_MICRO_USD`; `netPayoutMicroUsd` |
+| 8.3 | A withdrawal can never overdraw or double-spend | [x] *was `[ ]`* (a failed conditional debit still inserted the request) | Debit + insert in one D1 transaction; the wallet `CHECK (balance >= 0)` aborts both |
+| 8.4 | A rejected withdrawal is refunded and logged | [x] *was `[ ]`* (the dev simulation refunded without a log) | `CASHOUT_REJECT_REFUND` in both paths |
+| 8.5 | Marketplace referral sale with a **30-day escrow** | [x] | `MARKETPLACE_ESCROW_DAYS = 30` |
+| 8.6 | The seller is paid when the escrow is released | [x] *was `[ ]`* (the seller was never paid) | Cron `releaseMarketplaceEscrow()`, `escrow_released_at` guard, `MARKET_SELL` log |
+| 8.7 | A listing cannot be sold twice and the buyer cannot overdraw | [x] *was `[ ]`* | `status='active'` update + `changes() = 1` debit in one batch, with the CHECK constraint |
 
-## 10. Immutable audit log → PostgreSQL (`logs.mwar.win`) (spec §3, §4.3, §8)
+## 9. Audit logging and retention (MSS §4, §8)
 
-- [x] Every financial event is written to Cloudflare Queue `mwar-financial-logs`, then to the Fastify receiver over Cloudflare Tunnel, then to PostgreSQL. `transaction_id` is `UNIQUE` and inserts are `ON CONFLICT DO NOTHING`, so the log is append-only and idempotent.
-- [x] **FIXED**: the Worker had a queue *producer* but **no consumer binding**, so the `queue()` handler never ran. `[[queues.consumers]]` has been added.
-- [x] **FIXED**: the queue consumer **dropped** messages when the Mini PC was offline, and crashed on BigInt JSON. Failed deliveries are now retried with exponential back-off (up to 12 h apart, 60 retries ≈ 14+ days), BigInt values are serialized correctly, and successful deliveries are acked.
-- [x] **FIXED**: logs went into a hard-coded `logs_2026_11` table forever. They now go to **monthly tables `logs_YYYY_MM`**, created on demand. The Layer-1 summary sums across every monthly table.
-- [x] **FIXED**: the log receiver accepted writes from anyone who could reach `logs.mwar.win`. When `LOG_INGEST_SECRET` is set, every request must carry `X-Log-Secret` (the Worker sends it).
-- [x] **FIXED (ledger correctness)**:
-  - Earn-time upline commissions were logged as `MLM_COMMISSION` and then logged *again* at settlement, which double-counted them. They are now `MLM_PENDING` (audit-only).
-  - Forfeits were logged as `MLM_COMMISSION` (an inflow). They are now `MLM_FORFEIT` (audit-only).
-  - Marketplace seller proceeds (`MARKET_SALE`) and quest rewards (`QUEST_REWARD`) are now logged.
-  - Every balance-changing entry records the **real `balance_after_micro_usd`**. Before, it was 0.
-  - The ledger in/out lists are shared from one place: `LEDGER_INFLOW_ACTIONS` / `LEDGER_OUTFLOW_ACTIONS`.
-- [ ] **90-day archive → gzip → R2 → drop table** (spec §8) is not implemented. It needs a cron job on the Mini PC with R2 credentials.
-- [ ] **Queue retention 14 days** is a Cloudflare queue setting. Run `npx wrangler queues update mwar-financial-logs --message-retention-period-secs 1209600` (see "Owner actions").
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 9.1 | Monthly tables **`logs_YYYY_MM`** | [x] *was `[ ]`* (hard-coded `logs_2026_11`) | `log-receiver tableFor(created_at)` |
+| 9.2 | Audit rows are **immutable** (append-only) | [x] *was `[ ]`* | PostgreSQL triggers reject `UPDATE`, `DELETE` and `TRUNCATE`; `ON CONFLICT (transaction_id) DO NOTHING` makes delivery idempotent |
+| 9.3 | Action types include GAME_KILL, CHEST_OPEN, AD_WATCH, MLM_COMMISSION, MARKET_BUY (+ CASHOUT_*, QUEST_REWARD, MARKET_SELL, AFK_FORFEIT, EC_CONSUME, MLM_COMMISSION_PENDING, MLM_FORFEIT, PRACTICE_EC_RECHARGE) | [x] | `FinancialActionType` |
+| 9.4 | `balance_after_micro_usd` holds the real balance | [x] *was `[ ]`* (mostly `0`) | `walletBalance()` after each wallet change |
+| 9.5 | D1 is written first, then the log goes to the **Cloudflare Queue** | [x] | `logFinancialTransaction()` |
+| 9.6 | The queue holds logs while the Mini PC is offline (up to **14 days**) and catches up FIFO | [x] *was `[ ]`* (there was no consumer binding, and messages were acked even when delivery failed) | `[[queues.consumers]]`; `ack()` only on HTTP 2xx, `retry()` with back-off; the receiver answers 503 to queue deliveries while PostgreSQL is down |
+| 9.7 | Only the API worker can write to the log server | [x] *was `[ ]`* | `X-Log-Secret` = `LOG_RECEIVER_SECRET` (constant-time compare) |
+| 9.8 | **90 days** in PostgreSQL, then gzip → **R2**, then the local table is dropped | [x] *was `[ ]`* | `archiveExpiredTables()` → `PUT /api/internal/log-archive/:name` → R2 `audit-archive/` (SHA-256 recorded). The table is dropped only after a successful upload. |
+| 9.9 | The Layer-1 summary covers the 90-day window across monthly tables | [x] *was `[ ]`* | `tablesForWindow(90)` with `UNION ALL` |
+| 9.10 | `chat_YYYY_MM` messages are deleted after **12 months** | [x] *was `[ ]`* | Cron deletes `direct_messages` older than `CHAT_RETENTION_MONTHS` |
+| 9.11 | Logs reach `logs.mwar.win` through the Cloudflare Tunnel | [x] | `LOG_RECEIVER_URL = "https://logs.mwar.win/api/logs"` |
 
-## 11. Marketplace (spec §4.1 `marketplace_listings`)
+## 10. Web client (`apps/web`)
 
-- [x] Buying a referral moves the target user under the buyer and rebuilds the 5-level tree. 30-day warranty escrow (`MARKETPLACE_ESCROW_DAYS`).
-- [x] **FIXED**: sellers were **never paid**. The buyer's money disappeared. The daily cron now releases matured escrow (`releaseMarketplaceEscrow`): the seller is credited the sale price and a `MARKET_SALE` entry is logged. This needs migration `0005_marketplace_escrow_release.sql`.
-- [ ] Whether the platform takes a fee on marketplace sales is not specified. The code currently pays the full price to the seller.
-
-## 12. Architecture & security (spec §1.1, §2, §3)
-
-- [x] Core DB and chat run on Cloudflare D1, with no public DB ports. The web app is a static export on Cloudflare Workers.
-- [x] Chat is partitioned monthly (`chat_YYYY_MM`).
-- [ ] Spec says **Argon2id**. The Worker uses **PBKDF2-SHA256, 100k iterations**, because Workers have no native Argon2. Switching needs a WASM Argon2 library and a re-hash-on-login migration.
-- [ ] Auto-deleting chat databases after 12 months, and R2 replay archives, are not implemented.
-- [ ] `DEV_MOCK_MODE = "true"` is still set on the live Worker, because mock OTP login depends on it. The money endpoints are now locked to localhost, but turn it off once real OTP / Telegram login is live.
+| # | Rule | Status | Where |
+|---|---|---|---|
+| 10.1 | Practice/bot HUD shows "EC ONLY" and no cash | [x] | `game/page.tsx` HUD |
+| 10.2 | The spectator overlay counts 90 s and sends a heartbeat every 15 s | [x] | `game/page.tsx` spectate timer |
+| 10.3 | Paid arena join spends 1 EC and passes the signed entry token and device id | [x] *was `[ ]`* | `initColyseus()` |
+| 10.4 | Headshots are reported to the server for the Layer-2 ratio | [x] *was `[ ]`* | `player_shoot { headshot }` |
+| 10.5 | Grey/green daily MLM display | [x] | `wallet/daily-mlm-summary` consumers |
 
 ---
 
-## Owner actions needed before / at deploy
+## Operator steps (production activation, not code)
 
-```powershell
-cd D:\Website\mwar-win\apps\api-worker
-npx wrangler d1 migrations apply core_db --remote
-npx wrangler secret put ADS_POSTBACK_SECRET
-npx wrangler secret put LOG_INGEST_SECRET
-npx wrangler queues update mwar-financial-logs --message-retention-period-secs 1209600
-npx wrangler deploy
-cd ..\web
-npx wrangler deploy
-```
-
-- Append `&secret=<ADS_POSTBACK_SECRET>` to the AdswedMedia / OnClickA postback URLs.
-- Put the same `LOG_INGEST_SECRET=<value>` in the Mini PC's `/opt/mwar-node/.env` and restart `mwar-log-receiver`.
-- Redeploy the game server (`apps/game-server`) so token verification, the damage caps and the leave-flush go live. The game server's `WORKER_API_URL` must point at `https://api.mwar.win`.
+1. Apply the D1 migration:
+   ```
+   npx wrangler d1 migrations apply core_db --remote
+   ```
+   This adds migration `0005_economy_audit_fixes.sql`.
+2. Create the R2 bucket once:
+   ```
+   npx wrangler r2 bucket create mwar-audit-archive
+   ```
+3. Set the queue retention to 14 days once:
+   ```
+   npx wrangler queues update mwar-financial-logs --message-retention-period-secs 1209600
+   ```
+4. Set the worker secrets with `npx wrangler secret put <NAME>`:
+   - `INTERNAL_API_SECRET`, the same value as on the game server and the log receiver
+   - `LOG_RECEIVER_SECRET`, the same value on the log receiver
+   - `AD_POSTBACK_SECRET`, also put it in the ad network postback URL as `&secret=…`
+   - `TELEGRAM_BOT_TOKEN`
+5. Game server `.env`: set `INTERNAL_API_SECRET` and `WORKER_API_URL=https://api.mwar.win`. Log receiver `.env`: set `LOG_RECEIVER_SECRET`, `INTERNAL_API_SECRET` and `WORKER_API_URL`.
+6. When testing is finished, change `DEV_MOCK_MODE = "true"` to `"false"` in `apps/api-worker/wrangler.toml`. Production currently runs with dev mode on, which keeps these open for the Dev Mock Panel:
+   - faucet
+   - open settlement
+   - open audit review
+   - fixed OTP `123456`

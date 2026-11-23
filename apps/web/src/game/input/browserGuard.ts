@@ -7,7 +7,7 @@
  * So while playing on desktop we:
  *   1. enter fullscreen on the game container + request navigator.keyboard.lock() for game keys
  *   2. preventDefault every other Ctrl/Alt/Meta combo the browser allows us to cancel
- *   (No beforeunload "Leave site?" prompt — it was annoying in windowed mode.)
+ *   3. (no beforeunload "Leave site?" prompt — removed by request; windowed Ctrl+W is up to the browser)
  */
 
 type KeyboardLockApi = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
@@ -23,9 +23,6 @@ const LOCKED_CODES = [
   'KeyF',
   'KeyC',
   'KeyZ',
-  'KeyX',
-  'KeyG',
-  'KeyV',
   'KeyT',
   'KeyN',
   'KeyP',
@@ -47,6 +44,7 @@ export class BrowserGuard {
   private keyboardLocked = false;
 
   constructor(private container: HTMLElement) {}
+
 
   /** Capture-phase keydown filter: blocks cancellable browser shortcuts while in-game. */
   private onKeyDown = (e: KeyboardEvent) => {

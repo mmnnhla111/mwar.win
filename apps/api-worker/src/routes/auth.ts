@@ -17,6 +17,39 @@ import { hashPassword, verifyPassword, signJwt } from '../utils/crypto';
 import { buildNetworkTree } from '../utils/mlm-tree';
 import { authMiddleware } from '../middleware/auth';
 
+const sha256Hex = async (v: string) =>
+  [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+const LOGIN_MAX_FAILURES = 10;
+const LOGIN_WINDOW_SECONDS = 15 * 60;
+const OTP_TTL_SECONDS = 5 * 60;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_RESEND_SECONDS = 60;
+
+/**
+ * Telegram Login Widget check (core.telegram.org/widgets/login#checking-authorization):
+ * secret = SHA256(bot_token); hash = HMAC_SHA256(data_check_string, secret); auth_date ≤ 24 h old.
+ */
+async function verifyTelegramAuth(data: Record<string, unknown>, botToken: string): Promise<boolean> {
+  const hash = data.hash;
+  // Only the widget's own fields are signed (our referrer_id / phone_number extras are not)
+  const fields: Record<string, unknown> = {};
+  for (const k of ['id', 'first_name', 'last_name', 'username', 'photo_url', 'auth_date']) if (data[k] !== undefined) fields[k] = data[k];
+  if (typeof hash !== 'string') return false;
+  const authDate = Number(fields.auth_date);
+  if (!authDate || Date.now() / 1000 - authDate > 86_400) return false;
+  const checkString = Object.keys(fields)
+    .filter((k) => fields[k] !== undefined && fields[k] !== null)
+    .sort()
+    .map((k) => `${k}=${fields[k]}`)
+    .join('\n');
+  const secret = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(botToken));
+  const key = await crypto.subtle.importKey('raw', secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(checkString));
+  const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return hex === hash.toLowerCase();
+}
+
 export const authRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
 // 1. Standard Registration
@@ -94,19 +127,44 @@ authRouter.post('/login', async (c) => {
 
   const { usernameOrEmail, password } = parseResult.data;
 
+  // Brute-force limiter: max 10 failed passwords per account per 15 minutes
+  const loginKey = String(usernameOrEmail).toLowerCase().slice(0, 128);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const fail = await c.env.DB
+    .prepare('SELECT failures, window_start FROM login_failures WHERE login_key = ?1')
+    .bind(loginKey)
+    .first<{ failures: number; window_start: number }>()
+    .catch(() => null);
+  if (fail && nowSec - fail.window_start < LOGIN_WINDOW_SECONDS && fail.failures >= LOGIN_MAX_FAILURES) {
+    return c.json({ error: 'Too many failed attempts. Try again in 15 minutes.' }, 429);
+  }
+  const recordFailure = () =>
+    c.env.DB.prepare(
+      `INSERT INTO login_failures (login_key, failures, window_start) VALUES (?1, 1, ?2)
+       ON CONFLICT(login_key) DO UPDATE SET
+         failures = CASE WHEN ?2 - window_start >= ?3 THEN 1 ELSE failures + 1 END,
+         window_start = CASE WHEN ?2 - window_start >= ?3 THEN ?2 ELSE window_start END`
+    )
+      .bind(loginKey, nowSec, LOGIN_WINDOW_SECONDS)
+      .run()
+      .catch(() => {});
+
   const user = await c.env.DB
     .prepare('SELECT id, username, email, password_hash, role, status FROM users WHERE username = ?1 OR email = ?1')
     .bind(usernameOrEmail)
     .first<{ id: string; username: string; email: string; password_hash: string; role: string; status: string }>();
 
   if (!user || user.status === 'banned') {
+    await recordFailure();
     return c.json({ error: 'Invalid credentials or account suspended' }, 401);
   }
 
   const isValid = await verifyPassword(password, user.password_hash);
   if (!isValid) {
+    await recordFailure();
     return c.json({ error: 'Invalid credentials' }, 401);
   }
+  await c.env.DB.prepare('DELETE FROM login_failures WHERE login_key = ?1').bind(loginKey).run().catch(() => {});
 
   const token = await signJwt(
     { userId: user.id, username: user.username, role: user.role as 'player' | 'admin' | 'auditor' },
@@ -289,7 +347,23 @@ authRouter.post('/whatsapp/request-otp', async (c) => {
   }
 
   const { phoneNumber } = parseResult.data;
-  const otpCode = c.env.DEV_MOCK_MODE === 'true' ? DEV_MOCK_OTP : Math.floor(100000 + Math.random() * 900000).toString();
+  const isDev = c.env.DEV_MOCK_MODE === 'true';
+  const otpCode = isDev ? DEV_MOCK_OTP : String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
+  if (!isDev) {
+    // Resend limiter + hashed storage (5-minute expiry, 5 attempts)
+    const nowSec = Math.floor(Date.now() / 1000);
+    const prev = await c.env.DB.prepare('SELECT created_at FROM otp_codes WHERE phone_number = ?1').bind(phoneNumber).first<{ created_at: number }>();
+    if (prev && nowSec - prev.created_at < OTP_RESEND_SECONDS) {
+      return c.json({ error: 'Please wait a minute before requesting another code' }, 429);
+    }
+    await c.env.DB
+      .prepare(
+        `INSERT INTO otp_codes (phone_number, code_hash, expires_at, attempts, created_at) VALUES (?1, ?2, ?3, 0, ?4)
+         ON CONFLICT(phone_number) DO UPDATE SET code_hash = ?2, expires_at = ?3, attempts = 0, created_at = ?4`
+      )
+      .bind(phoneNumber, await sha256Hex(`${phoneNumber}:${otpCode}`), nowSec + OTP_TTL_SECONDS, nowSec)
+      .run();
+  }
 
   // Print OTP directly to server terminal for local development
   console.log(`\n======================================================`);
@@ -321,6 +395,22 @@ authRouter.post('/whatsapp/verify-otp', async (c) => {
   const isDevMode = c.env.DEV_MOCK_MODE === 'true';
   if (isDevMode && code !== DEV_MOCK_OTP) {
     return c.json({ error: 'Invalid OTP code. Dev mode requires 123456' }, 400);
+  }
+  if (!isDevMode) {
+    // Production: the code must match the stored hash, be unexpired, and within 5 attempts
+    const nowSec = Math.floor(Date.now() / 1000);
+    const otp = await c.env.DB
+      .prepare('SELECT code_hash, expires_at, attempts FROM otp_codes WHERE phone_number = ?1')
+      .bind(phoneNumber)
+      .first<{ code_hash: string; expires_at: number; attempts: number }>();
+    if (!otp || otp.expires_at < nowSec || otp.attempts >= OTP_MAX_ATTEMPTS) {
+      return c.json({ error: 'OTP expired or too many attempts. Request a new code.' }, 400);
+    }
+    if ((await sha256Hex(`${phoneNumber}:${code}`)) !== otp.code_hash) {
+      await c.env.DB.prepare('UPDATE otp_codes SET attempts = attempts + 1 WHERE phone_number = ?1').bind(phoneNumber).run();
+      return c.json({ error: 'Invalid OTP code' }, 400);
+    }
+    await c.env.DB.prepare('DELETE FROM otp_codes WHERE phone_number = ?1').bind(phoneNumber).run();
   }
 
   // Find user by phone number
@@ -380,6 +470,13 @@ authRouter.post('/telegram', async (c) => {
 
   const { id, username: tgUsername, first_name, phone_number, referrer_id } = parseResult.data;
   const telegramIdStr = id.toString();
+
+  // Production: the Login Widget payload must carry a valid Telegram signature
+  if (c.env.DEV_MOCK_MODE !== 'true') {
+    if (!c.env.TELEGRAM_BOT_TOKEN || !(await verifyTelegramAuth(body as Record<string, unknown>, c.env.TELEGRAM_BOT_TOKEN))) {
+      return c.json({ error: 'Invalid Telegram login signature' }, 401);
+    }
+  }
 
   // Find user by Telegram ID
   let user = await c.env.DB

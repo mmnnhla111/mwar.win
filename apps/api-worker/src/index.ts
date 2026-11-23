@@ -1,28 +1,22 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { FinancialLog } from '@mwar/shared';
+import { CHAT_RETENTION_MONTHS } from '@mwar/shared';
 import type { Env } from './types';
 import { authRouter } from './routes/auth';
 import { networkRouter } from './routes/network';
 import { walletRouter } from './routes/wallet';
-import { marketplaceRouter } from './routes/marketplace';
+import { marketplaceRouter, releaseMarketplaceEscrow } from './routes/marketplace';
 import { adsRouter } from './routes/ads';
 import { gameRouter } from './routes/game';
 import { chatRouter } from './routes/chat';
 import { auditRouter } from './routes/audit';
-import { questsRouter, settleDailyMlm, getUtcDateKey } from './routes/quests';
+import { questsRouter, settleDailyMlm, authorizeSettlement, yesterdayUtcDateKey } from './routes/quests';
+
+import { stringifyLog, logReceiverHeaders } from './utils/audit-logger';
 import { nodesRouter } from './routes/nodes';
 import { practiceRouter } from './routes/practice';
-import { releaseMarketplaceEscrow } from './routes/marketplace';
-import { hasInternalSecret } from './utils/guards';
-
-/** Daily 00:00 UTC job: settle *yesterday's* MLM ledger, then release matured marketplace escrow. */
-async function runDailyJobs(env: Env, dateKey?: string, targetUserId?: string) {
-  const key = dateKey || getUtcDateKey(new Date(Date.now() - 86_400_000));
-  const mlm = await settleDailyMlm(env, key, targetUserId);
-  const escrow = await releaseMarketplaceEscrow(env);
-  return { ...mlm, escrowReleased: escrow.released };
-}
+import { isLocalDev, hasInternalSecret } from './utils/guards';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -67,11 +61,30 @@ app.route('/api/nodes', nodesRouter);
 app.route('/api/practice', practiceRouter);
 
 // Cron endpoints (Direct trigger or Cloudflare Scheduled Event)
-// Manual trigger requires the internal secret (it moves money).
 app.post('/api/cron/settle-daily-mlm', async (c) => {
-  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized: X-Internal-Secret required' }, 401);
   const body = await c.req.json().catch(() => ({}));
-  return c.json(await runDailyJobs(c.env, body.dateKey, body.targetUserId));
+  const check = authorizeSettlement(c.env, isLocalDev(c), c.req.header('X-Internal-Secret'), body);
+  if (!check.ok) return c.json({ error: check.error }, check.status);
+  const result = await settleDailyMlm(c.env, check.dateKey, body.targetUserId);
+  return c.json(result);
+});
+
+/**
+ * 90-day log archive: the Mini PC log receiver gzips a closed logs_YYYY_MM table and uploads it
+ * here; it is stored in R2 (ASSETS_BUCKET) under audit-archive/ before the local table is dropped.
+ */
+app.put('/api/internal/log-archive/:name', async (c) => {
+  if (!hasInternalSecret(c)) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const name = c.req.param('name');
+  if (!/^logs_\d{4}_\d{2}\.jsonl\.gz$/.test(name)) return c.json({ error: 'Invalid archive name' }, 400);
+  const body = await c.req.arrayBuffer();
+  await c.env.ASSETS_BUCKET.put(`audit-archive/${name}`, body, {
+    httpMetadata: { contentType: 'application/gzip' },
+    customMetadata: { sha256: c.req.header('X-Content-Sha256') || '' },
+  });
+  return c.json({ success: true, key: `audit-archive/${name}`, bytes: body.byteLength });
 });
 
 // Global Error Handler
@@ -88,43 +101,39 @@ app.onError((err, c) => {
 export default {
   fetch: app.fetch,
 
-  // Cloudflare Cron Trigger (wrangler.toml [triggers] crons = ["0 0 * * *"])
-  async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
-    ctx.waitUntil(
-      runDailyJobs(env).then(
-        (r) => console.log('[Cron] daily settlement', JSON.stringify(r)),
-        (e) => console.error('[Cron] daily settlement failed', e)
-      )
-    );
-  },
-
-  // Spec §8: if the Mini PC is offline, logs must stay in the queue (up to 14 days) and be
-  // replayed FIFO when it returns — so failed deliveries are retried with back-off, never dropped.
+  /**
+   * Queue consumer → logs.mwar.win. A message is acked only when PostgreSQL stored it; otherwise it
+   * is retried with back-off and stays in the queue (retention up to 14 days) until the Mini PC is back.
+   */
   async queue(
-    batch: { messages: Array<{ body: FinancialLog; attempts?: number; ack?: () => void; retry?: (o?: { delaySeconds?: number }) => void }> },
+    batch: { messages: Array<{ body: FinancialLog; ack(): void; retry(o?: { delaySeconds?: number }): void; attempts?: number }> },
     env: Env
   ): Promise<void> {
     const receiverUrl = env.LOG_RECEIVER_URL || 'http://localhost:3000/api/logs';
     for (const msg of batch.messages) {
-      const retry = () => msg.retry?.({ delaySeconds: Math.min(43_200, 60 * 2 ** Math.min(10, msg.attempts ?? 1)) });
       try {
         const res = await fetch(receiverUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(env.LOG_INGEST_SECRET ? { 'X-Log-Secret': env.LOG_INGEST_SECRET } : {}) },
-          body: JSON.stringify(msg.body, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+          headers: logReceiverHeaders(env, true),
+          body: stringifyLog(msg.body),
         });
-        if (!res.ok) {
-          console.warn(`[Queue Consumer] Log receiver returned status ${res.status} — will retry`);
-          retry();
-        } else {
-          msg.ack?.();
-        }
+        if (res.ok) msg.ack();
+        else msg.retry({ delaySeconds: Math.min(3600, 30 * 2 ** Math.min(7, msg.attempts ?? 1)) });
       } catch (err: any) {
-        retry();
-        // Graceful fallback: when Mini PC / tunnel is not connected yet,
-        // avoid crashing queue consumer loop
-        console.warn(`[Queue Consumer Fallback] Log receiver offline (${receiverUrl}): ${err.message}. Message buffered in Cloudflare Queue.`);
+        console.warn(`[Queue Consumer] Log receiver offline (${receiverUrl}): ${err.message}. Retrying later.`);
+        msg.retry({ delaySeconds: Math.min(3600, 30 * 2 ** Math.min(7, msg.attempts ?? 1)) });
       }
     }
+  },
+
+  /** Cron 00:00 UTC: settle yesterday's MLM ledger (4-quest rule) and release due marketplace escrow. */
+  async scheduled(_event: unknown, env: Env): Promise<void> {
+    await settleDailyMlm(env, yesterdayUtcDateKey());
+    await releaseMarketplaceEscrow(env);
+    // chat_YYYY_MM retention: direct messages are deleted after 12 months
+    await env.CHAT_DB.prepare('DELETE FROM direct_messages WHERE created_at < ?1')
+      .bind(Math.floor(Date.now() / 1000) - CHAT_RETENTION_MONTHS * 30 * 86_400)
+      .run()
+      .catch((e: unknown) => console.warn('[Cron] chat retention failed', e));
   },
 };

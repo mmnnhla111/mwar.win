@@ -1,25 +1,18 @@
 import { Hono } from 'hono';
 import {
   DAILY_QUESTS_REQUIRED_TO_UNLOCK,
+  SELF_REPORTED_QUESTS,
+  SPECTATE_HEARTBEAT_SECONDS,
   QuestProgressSchema,
   QuestClaimSchema,
   formatMicroUsd,
   microUsdToCoins,
-  MAX_SPECTATE_HEARTBEAT_SECONDS,
+  MICRO_USD_PER_COIN,
 } from '@mwar/shared';
-import { hasInternalSecret, walletBalance, PLATFORM_ACCOUNT_ID } from '../utils/guards';
-
-/**
- * Quests a client may report progress for directly. Everything else (play a match, watch ads,
- * earn coins, community) is tracked server-side from the action itself, so it cannot be faked.
- */
-const CLIENT_REPORTABLE_QUESTS: Record<string, number> = {
-  Q_SPECTATE: MAX_SPECTATE_HEARTBEAT_SECONDS, // max seconds credited per heartbeat (sent every 15 s)
-  Q_DAILY_CHECKIN: 1,
-};
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { logFinancialTransaction } from '../utils/audit-logger';
+import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
+import { isLocalDev, safeEqual } from '../utils/guards';
 
 export const questsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -121,9 +114,9 @@ export async function updateQuestProgress(
 
   await db
     .prepare(
-      'UPDATE user_daily_quests SET current_count = ?1, is_completed = ?2, completed_at = COALESCE(completed_at, ?3) WHERE id = ?4'
+      'UPDATE user_daily_quests SET current_count = ?1, is_completed = ?2, completed_at = COALESCE(completed_at, ?3), last_progress_at = ?4 WHERE id = ?5'
     )
-    .bind(newCount, isCompletedInt, completedAt, row.id)
+    .bind(newCount, isCompletedInt, completedAt, Math.floor(Date.now() / 1000), row.id)
     .run();
 
   // 3. Check if user now qualifies for MLM Unlock (>= 4 quests)
@@ -243,15 +236,31 @@ questsRouter.post('/progress', authMiddleware, async (c) => {
   }
 
   const { questId, increment } = parseResult.data;
-  // Progress always counts toward *today* (UTC); clients cannot back-fill other days.
+  // Progress always counts toward the server's current UTC day (no back-/forward-dating)
   const dateKey = getUtcDateKey();
-  const maxIncrement = CLIENT_REPORTABLE_QUESTS[questId];
-  if (maxIncrement === undefined) {
-    return c.json({ error: `Quest ${questId} is tracked server-side and cannot be reported by the client` }, 403);
+
+  // Only timer/check-in quests are client-reported; ads, matches, coins and community are server-tracked
+  if (!(SELF_REPORTED_QUESTS as readonly string[]).includes(questId)) {
+    return c.json({ error: `${questId} progress is tracked by the server` }, 403);
+  }
+  if (questId === 'Q_DAILY_CHECKIN' && increment !== 1) {
+    return c.json({ error: 'Invalid check-in increment' }, 400);
+  }
+  if (questId === 'Q_SPECTATE') {
+    // Spectate heartbeats: at most 15 s per report, and never faster than wall-clock time allows
+    const row = await c.env.DB
+      .prepare('SELECT last_progress_at FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2 AND quest_id = ?3')
+      .bind(authUser.userId, dateKey, questId)
+      .first<{ last_progress_at: number }>();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const elapsed = nowSec - (row?.last_progress_at || 0);
+    if (row?.last_progress_at && elapsed < Math.min(increment, SPECTATE_HEARTBEAT_SECONDS) - 2) {
+      return c.json({ error: 'Spectate heartbeat too fast' }, 429);
+    }
   }
 
   try {
-    const result = await updateQuestProgress(c.env.DB, authUser.userId, questId, Math.min(increment, maxIncrement), dateKey);
+    const result = await updateQuestProgress(c.env.DB, authUser.userId, questId, increment, dateKey);
     const unlocked = await isUserMlmUnlocked(c.env.DB, authUser.userId, dateKey);
 
     return c.json({
@@ -303,17 +312,20 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
     .first<{ reward_coins: number }>();
 
   const rewardCoins = def?.reward_coins || 50;
-  const rewardMicroUsd = rewardCoins * 100; // 1 Coin = 100 Micro-USD
+  const rewardMicroUsd = rewardCoins * Number(MICRO_USD_PER_COIN); // 1 Coin = 100 Micro-USD
 
-  // Credit reward to wallet balance & mark claimed
+  // Credit reward to wallet balance & mark claimed — the credit only applies if this request flipped
+  // is_claimed 0 → 1 (changes() guard), so parallel double-claims pay once.
   const now = Math.floor(Date.now() / 1000);
-  await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE user_daily_quests SET is_claimed = 1 WHERE id = ?1').bind(userQuest.id),
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE user_daily_quests SET is_claimed = 1 WHERE id = ?1 AND is_claimed = 0').bind(userQuest.id),
     c.env.DB.prepare(
-      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
+      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
     ).bind(rewardMicroUsd, now, authUser.userId),
   ]);
-
+  if ((res[1].meta?.changes ?? 0) !== 1) {
+    return c.json({ error: 'Quest reward already claimed' }, 400);
+  }
   await logFinancialTransaction(c.env, {
     transaction_id: `tx_quest_${questId}_${dateKey}_${authUser.userId.slice(0, 8)}`,
     user_id: authUser.userId,
@@ -482,11 +494,10 @@ export async function settleDailyMlm(
         await logFinancialTransaction(env, {
           transaction_id: `tx_mlm_forfeit_${dateKey}_${u.user_id.substring(0, 6)}_${Date.now()}`,
           user_id: u.user_id,
-          // Audit-only: burned to the platform reserve (does not change the sponsor's balance)
           action_type: 'MLM_FORFEIT',
           amount_micro_usd: BigInt(totalToBurn),
-          balance_after_micro_usd: 0n,
-          related_user_id: PLATFORM_ACCOUNT_ID,
+          balance_after_micro_usd: await walletBalance(env.DB, u.user_id),
+          related_user_id: 'SYSTEM_RESERVE_BURN',
         });
 
         forfeitedUsersCount++;
@@ -509,11 +520,36 @@ export async function settleDailyMlm(
 
 // 5. POST /api/cron/settle-daily-mlm (Midnight Settlement)
 questsRouter.post('/settle-daily-mlm', async (c) => {
-  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized: X-Internal-Secret required' }, 401);
   const body = await c.req.json().catch(() => ({}));
-  const dateKey = body.dateKey || getUtcDateKey(new Date(Date.now() - 86_400_000));
-  const targetUserId = body.targetUserId;
-
-  const result = await settleDailyMlm(c.env, dateKey, targetUserId);
+  const check = authorizeSettlement(c.env, isLocalDev(c), c.req.header('X-Internal-Secret'), body);
+  if (!check.ok) return c.json({ error: check.error }, check.status);
+  const result = await settleDailyMlm(c.env, check.dateKey, body.targetUserId);
   return c.json(result);
 });
+
+/** Previous UTC day (the day the midnight cron settles). */
+export function yesterdayUtcDateKey(now = new Date()): string {
+  return getUtcDateKey(new Date(now.getTime() - 86_400_000));
+}
+
+/**
+ * Settlement is irreversible (grey → forfeited), so it needs the internal secret and may only run on
+ * a day that has already ended — running it for "today" would burn commissions mid-day.
+ * Local `wrangler dev` keeps the old open behaviour for the Dev Mock Panel.
+ */
+export function authorizeSettlement(
+  env: Env,
+  localDev: boolean,
+  secretHeader: string | undefined,
+  body: { dateKey?: string; secret?: string }
+): { ok: true; dateKey: string } | { ok: false; error: string; status: 400 | 401 } {
+  const dev = localDev;
+  const secret = secretHeader || body.secret;
+  if (!dev && !safeEqual(secret, env.INTERNAL_API_SECRET)) {
+    return { ok: false, error: 'Unauthorized settlement trigger', status: 401 };
+  }
+  const dateKey = body.dateKey || yesterdayUtcDateKey();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return { ok: false, error: 'Invalid dateKey', status: 400 };
+  if (!dev && dateKey >= getUtcDateKey()) return { ok: false, error: 'Only completed UTC days can be settled', status: 400 };
+  return { ok: true, dateKey };
+}

@@ -148,13 +148,9 @@ export class Viewmodel {
   private boltT = -1;
   private boltDur = 1;
   private throwT = -1;
-  /** Narrow / portrait screens: pull hip poses toward the centre and widen the FOV so hands + gun stay on-screen. */
-  private fitScale = 1;
-  private baseFov = 52;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(52, aspect, 0.01, 10);
-    this.applyFit(aspect);
     this.scene.add(this.camera);
     this.camera.add(this.root);
     this.root.add(this.weapon);
@@ -286,17 +282,23 @@ export class Viewmodel {
     this.pending = null;
   }
 
-  private applyFit(aspect: number) {
-    // 1.5+ (landscape phones / desktop) = authored pose. Portrait (≈0.45) pulls x in to ~55 % and widens FOV.
-    const fit = THREE.MathUtils.clamp(aspect / 1.5, 0.25, 1);
-    this.fitScale = THREE.MathUtils.lerp(0.4, 1, fit);
-    this.baseFov = 52 + (1 - fit) * 20;
-  }
-
   setAspect(aspect: number) {
-    this.applyFit(aspect);
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+  }
+
+  private readonly fitTmp = new THREE.Vector3();
+  /**
+   * Keep the hip pose inside the view frustum on narrow (portrait phone) screens: the desktop
+   * offsets put the pistol's grip outside a 9:19 frustum, so pull x in towards the centre and
+   * drop it a touch lower so it sits bottom-right without covering the crosshair.
+   */
+  private fitHip(hip: THREE.Vector3) {
+    const halfH = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * Math.abs(hip.z);
+    const maxX = halfH * this.camera.aspect * 0.6;
+    if (hip.x <= maxX) return hip;
+    const squeeze = maxX / hip.x;
+    return this.fitTmp.set(maxX, hip.y * (0.6 + 0.4 * squeeze), hip.z);
   }
 
   /** 0 = hip, 1 = fully aimed. */
@@ -353,10 +355,7 @@ export class Viewmodel {
     const slot = this.current;
 
     // Pose blend hip ↔ ADS
-    this.root.position.lerpVectors(slot.hip, slot.ads, a);
-    this.root.position.x *= THREE.MathUtils.lerp(this.fitScale, 1, a);
-    // Narrow screens: lift the hip pose slightly so the pistol grip + glove are not cropped at the bottom.
-    if (this.fitScale < 1) this.root.position.y += (1 - this.fitScale) * 0.05 * (1 - a);
+    this.root.position.lerpVectors(this.fitHip(slot.hip), slot.ads, a);
     this.root.rotation.set(
       THREE.MathUtils.lerp(HIP_ROT.x, ADS_ROT.x, a),
       THREE.MathUtils.lerp(HIP_ROT.y, ADS_ROT.y, a),
@@ -457,7 +456,7 @@ export class Viewmodel {
     }
 
     // Narrow viewmodel FOV slightly when aiming for a magnified feel
-    const fov = THREE.MathUtils.lerp(this.baseFov, this.baseFov - 12, a);
+    const fov = THREE.MathUtils.lerp(52, 40, a);
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();

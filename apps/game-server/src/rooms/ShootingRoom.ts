@@ -9,7 +9,16 @@ import {
   AFK_KICK_SECONDS,
   CHEST_REWARD_BASE_MICRO_USD,
   KILL_REWARD_BASE_MICRO_USD,
+  CHEST_LIFETIME_MS,
+  HEADSHOT_RATIO_FLAG,
+  HEADSHOT_MIN_SAMPLE_HITS,
+  CHEST_RATE_SIGMA_LIMIT,
+  CHEST_RATE_MIN_SAMPLE_PLAYERS,
+  COLLUSION_REPEAT_KILL_LIMIT,
+  COLLUSION_WINDOW_MS,
+  WEAPON_MIN_SHOT_INTERVAL_MS,
 } from '@mwar/shared';
+import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
 import { GameState, PlayerState, ChestState, DroppedWeaponState } from '../schema/GameState';
 
@@ -110,17 +119,52 @@ export const WEAPON_SPECS: Record<
   pistol: { magSize: 15, reserve: 45, damage: 24, headMult: 2.0, range: 25 },
 };
 
-/** Server-authoritative fire-rate floor (ms between accepted hits) per weapon. */
-const MIN_HIT_INTERVAL_MS: Record<string, number> = { sniper: 900, ak47: 85, m16: 70, uzi: 50, pistol: 110 };
-const MAX_CHEST_HIT_DAMAGE = 25;
+/** Server-only (never synced) per-session data used for payouts and anti-cheat. */
+interface SessionMeta {
+  /** True only for players who joined with a valid EC entry token from the API worker. */
+  paid: boolean;
+  ip: string;
+  deviceId: string;
+  joinedAt: number;
+  lastShotAt: number;
+  hits: number;
+  headshots: number;
+  /** Layer 2 flag (headshot ratio / chest rate): rewards for this session are zeroed. */
+  flagged: string | null;
+  /** Micro-USD already sent (or queued) for this session — clawed back on an AFK kick. */
+  earned: number;
+}
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
+export function verifyEntryToken(token: unknown, secret: string): { uid: string; un: string; eid: string } | null {
+  if (typeof token !== 'string' || !token.includes('.')) return null;
+  const [body, sig] = token.split('.');
+  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    const json = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (typeof json.exp !== 'number' || json.exp < Date.now() / 1000) return null;
+    if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid)) return null;
+    return { uid: json.uid, un: String(json.un ?? ''), eid: String(json.eid ?? '') };
+  } catch {
+    return null;
+  }
+}
 
 export class ShootingRoom extends Room<GameState> {
+  private meta = new Map<string, SessionMeta>();
+  /** chestId → (sessionId → damage dealt): the top-damage dealer gets the bounty. */
+  private chestDamage = new Map<string, Map<string, number>>();
+  /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
+  private pairKills = new Map<string, number[]>();
+  private usedEntryIds = new Set<string>();
+
   maxClients = 30;
   private gameId: string = '';
   private workerApiUrl: string = 'http://127.0.0.1:8787';
   private internalSecret: string = 'local-dev-internal-game-secret-2026';
-  private lastHitAt = new Map<string, number>();
   private redis?: Redis;
   private pendingPayouts: BatchPayoutItem[] = [];
 
@@ -134,9 +178,11 @@ export class ShootingRoom extends Room<GameState> {
     this.state.mapMode = spec.id;
     this.state.mapSizeX = spec.sizeX;
     this.state.mapSizeZ = spec.sizeZ;
-    this.gameId = options.gameId || `game_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    this.workerApiUrl = options.workerApiUrl || process.env.WORKER_API_URL || 'http://127.0.0.1:8787';
-    this.internalSecret = options.internalSecret || process.env.INTERNAL_API_SECRET || 'local-dev-internal-game-secret-2026';
+    this.gameId = `game_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    // Never take the API URL or the shared secret from room options: those come from the first
+    // client's joinOrCreate() call and would let a player redirect payouts or forge entry tokens.
+    this.workerApiUrl = process.env.WORKER_API_URL || 'http://127.0.0.1:8787';
+    this.internalSecret = process.env.INTERNAL_API_SECRET || 'local-dev-internal-game-secret-2026';
 
     // 1. Connect Local Redis for Room Discovery & Metrics (Non-blocking fallback to RAM)
     const redisUrl = process.env.REDIS_URL;
@@ -179,10 +225,21 @@ export class ShootingRoom extends Room<GameState> {
       if (!player) return;
 
       // Update spatial coordinates (Server-Authoritative bounding to 240m map)
+      if (![data.x, data.y, data.z].every((v) => typeof v === 'number' && Number.isFinite(v))) return;
       const halfX = this.state.mapSizeX / 2;
       const halfZ = this.state.mapSizeZ / 2;
+      // Anti-teleport: horizontal speed cap (sprint 6.2 m/s + jumps/falls, generous 3× slack)
+      const now = Date.now();
+      const m = this.meta.get(client.sessionId);
+      const last = m ? (m as SessionMeta & { lastMoveAt?: number }).lastMoveAt ?? 0 : 0;
+      const dt = Math.max(0.05, Math.min(2, (now - last) / 1000));
+      if (last && !player.isGhost && Math.hypot(data.x - player.x, data.z - player.z) > 20 * dt + 1.5) {
+        client.send('position_rejected', { x: player.x, y: player.y, z: player.z });
+        return;
+      }
+      if (m) (m as SessionMeta & { lastMoveAt?: number }).lastMoveAt = now;
       player.x = Math.max(-halfX, Math.min(halfX, data.x));
-      player.y = data.y;
+      player.y = Math.max(-5, Math.min(80, data.y));
       player.z = Math.max(-halfZ, Math.min(halfZ, data.z));
       if (typeof data.rotationY === 'number') {
         player.rotationY = data.rotationY;
@@ -350,26 +407,65 @@ export class ShootingRoom extends Room<GameState> {
     });
 
     // Weapon Shooting & Hit Verification
-    this.onMessage('player_shoot', (client, data: { targetType: 'player' | 'chest'; targetId: string; damage: number; weaponId?: string }) => {
+    this.onMessage('player_shoot', (client, data: { targetType: 'player' | 'chest'; targetId: string; damage: number; headshot?: boolean }) => {
       const shooter = this.state.players.get(client.sessionId);
-      if (!shooter || shooter.isGhost || shooter.isProp) return;
-
+      if (!shooter || shooter.isGhost) return;
+      const m = this.meta.get(client.sessionId);
       const now = Date.now();
+
+      // Anti-cheat rate limit: no faster than the equipped weapon can fire (20 % tolerance)
+      const weapon = WEAPON_SPECS[shooter.currentWeapon] ? shooter.currentWeapon : 'ak47';
+      const minGap = (WEAPON_MIN_SHOT_INTERVAL_MS[weapon] ?? 80) * 0.8;
+      if (m && now - m.lastShotAt < minGap) return;
+      if (m) m.lastShotAt = now;
+
       shooter.lastActiveTime = now;
-      // Only weapons the shooter actually holds (primary / picked-up weapon, or the universal pistol)
-      const weaponId = data.weaponId === 'pistol' ? 'pistol' : shooter.currentWeapon || shooter.primaryWeapon;
-      const spec = WEAPON_SPECS[weaponId] || WEAPON_SPECS.ak47;
-      const last = this.lastHitAt.get(client.sessionId) || 0;
-      if (now - last < (MIN_HIT_INTERVAL_MS[weaponId] ?? 60)) return; // faster than the weapon can fire
-      this.lastHitAt.set(client.sessionId, now);
-      const maxDamage = data.targetType === 'chest' ? MAX_CHEST_HIT_DAMAGE : Math.min(100, Math.ceil(spec.damage * spec.headMult));
-      const damage = Math.min(Math.max(1, Number(data.damage) || 1), maxDamage);
+      // Damage clamp: never above the weapon's own (head-shot) damage
+      const spec = WEAPON_SPECS[weapon];
+      const maxDmg = Math.round(spec.damage * (data.headshot ? spec.headMult : 1));
+      const damage = Math.min(Math.max(1, Math.round(data.damage || 25)), maxDmg, 100);
+
+      if (m && data.targetType === 'player') {
+        m.hits += 1;
+        if (data.headshot) m.headshots += 1;
+        // Layer 2: aim headshot ratio > 85 % after enough hits → flag (rewards zeroed)
+        if (!m.flagged && m.hits >= HEADSHOT_MIN_SAMPLE_HITS && m.headshots / m.hits > HEADSHOT_RATIO_FLAG) {
+          m.flagged = `headshot_ratio_${(m.headshots / m.hits).toFixed(2)}`;
+          console.warn(`[AntiCheat L2] ${shooter.id} flagged: ${m.flagged}`);
+        }
+      }
 
       if (data.targetType === 'player') {
         this.handlePlayerHit(shooter, client, data.targetId, damage);
       } else if (data.targetType === 'chest') {
         this.handleChestHit(shooter, client, data.targetId, damage);
       }
+    });
+
+    // Respawn after death (client waits ~4 s): revive the ghost at the reported spawn point
+    this.onMessage('player_respawn', (client, data: { x: number; y: number; z: number; primary?: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      const m = this.meta.get(client.sessionId) as (SessionMeta & { diedAt?: number; lastMoveAt?: number }) | undefined;
+      if (!player || !player.isGhost || !m?.diedAt || Date.now() - m.diedAt < 3000) return;
+      if (![data?.x, data?.y, data?.z].every((v) => typeof v === 'number' && Number.isFinite(v))) return;
+      const halfX = this.state.mapSizeX / 2;
+      const halfZ = this.state.mapSizeZ / 2;
+      player.x = Math.max(-halfX, Math.min(halfX, data.x));
+      player.y = Math.max(-5, Math.min(80, data.y));
+      player.z = Math.max(-halfZ, Math.min(halfZ, data.z));
+      player.health = 100;
+      player.isGhost = false;
+      player.isProp = false;
+      const primary = data.primary && WEAPON_SPECS[data.primary] ? data.primary : player.primaryWeapon || 'ak47';
+      const spec = WEAPON_SPECS[primary];
+      player.primaryWeapon = primary;
+      player.currentWeapon = primary;
+      player.magAmmo = spec.magSize;
+      player.reserveAmmo = spec.reserve;
+      player.grenadesRemaining = 2;
+      player.lastActiveTime = Date.now();
+      m.diedAt = undefined;
+      m.lastMoveAt = Date.now();
     });
 
     // Anti-AFK Captcha Verification Response
@@ -451,6 +547,8 @@ export class ShootingRoom extends Room<GameState> {
     target.health = 0;
     target.isGhost = true;
     target.deaths += 1;
+    const tm = this.meta.get(targetSessionId) as (SessionMeta & { diedAt?: number }) | undefined;
+    if (tm) tm.diedAt = Date.now();
 
     // Drop carried weapon on death with 5-minute despawn (if it has ammo)
     if (target.magAmmo > 0 || target.reserveAmmo > 0) {
@@ -465,20 +563,17 @@ export class ShootingRoom extends Room<GameState> {
     }
 
     if (killer && killerSessionId && killerSessionId !== targetSessionId) {
-      // Guests can fight but never earn Micro-USD (no verified account to credit)
       // 1. Weapon/Combat Kill by another player:
       // Kills by another player do NOT drop a Bounty Chest!
       killer.kills += 1;
-      const killReward = Number(KILL_REWARD_BASE_MICRO_USD);
-      killer.sessionEarningsMicroUsd += killReward;
-
-      if (!killer.id.startsWith('guest_')) this.pendingPayouts.push({
-        userId: killer.id,
-        amountMicroUsd: killReward,
-        actionType: 'GAME_KILL',
-        gameId: this.gameId,
-        metadata: { victimId: target.id, victimSession: targetSessionId },
-      });
+      const collusion = this.isCollusionKill(killerSessionId, targetSessionId, killer, target);
+      if (collusion) console.warn(`[AntiCheat L3] kill ${killer.id} -> ${target.id} pays 0 (${collusion})`);
+      const killReward = collusion
+        ? 0
+        : this.queuePayout(killerSessionId, killer, Number(KILL_REWARD_BASE_MICRO_USD), 'GAME_KILL', {
+            victimId: target.id,
+            victimSession: targetSessionId,
+          });
 
       this.broadcast('player_killed', {
         killerId: killer.id,
@@ -510,27 +605,41 @@ export class ShootingRoom extends Room<GameState> {
     const chest = this.state.chests.get(chestId);
     if (!chest) return;
 
+    const dealt = Math.min(damage, chest.health);
     chest.health = Math.max(0, chest.health - damage);
+    const byPlayer = this.chestDamage.get(chestId) ?? new Map<string, number>();
+    byPlayer.set(shooterClient.sessionId, (byPlayer.get(shooterClient.sessionId) ?? 0) + dealt);
+    this.chestDamage.set(chestId, byPlayer);
 
     if (chest.health === 0) {
-      const reward = chest.rewardMicroUsd;
-      shooter.chestsCollected += 1;
-      shooter.sessionEarningsMicroUsd += reward;
-
-      if (!shooter.id.startsWith('guest_')) this.pendingPayouts.push({
-        userId: shooter.id,
-        amountMicroUsd: reward,
-        actionType: 'CHEST_OPEN',
-        gameId: this.gameId,
-        metadata: { chestId, isDeathDrop: chest.isDeathDrop },
+      // Spec 5.2: the reward goes to whoever dealt the MOST damage to the chest (not the last hit)
+      let topSession = shooterClient.sessionId;
+      let topDamage = -1;
+      byPlayer.forEach((d, sid) => {
+        if (d > topDamage && this.state.players.has(sid)) {
+          topDamage = d;
+          topSession = sid;
+        }
       });
-
+      const winner = this.state.players.get(topSession) ?? shooter;
+      this.chestDamage.delete(chestId);
       this.state.chests.delete(chestId);
       this.state.activeChestsCount = this.state.chests.size;
 
+      // Layer 2: chest-collect rate above room mean + 3σ → chest destroyed with no reward, account marked
+      let reward = 0;
+      if (this.chestRateAnomalous(topSession)) {
+        const m = this.meta.get(topSession);
+        if (m) m.flagged = m.flagged ?? 'chest_rate_3sigma';
+        console.warn(`[AntiCheat L2] ${winner.id} chest rate > mean+3σ — chest voided`);
+      } else {
+        winner.chestsCollected += 1;
+        reward = this.queuePayout(topSession, winner, chest.rewardMicroUsd, 'CHEST_OPEN', { chestId, isDeathDrop: chest.isDeathDrop, topDamage });
+      }
+
       this.broadcast('chest_destroyed', {
         chestId,
-        collectedByUsername: shooter.username,
+        collectedByUsername: winner.username,
         rewardMicroUsd: reward,
       });
     }
@@ -547,7 +656,7 @@ export class ShootingRoom extends Room<GameState> {
     chest.rewardMicroUsd = Number(CHEST_REWARD_BASE_MICRO_USD) * 2; // Double reward for player loot drops
     chest.isDeathDrop = true;
     chest.spawnedAt = Date.now();
-    chest.expiresAt = Date.now() + 15_000; // 15-second lifespan
+    chest.expiresAt = Date.now() + CHEST_LIFETIME_MS; // 15-second lifespan
 
     this.state.chests.set(chestId, chest);
     this.state.activeChestsCount = this.state.chests.size;
@@ -601,6 +710,7 @@ export class ShootingRoom extends Room<GameState> {
     this.state.chests.forEach((chest, id) => {
       if (chest.isDeathDrop && chest.expiresAt > 0 && now >= chest.expiresAt) {
         this.state.chests.delete(id);
+        this.chestDamage.delete(id);
         this.broadcast('chest_expired', { chestId: id });
       }
     });
@@ -631,11 +741,10 @@ export class ShootingRoom extends Room<GameState> {
 
       // 30-Minute Inactive Rule: Auto-Kick & Forfeit
       if (inactiveSec >= AFK_KICK_SECONDS) {
-        // Forfeit unflushed round earnings back to the system (anti bot-farm rule)
-        this.pendingPayouts = this.pendingPayouts.filter((p) => p.userId !== player.id);
-        player.sessionEarningsMicroUsd = 0;
         const client = this.clients.find((c) => c.sessionId === sessionId);
-        if (client) {
+        if (client && !player.afkKicked) {
+          player.afkKicked = true;
+          this.forfeitRoundEarnings(sessionId, player);
           client.send('afk_kicked', {
             message: 'Auto-kicked due to 30 minutes of inactivity. Round earnings forfeited.',
           });
@@ -643,6 +752,28 @@ export class ShootingRoom extends Room<GameState> {
         }
       }
     });
+  }
+
+  /**
+   * 30-minute AFK rule: the round's earnings go back to the platform. Unsent payouts are dropped and
+   * anything already flushed to the wallet is clawed back with an AFK_FORFEIT debit.
+   */
+  private forfeitRoundEarnings(sessionId: string, player: PlayerState) {
+    const m = this.meta.get(sessionId);
+    let unsent = 0;
+    this.pendingPayouts = this.pendingPayouts.filter((p) => {
+      if (p.userId === player.id && (p.actionType === 'GAME_KILL' || p.actionType === 'CHEST_OPEN')) {
+        unsent += p.amountMicroUsd;
+        return false;
+      }
+      return true;
+    });
+    const alreadyPaid = (m?.earned ?? 0) - unsent;
+    if (alreadyPaid > 0 && UUID_RE.test(player.id)) {
+      this.pendingPayouts.push({ userId: player.id, amountMicroUsd: alreadyPaid, actionType: 'AFK_FORFEIT', gameId: this.gameId, metadata: { reason: 'afk_30min' } });
+    }
+    if (m) m.earned = 0;
+    player.sessionEarningsMicroUsd = 0;
   }
 
   // Batch sync financial rewards to Cloudflare Workers API
@@ -672,33 +803,85 @@ export class ShootingRoom extends Room<GameState> {
   }
 
   /**
-   * Identity is verified server-side: the client sends its API JWT and we resolve it through the
-   * Worker (/api/auth/me). Client-supplied userIds are ignored, so nobody can earn into (or as)
-   * another account. No / invalid token = guest (can play, never earns).
+   * Paid seats: a valid EC entry token (signed by the API worker after spending 1 EC) makes the seat
+   * earn Micro-USD. Everyone else may still play, but as an unpaid guest.
    */
-  async onAuth(_client: Client, options: { token?: string }) {
-    if (!options?.token) return { guest: true };
-    try {
-      const res = await fetch(`${this.workerApiUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${options.token}` } });
-      if (!res.ok) return { guest: true };
-      const data = (await res.json()) as { user?: { id?: string; username?: string } };
-      if (!data.user?.id) return { guest: true };
-      return { guest: false, userId: data.user.id, username: data.user.username };
-    } catch {
-      return { guest: true };
-    }
+  onAuth(client: Client, options: { entryToken?: string; deviceId?: string }, request?: IncomingMessage) {
+    const fwd = request?.headers?.['cf-connecting-ip'] || request?.headers?.['x-forwarded-for'];
+    const ip = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim() || request?.socket?.remoteAddress || 'unknown';
+    const entry = verifyEntryToken(options?.entryToken, this.internalSecret);
+    const paid = !!entry && !this.usedEntryIds.has(entry.eid);
+    if (paid && entry) this.usedEntryIds.add(entry.eid);
+    this.meta.set(client.sessionId, {
+      paid,
+      ip,
+      deviceId: typeof options?.deviceId === 'string' ? options.deviceId.slice(0, 64) : '',
+      joinedAt: Date.now(),
+      lastShotAt: 0,
+      hits: 0,
+      headshots: 0,
+      flagged: null,
+      earned: 0,
+    });
+    return entry ? { userId: entry.uid, username: entry.un } : { userId: null };
+  }
+
+  /** Queue a payout only for verified paid seats that are not flagged by anti-cheat. */
+  private queuePayout(sessionId: string, player: PlayerState, amount: number, actionType: 'GAME_KILL' | 'CHEST_OPEN', metadata: Record<string, unknown>) {
+    const m = this.meta.get(sessionId);
+    if (!m?.paid || m.flagged || !UUID_RE.test(player.id) || amount <= 0) return 0;
+    m.earned += amount;
+    player.sessionEarningsMicroUsd += amount;
+    this.pendingPayouts.push({ userId: player.id, amountMicroUsd: amount, actionType, gameId: this.gameId, metadata });
+    return amount;
+  }
+
+  /** Layer 3: same IP / device, or the same killer→victim pair farmed repeatedly, pays nothing. */
+  private isCollusionKill(killerSession: string, victimSession: string, killer: PlayerState, victim: PlayerState) {
+    const a = this.meta.get(killerSession);
+    const b = this.meta.get(victimSession);
+    if (!a || !b) return 'unknown_session';
+    if (a.ip !== 'unknown' && a.ip === b.ip) return 'same_ip';
+    if (a.deviceId && a.deviceId === b.deviceId) return 'same_device';
+    const key = `${killer.id}>${victim.id}`;
+    const now = Date.now();
+    const recent = (this.pairKills.get(key) || []).filter((t) => now - t < COLLUSION_WINDOW_MS);
+    recent.push(now);
+    this.pairKills.set(key, recent);
+    if (recent.length > COLLUSION_REPEAT_KILL_LIMIT) return 'repeat_victim';
+    return null;
+  }
+
+  /** Layer 2: chest-collect rate (per minute in room) above mean + 3σ of the other players. */
+  private chestRateAnomalous(sessionId: string) {
+    const now = Date.now();
+    const rates: number[] = [];
+    let mine = 0;
+    this.state.players.forEach((p, sid) => {
+      const m = this.meta.get(sid);
+      if (!m) return;
+      const minutes = Math.max(1, (now - m.joinedAt) / 60_000);
+      const r = (p.chestsCollected + (sid === sessionId ? 1 : 0)) / minutes;
+      if (sid === sessionId) mine = r;
+      else rates.push(r);
+    });
+    if (rates.length < CHEST_RATE_MIN_SAMPLE_PLAYERS) return false;
+    const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
+    const sd = Math.sqrt(rates.reduce((a, b) => a + (b - mean) ** 2, 0) / rates.length);
+    return mine > mean + CHEST_RATE_SIGMA_LIMIT * Math.max(sd, 0.05);
   }
 
   onJoin(
     client: Client,
     options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string },
-    auth?: { guest?: boolean; userId?: string; username?: string }
+    auth?: { userId: string | null; username?: string }
   ) {
     console.log(`[ShootingRoom] Player joined: ${client.sessionId} (${options.username || 'Anon'})`);
     const player = new PlayerState();
-    player.id = auth && !auth.guest && auth.userId ? auth.userId : `guest_${client.sessionId}`;
+    // Identity comes from the signed entry token only — a client-supplied userId is never trusted
+    player.id = auth?.userId || `guest_${client.sessionId}`;
     player.sessionId = client.sessionId;
-    player.username = (auth && !auth.guest && auth.username) || options.username || `Player_${client.sessionId.substring(0, 4)}`;
+    player.username = (auth?.username || options.username || `Player_${client.sessionId.substring(0, 4)}`).slice(0, 24);
     player.avatarId = options.avatarId || 'specops';
 
     const chosenPrimary = options.primaryWeapon || 'ak47';
@@ -774,8 +957,9 @@ export class ShootingRoom extends Room<GameState> {
     }
 
     this.state.players.delete(client.sessionId);
+    this.meta.delete(client.sessionId);
     this.state.activePlayersCount = this.state.players.size;
-    this.lastHitAt.delete(client.sessionId);
+    // Spec 5.2: batch every 10 s OR when a player leaves the room
     void this.flushPayoutBatch();
 
     if (this.redis) {

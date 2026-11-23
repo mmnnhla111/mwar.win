@@ -7,7 +7,7 @@ import {
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { logFinancialTransaction } from '../utils/audit-logger';
+import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { buildNetworkTree } from '../utils/mlm-tree';
 
 export const marketplaceRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
@@ -143,34 +143,29 @@ marketplaceRouter.post('/buy', async (c) => {
   // 1. Deduct price from buyer
   // 2. Mark listing as sold with buyer_id and escrow_release_at
   // 3. Update target user's referrer_id to buyer.userId
-  // Claim the listing first (only one buyer can win a race), then the guarded debit.
-  const claim = await c.env.DB.prepare(
-    "UPDATE marketplace_listings SET status = 'sold', buyer_id = ?1, sold_at = ?2, escrow_release_at = ?3 WHERE id = ?4 AND status = 'active'"
-  )
-    .bind(buyer.userId, now, escrowReleaseAt, listing.id)
-    .run();
-  if (!claim.meta?.changes) {
-    return c.json({ error: 'Listing not found or no longer active' }, 404);
+  // The wallet CHECK (balance >= 0) aborts the whole batch if funds were spent concurrently, and the
+  // listing update only matches while still 'active' (checked via changes() below) — no double sale.
+  let results;
+  try {
+    results = await c.env.DB.batch([
+      c.env.DB.prepare(
+        "UPDATE marketplace_listings SET status = 'sold', buyer_id = ?1, sold_at = ?2, escrow_release_at = ?3 WHERE id = ?4 AND status = 'active'"
+      ).bind(buyer.userId, now, escrowReleaseAt, listing.id),
+      // Debit only if the listing row above actually changed (changes() = rows touched by the previous statement)
+      c.env.DB.prepare(
+        'UPDATE wallets SET balance_micro_usd = balance_micro_usd - ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
+      ).bind(listing.price_micro_usd, now, buyer.userId),
+    ]);
+  } catch {
+    return c.json({ error: 'Insufficient funds to purchase listing', required: listing.price_micro_usd }, 400);
   }
-  const debit = await c.env.DB.prepare(
-    'UPDATE wallets SET balance_micro_usd = balance_micro_usd - ?1, updated_at = ?2 WHERE user_id = ?3 AND balance_micro_usd >= ?1'
-  )
-    .bind(listing.price_micro_usd, now, buyer.userId)
-    .run();
-  if (!debit.meta?.changes) {
-    await c.env.DB.prepare("UPDATE marketplace_listings SET status = 'active', buyer_id = NULL, sold_at = NULL, escrow_release_at = NULL WHERE id = ?1")
-      .bind(listing.id)
-      .run();
-    return c.json({ error: 'Insufficient funds to purchase listing' }, 400);
+  if ((results[0].meta?.changes ?? 0) !== 1 || (results[1].meta?.changes ?? 0) !== 1) {
+    return c.json({ error: 'Listing was just sold to someone else' }, 409);
   }
   await c.env.DB.batch([
-    c.env.DB.prepare(
-      'UPDATE users SET referrer_id = ?1 WHERE id = ?2'
-    ).bind(buyer.userId, listing.target_user_id),
+    c.env.DB.prepare('UPDATE users SET referrer_id = ?1 WHERE id = ?2').bind(buyer.userId, listing.target_user_id),
     // Remove old upline connections of the target user
-    c.env.DB.prepare(
-      'DELETE FROM network_trees WHERE descendant_id = ?1'
-    ).bind(listing.target_user_id),
+    c.env.DB.prepare('DELETE FROM network_trees WHERE descendant_id = ?1').bind(listing.target_user_id),
   ]);
 
   // Rebuild network tree under the buyer
@@ -198,39 +193,35 @@ marketplaceRouter.post('/buy', async (c) => {
 });
 
 /**
- * Releases marketplace escrow: 30 days after a sale the seller is credited the sale price
- * (MARKET_SALE). Runs from the daily cron. Requires migration 0005 (escrow_released_at column).
+ * Cron: release the 30-day escrow — credit each seller once (escrow_released_at guards re-entry)
+ * and write a MARKET_SELL audit row so Layer-1 reconciliation stays exact.
  */
 export async function releaseMarketplaceEscrow(env: Env) {
   const now = Math.floor(Date.now() / 1000);
-  let released = 0;
-  try {
-    const due = await env.DB.prepare(
-      "SELECT id, seller_id, target_user_id, price_micro_usd FROM marketplace_listings WHERE status = 'sold' AND escrow_release_at IS NOT NULL AND escrow_release_at <= ?1 AND escrow_released_at IS NULL LIMIT 200"
+  const due = await env.DB
+    .prepare(
+      "SELECT id, seller_id, target_user_id, price_micro_usd FROM marketplace_listings WHERE status = 'sold' AND escrow_released_at IS NULL AND escrow_release_at <= ?1 LIMIT 200"
     )
-      .bind(now)
-      .all<{ id: string; seller_id: string; target_user_id: string; price_micro_usd: number }>();
-    for (const l of due.results || []) {
-      const mark = await env.DB.prepare('UPDATE marketplace_listings SET escrow_released_at = ?1 WHERE id = ?2 AND escrow_released_at IS NULL').bind(now, l.id).run();
-      if (!mark.meta?.changes) continue;
-      await env.DB.prepare(
-        'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-      )
-        .bind(l.price_micro_usd, now, l.seller_id)
-        .run();
-      const bal = await env.DB.prepare('SELECT balance_micro_usd FROM wallets WHERE user_id = ?1').bind(l.seller_id).first<{ balance_micro_usd: number }>();
-      await logFinancialTransaction(env, {
-        transaction_id: `tx_mkt_sale_${l.id.slice(0, 12)}`,
-        user_id: l.seller_id,
-        action_type: 'MARKET_SALE',
-        amount_micro_usd: BigInt(l.price_micro_usd),
-        balance_after_micro_usd: BigInt(bal?.balance_micro_usd ?? 0),
-        related_user_id: l.target_user_id,
-      });
-      released++;
-    }
-  } catch (err) {
-    console.warn('[Escrow] release skipped (apply migration 0005_marketplace_escrow_release.sql):', err);
+    .bind(now)
+    .all<{ id: string; seller_id: string; target_user_id: string; price_micro_usd: number }>();
+  let released = 0;
+  for (const l of due.results || []) {
+    const res = await env.DB.batch([
+      env.DB.prepare('UPDATE marketplace_listings SET escrow_released_at = ?1 WHERE id = ?2 AND escrow_released_at IS NULL').bind(now, l.id),
+      env.DB.prepare(
+        'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
+      ).bind(l.price_micro_usd, now, l.seller_id),
+    ]);
+    if ((res[1].meta?.changes ?? 0) !== 1) continue;
+    released++;
+    await logFinancialTransaction(env, {
+      transaction_id: `tx_mktsell_${l.id.slice(0, 8)}_${now}`,
+      user_id: l.seller_id,
+      action_type: 'MARKET_SELL',
+      amount_micro_usd: BigInt(l.price_micro_usd),
+      balance_after_micro_usd: await walletBalance(env.DB, l.seller_id),
+      related_user_id: l.target_user_id,
+    });
   }
   return { released };
 }

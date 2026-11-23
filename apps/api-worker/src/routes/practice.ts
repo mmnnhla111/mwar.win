@@ -3,12 +3,17 @@ import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { logFinancialTransaction } from '../utils/audit-logger';
-import { trackQuestAction } from './quests';
+import {
+  MAX_ENERGY_TICKETS,
+  PRACTICE_ROUND_KILLS,
+  PRACTICE_MIN_ROUND_SECONDS,
+  PRACTICE_EC_PROGRESS_PER_ROUND,
+} from '@mwar/shared';
 
 export const practiceRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
 const ClaimEcSchema = z.object({
-  roundKills: z.number().int().min(10),
+  roundKills: z.number().int().min(PRACTICE_ROUND_KILLS).max(200),
   roundDurationSeconds: z.number().min(15), // Anti-cheat: 10 kills cannot physically happen in <15s
 });
 
@@ -42,22 +47,23 @@ practiceRouter.post('/claim-ec', authMiddleware, async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  // Anti-cheat rate limit: minimum 15 seconds between submissions
+  // Anti-cheat rate limit: a 10-kill round can be claimed at most once per 60 s of real time
+  // (client-reported duration is not trusted on its own)
   const lastClaim = user.last_practice_claim || 0;
-  if (now - lastClaim < 15) {
+  if (now - lastClaim < PRACTICE_MIN_ROUND_SECONDS) {
     return c.json(
       {
-        error: 'Rate limit exceeded: Submissions must be at least 15 seconds apart.',
+        error: `Rate limit exceeded: practice rounds can be claimed once every ${PRACTICE_MIN_ROUND_SECONDS} seconds.`,
       },
       429
     );
   }
 
-  // Credit +25% progress (4 rounds = 1 full ticket)
+  // Credit +25% progress (4 rounds = 1 full ticket), capped at MAX_ENERGY_TICKETS (6)
   const currentProgress = user.energy_progress_pct || 0;
-  const newRawProgress = currentProgress + 25;
-  const maxTickets = user.max_energy_tickets ?? 6;
-  let tickets = user.energy_tickets ?? 6;
+  const newRawProgress = currentProgress + PRACTICE_EC_PROGRESS_PER_ROUND;
+  const maxTickets = Math.min(user.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS);
+  let tickets = user.energy_tickets ?? MAX_ENERGY_TICKETS;
   let finalProgress = newRawProgress;
   let ticketAwarded = false;
 
@@ -73,13 +79,16 @@ practiceRouter.post('/claim-ec', authMiddleware, async (c) => {
     .prepare(
       `UPDATE users
        SET energy_tickets = ?1, energy_progress_pct = ?2, last_practice_claim = ?3
-       WHERE id = ?4`
+       WHERE id = ?4 AND last_practice_claim = ?5`
     )
-    .bind(tickets, finalProgress, now, authUser.userId)
-    .run();
-
-  // Daily quest Q_PLAY_MATCH: a completed practice round counts as finishing a match
-  await trackQuestAction(c.env.DB, authUser.userId, 'finish_game_match', 1).catch(() => {});
+    .bind(tickets, finalProgress, now, authUser.userId, lastClaim)
+    .run()
+    .then((r) => {
+      if ((r.meta?.changes ?? 0) !== 1) throw new Error('concurrent');
+    })
+    .catch(() => {
+      throw new Error('Concurrent practice claim rejected');
+    });
 
   // Audit log entry to logs.mwar.win (PostgreSQL) and Cloudflare Queue
   await logFinancialTransaction(c.env, {

@@ -10,9 +10,9 @@ networkRouter.use('*', authMiddleware);
 
 // 1. Get 5-Level Downline Members
 networkRouter.get('/downline', async (c) => {
+  // Q_COMMUNITY: inspecting your network tree counts as community interaction (server-tracked)
+  await trackQuestAction(c.env.DB, c.get('user').userId, 'send_chat_or_network', 1).catch(() => {});
   const user = c.get('user');
-  // Daily quest Q_COMMUNITY: inspecting the network tree counts as a community interaction
-  await trackQuestAction(c.env.DB, user.userId, 'send_chat_or_network', 1).catch(() => {});
 
   const rows = await c.env.DB
     .prepare(

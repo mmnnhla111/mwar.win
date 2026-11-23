@@ -3,8 +3,10 @@ import { Pool } from 'pg';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import zlib from 'zlib';
+import crypto from 'crypto';
 import type { FinancialLog } from '@mwar/shared';
-import { LEDGER_INFLOW_ACTIONS, LEDGER_OUTFLOW_ACTIONS } from '@mwar/shared';
+import { LEDGER_INFLOW_ACTIONS, LEDGER_OUTFLOW_ACTIONS, LOG_RETENTION_DAYS } from '@mwar/shared';
 
 // Attempt to load .env from multiple candidate locations
 const envCandidates = [
@@ -25,6 +27,12 @@ for (const candidate of envCandidates) {
 const app = Fastify({ logger: true });
 
 const dbUrl = process.env.DATABASE_URL || 'postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs';
+/** Shared secret the API worker sends as X-Log-Secret (set the same value as LOG_RECEIVER_SECRET there). */
+const LOG_SECRET = process.env.LOG_RECEIVER_SECRET || process.env.LOG_INGEST_SECRET || '';
+/** For uploading 90-day archives to R2 through the API worker. */
+const WORKER_API_URL = process.env.WORKER_API_URL || 'https://api.mwar.win';
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || '';
+const ARCHIVE_DIR = process.env.LOG_ARCHIVE_DIR || path.resolve(process.cwd(), 'archive');
 
 const pgPool = new Pool({
   connectionString: dbUrl,
@@ -38,19 +46,24 @@ pgPool.on('error', (err) => {
   isDbConnected = false;
 });
 
-/**
- * Monthly partitioned audit tables (spec §3/§4.3: logs_YYYY_MM). Each log goes to the table of its
- * own UTC month; the table is created on first use.
- */
-function tableFor(date = new Date()): string {
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-  return `logs_${y}_${m}`;
-}
+// Offline memory buffer — only for direct (non-queue) posts. Queue deliveries get 503 instead, so the
+// Cloudflare Queue keeps them (up to 14 days) and retries: nothing is lost if the Mini PC reboots.
+const memoryBuffer: FinancialLog[] = [];
+let isDbConnected = false;
 const ensuredTables = new Set<string>();
+
+/** logs_YYYY_MM for a timestamp (UTC). */
+export function tableFor(date: Date): string {
+  return `logs_${date.getUTCFullYear()}_${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Monthly, append-only table. Row-level UPDATE / DELETE / TRUNCATE are rejected by triggers, so the
+ * audit trail is immutable; the only way data leaves is the 90-day archive, which drops the whole table.
+ */
 async function ensureTable(client: { query: (q: string) => Promise<unknown> }, table: string) {
   if (ensuredTables.has(table)) return;
-  if (!/^logs_\d{4}_\d{2}$/.test(table)) throw new Error(`Bad table name ${table}`);
+  if (!/^logs_\d{4}_\d{2}$/.test(table)) throw new Error('bad table name');
   await client.query(`
     CREATE TABLE IF NOT EXISTS ${table} (
       id BIGSERIAL PRIMARY KEY,
@@ -66,76 +79,53 @@ async function ensureTable(client: { query: (q: string) => Promise<unknown> }, t
     );
     CREATE INDEX IF NOT EXISTS idx_${table}_user_date ON ${table}(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_${table}_action ON ${table}(action_type);
+    CREATE OR REPLACE FUNCTION mwar_logs_immutable() RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'Financial audit logs are immutable (% blocked)', TG_OP;
+    END;
+    $$ LANGUAGE plpgsql;
+    DROP TRIGGER IF EXISTS ${table}_no_update ON ${table};
+    CREATE TRIGGER ${table}_no_update BEFORE UPDATE OR DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION mwar_logs_immutable();
+    DROP TRIGGER IF EXISTS ${table}_no_truncate ON ${table};
+    CREATE TRIGGER ${table}_no_truncate BEFORE TRUNCATE ON ${table} FOR EACH STATEMENT EXECUTE FUNCTION mwar_logs_immutable();
   `);
   ensuredTables.add(table);
 }
-function logTable(log: FinancialLog): string {
-  const d = log.created_at ? new Date(log.created_at) : new Date();
-  return tableFor(isNaN(d.getTime()) ? new Date() : d);
-}
+
 async function insertLog(client: { query: (q: string, v?: unknown[]) => Promise<unknown> }, log: FinancialLog) {
-  const table = logTable(log);
+  const created = log.created_at ? new Date(log.created_at) : new Date();
+  const when = isNaN(created.getTime()) ? new Date() : created;
+  const table = tableFor(when);
   await ensureTable(client, table);
   await client.query(
-    `INSERT INTO ${table} (transaction_id, user_id, action_type, amount_micro_usd, balance_after_micro_usd, source_game_id, related_user_id, mlm_level)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO ${table} (transaction_id, user_id, action_type, amount_micro_usd, balance_after_micro_usd, source_game_id, related_user_id, mlm_level, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (transaction_id) DO NOTHING`,
     [
-      log.transaction_id,
-      log.user_id,
-      log.action_type,
-      log.amount_micro_usd.toString(),
-      log.balance_after_micro_usd.toString(),
-      log.source_game_id || null,
-      log.related_user_id || null,
+      String(log.transaction_id).slice(0, 64),
+      String(log.user_id).slice(0, 36),
+      String(log.action_type).slice(0, 32),
+      String(log.amount_micro_usd ?? 0),
+      String(log.balance_after_micro_usd ?? 0),
+      log.source_game_id ? String(log.source_game_id).slice(0, 64) : null,
+      log.related_user_id ? String(log.related_user_id).slice(0, 36) : null,
       log.mlm_level || null,
+      when.toISOString(),
     ]
   );
 }
 
-/** Shared ingest secret (X-Log-Secret). When LOG_INGEST_SECRET is set, unsigned requests are rejected. */
-const INGEST_SECRET = process.env.LOG_INGEST_SECRET || '';
-if (!INGEST_SECRET) console.warn('[Log Receiver] LOG_INGEST_SECRET is not set — accepting unsigned log writes (set it in production).');
-function authorized(headers: Record<string, unknown>): boolean {
-  if (!INGEST_SECRET) return true;
-  const got = String(headers['x-log-secret'] || '');
-  if (got.length !== INGEST_SECRET.length) return false;
-  let diff = 0;
-  for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ INGEST_SECRET.charCodeAt(i);
-  return diff === 0;
-}
-
-const INFLOW = new Set<string>(LEDGER_INFLOW_ACTIONS);
-const OUTFLOW = new Set<string>(LEDGER_OUTFLOW_ACTIONS);
-const sqlList = (xs: readonly string[]) => xs.map((x) => `'${x}'`).join(', ');
-
-// Offline Memory Buffer (Downtime resilience buffer when Mini PC PostgreSQL is offline)
-const memoryBuffer: FinancialLog[] = [];
-let isDbConnected = false;
-
-// Auto-reconnect & table check
+// Auto-reconnect & buffer drain
 async function checkDbConnection() {
   try {
     const client = await pgPool.connect();
     isDbConnected = true;
-
-    // Ensure the current month's table exists
-    await ensureTable(client, tableFor());
-
-    // Flush any pending memory buffer (in FIFO order, each into its own month table)
+    await ensureTable(client, tableFor(new Date()));
     if (memoryBuffer.length > 0) {
       console.log(`[Buffer Drain] Flushing ${memoryBuffer.length} buffered logs to PostgreSQL...`);
       const batch = memoryBuffer.splice(0, memoryBuffer.length);
-      for (const log of batch) {
-        try {
-          await insertLog(client, log);
-        } catch (e) {
-          memoryBuffer.push(log);
-          throw e;
-        }
-      }
+      for (const log of batch) await insertLog(client, log);
     }
-
     client.release();
   } catch (err: any) {
     isDbConnected = false;
@@ -143,9 +133,14 @@ async function checkDbConnection() {
   }
 }
 
-// Check DB every 10 seconds
 setInterval(checkDbConnection, 10000);
 checkDbConnection();
+
+function authorized(headers: Record<string, unknown>) {
+  if (!LOG_SECRET) return true; // local dev
+  const got = String(headers['x-log-secret'] ?? '');
+  return got.length === LOG_SECRET.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(LOG_SECRET));
+}
 
 // Health Endpoint
 app.get('/health', async () => {
@@ -158,14 +153,13 @@ app.get('/health', async () => {
   };
 });
 
-// Receive Financial Log
+// Receive Financial Log (append-only)
 app.post<{ Body: FinancialLog }>('/api/logs', async (request, reply) => {
-  if (!authorized(request.headers as Record<string, unknown>)) {
-    return reply.status(401).send({ error: 'Invalid or missing X-Log-Secret' });
-  }
+  if (!authorized(request.headers)) return reply.status(401).send({ error: 'Invalid log secret' });
   const log = request.body;
+  const fromQueue = request.headers['x-queue-delivery'] === '1';
 
-  if (!log.transaction_id || !log.user_id || !log.action_type) {
+  if (!log || !log.transaction_id || !log.user_id || !log.action_type) {
     return reply.status(400).send({ error: 'Missing required log fields' });
   }
 
@@ -173,74 +167,117 @@ app.post<{ Body: FinancialLog }>('/api/logs', async (request, reply) => {
     try {
       await insertLog(pgPool, log);
       return reply.send({ success: true, stored: 'postgresql' });
-    } catch {
-      // Fallback to buffer
+    } catch (err: any) {
+      if (fromQueue) return reply.status(503).send({ error: 'db_write_error', retry: true, details: err.message });
       memoryBuffer.push(log);
       return reply.send({ success: true, stored: 'memory_buffer', reason: 'db_write_error' });
     }
-  } else {
-    // Mini PC is offline: buffer safely
-    memoryBuffer.push(log);
-    return reply.send({ success: true, stored: 'memory_buffer', bufferSize: memoryBuffer.length });
   }
+  if (fromQueue) return reply.status(503).send({ error: 'postgres_offline', retry: true });
+  memoryBuffer.push(log);
+  return reply.send({ success: true, stored: 'memory_buffer', bufferSize: memoryBuffer.length });
 });
 
-// Layer 1 Audit: Calculate Ledger Summation
-app.get<{ Params: { userId: string } }>('/api/logs/summary/:userId', async (request, reply) => {
-  if (!authorized(request.headers as Record<string, unknown>)) {
-    return reply.status(401).send({ error: 'Invalid or missing X-Log-Secret' });
+/** Monthly tables that may hold rows from the last `days` days. */
+function tablesForWindow(days: number, now = new Date()) {
+  const out: string[] = [];
+  const start = new Date(now.getTime() - days * 86_400_000);
+  const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  while (d <= now) {
+    out.push(tableFor(d));
+    d.setUTCMonth(d.getUTCMonth() + 1);
   }
+  return out;
+}
+
+// Layer 1 Audit: 90-day ledger summation = Σ earnings − Σ withdrawals − Σ purchases (+ AFK claw-backs)
+app.get<{ Params: { userId: string } }>('/api/logs/summary/:userId', async (request, reply) => {
+  if (!authorized(request.headers)) return reply.status(401).send({ error: 'Invalid log secret' });
   const { userId } = request.params;
+  const inflow = LEDGER_INFLOW_ACTIONS as string[];
+  const outflow = LEDGER_OUTFLOW_ACTIONS as string[];
 
   if (!isDbConnected) {
-    // Compute from memory buffer if DB offline
     let calculatedBalance = 0n;
     for (const l of memoryBuffer.filter((x) => x.user_id === userId)) {
       const amt = BigInt(l.amount_micro_usd);
-      if (INFLOW.has(l.action_type)) {
-        calculatedBalance += amt;
-      } else if (OUTFLOW.has(l.action_type)) {
-        calculatedBalance -= amt;
-      }
+      if (inflow.includes(l.action_type)) calculatedBalance += amt;
+      else if (outflow.includes(l.action_type)) calculatedBalance -= amt;
     }
-    return reply.send({
-      userId,
-      calculatedBalanceMicroUsd: calculatedBalance.toString(),
-      source: 'memory_buffer',
-    });
+    return reply.status(503).send({ userId, calculatedBalanceMicroUsd: calculatedBalance.toString(), source: 'memory_buffer', partial: true });
   }
 
   try {
-    // Sum across every monthly table (logs_YYYY_MM) still held in PostgreSQL
-    const tables = await pgPool.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name ~ '^logs_[0-9]{4}_[0-9]{2}$'`
-    );
-    const names: string[] = tables.rows.map((r: { table_name: string }) => r.table_name);
-    if (names.length === 0) names.push(tableFor());
-    const union = names.map((t) => `SELECT action_type, amount_micro_usd FROM ${t} WHERE user_id = $1`).join(' UNION ALL ');
+    const existing = await pgPool.query(`SELECT tablename FROM pg_tables WHERE tablename = ANY($1)`, [tablesForWindow(LOG_RETENTION_DAYS)]);
+    const tables: string[] = existing.rows.map((r: { tablename: string }) => r.tablename);
+    if (!tables.length) {
+      return reply.send({ userId, totalInflowMicroUsd: '0', totalOutflowMicroUsd: '0', calculatedBalanceMicroUsd: '0', source: 'postgresql' });
+    }
+    const union = tables.map((t) => `SELECT action_type, amount_micro_usd FROM ${t} WHERE user_id = $1`).join(' UNION ALL ');
     const res = await pgPool.query(
       `SELECT
-         COALESCE(SUM(CASE WHEN action_type IN (${sqlList(LEDGER_INFLOW_ACTIONS)}) THEN amount_micro_usd ELSE 0 END), 0) AS total_inflow,
-         COALESCE(SUM(CASE WHEN action_type IN (${sqlList(LEDGER_OUTFLOW_ACTIONS)}) THEN amount_micro_usd ELSE 0 END), 0) AS total_outflow
-       FROM (${union}) AS all_logs`,
-      [userId]
+         COALESCE(SUM(CASE WHEN action_type = ANY($2) THEN amount_micro_usd ELSE 0 END), 0) AS total_inflow,
+         COALESCE(SUM(CASE WHEN action_type = ANY($3) THEN amount_micro_usd ELSE 0 END), 0) AS total_outflow
+       FROM (${union}) AS ledger`,
+      [userId, inflow, outflow]
     );
-
-    const inflow = BigInt(res.rows[0].total_inflow);
-    const outflow = BigInt(res.rows[0].total_outflow);
-    const calculatedBalance = inflow - outflow;
-
+    const inSum = BigInt(res.rows[0].total_inflow);
+    const outSum = BigInt(res.rows[0].total_outflow);
     return reply.send({
       userId,
-      totalInflowMicroUsd: inflow.toString(),
-      totalOutflowMicroUsd: outflow.toString(),
-      calculatedBalanceMicroUsd: calculatedBalance.toString(),
-      source: 'postgresql_16',
+      totalInflowMicroUsd: inSum.toString(),
+      totalOutflowMicroUsd: outSum.toString(),
+      calculatedBalanceMicroUsd: (inSum - outSum).toString(),
+      tables,
+      source: 'postgresql',
     });
   } catch (err: any) {
     return reply.status(500).send({ error: 'Failed to query audit logs', details: err.message });
   }
 });
+
+/**
+ * 90-day retention: a monthly table whose LAST day is older than 90 days is exported to gzip JSONL,
+ * uploaded to R2 (via the API worker's /api/internal/log-archive) and only then dropped locally.
+ * Without INTERNAL_API_SECRET the archive stays on disk and the table is kept.
+ */
+export async function archiveExpiredTables(now = new Date()) {
+  if (!isDbConnected) return [];
+  const res = await pgPool.query(`SELECT tablename FROM pg_tables WHERE tablename ~ '^logs_[0-9]{4}_[0-9]{2}$' ORDER BY tablename`);
+  const done: string[] = [];
+  for (const { tablename } of res.rows as { tablename: string }[]) {
+    const [, y, m] = tablename.split('_').map(Number);
+    const monthEnd = Date.UTC(y, m, 1); // first instant of the next month
+    if (now.getTime() - monthEnd < LOG_RETENTION_DAYS * 86_400_000) continue;
+    const rows = await pgPool.query(`SELECT * FROM ${tablename} ORDER BY id`);
+    const jsonl = rows.rows.map((r) => JSON.stringify(r)).join('\n');
+    const gz = zlib.gzipSync(Buffer.from(jsonl));
+    fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+    const file = path.join(ARCHIVE_DIR, `${tablename}.jsonl.gz`);
+    fs.writeFileSync(file, gz);
+    if (!INTERNAL_API_SECRET) {
+      console.warn(`[Archive] ${file} written; set INTERNAL_API_SECRET to upload to R2 and drop ${tablename}`);
+      continue;
+    }
+    const sha = crypto.createHash('sha256').update(gz).digest('hex');
+    const up = await fetch(`${WORKER_API_URL}/api/internal/log-archive/${tablename}.jsonl.gz`, {
+      method: 'PUT',
+      headers: { 'X-Internal-Secret': INTERNAL_API_SECRET, 'Content-Type': 'application/gzip', 'X-Content-Sha256': sha },
+      body: gz,
+    }).catch((e) => ({ ok: false, status: 0, statusText: String(e) }) as const);
+    if (!up.ok) {
+      console.warn(`[Archive] R2 upload failed for ${tablename} (${up.status}); table kept`);
+      continue;
+    }
+    await pgPool.query(`DROP TABLE ${tablename}`);
+    ensuredTables.delete(tablename);
+    done.push(tablename);
+    console.log(`[Archive] ${tablename} → R2 audit-archive/ (${gz.length} bytes, sha256 ${sha}); local table dropped`);
+  }
+  return done;
+}
+setInterval(() => void archiveExpiredTables().catch((e) => console.warn('[Archive]', e.message)), 6 * 3600_000);
+setTimeout(() => void archiveExpiredTables().catch(() => {}), 60_000);
 
 const start = async () => {
   try {

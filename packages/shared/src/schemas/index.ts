@@ -88,7 +88,8 @@ export const AdPostbackSchema = z.object({
 export const BatchPayoutItemSchema = z.object({
   userId: z.string().uuid(),
   amountMicroUsd: z.number().int().positive(),
-  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH']),
+  // AFK_FORFEIT is a debit: the round earnings of a player kicked after 30 min AFK
+  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT']),
   gameId: z.string(),
   metadata: z.record(z.any()).optional(),
 });
@@ -112,7 +113,8 @@ export const DirectMessageSendSchema = z.object({
 // Daily Quest Schemas
 export const QuestProgressSchema = z.object({
   questId: z.string().min(1),
-  increment: z.number().int().positive().default(1),
+  // Self-reported progress is capped per call (spectate heartbeat = 15 s)
+  increment: z.number().int().positive().max(15).default(1),
 });
 
 export const QuestClaimSchema = z.object({

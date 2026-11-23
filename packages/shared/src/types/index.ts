@@ -89,13 +89,32 @@ export type FinancialActionType =
   | 'CASHOUT_REJECT_REFUND'
   | 'DEV_MOCK_FAUCET'
   | 'PRACTICE_EC_RECHARGE'
-  // Audit-only entries (do not change a wallet balance):
-  | 'MLM_PENDING' // upline commission recorded in the daily pending ledger (paid at midnight settlement)
-  | 'MLM_FORFEIT' // pending commission burned to the platform because the sponsor missed the daily quests
-  | 'PLATFORM_FEE' // 5 % platform fee + unclaimed MLM levels + rounding remainder (Platform Reserve)
-  // Balance-changing entries:
-  | 'QUEST_REWARD' // daily quest coin reward credited to the wallet
-  | 'MARKET_SALE'; // marketplace seller proceeds released after the 30-day escrow
+  /** Daily quest coin reward credited to the wallet (inflow). */
+  | 'QUEST_REWARD'
+  /** MLM commission accrued into the daily grey/green ledger — NOT yet in the wallet (informational). */
+  | 'MLM_COMMISSION_PENDING'
+  /** Grey MLM commission burned at midnight because the sponsor missed the 4-quest rule (informational). */
+  | 'MLM_FORFEIT'
+  /** Round earnings clawed back after a 30-minute AFK kick (outflow). */
+  | 'AFK_FORFEIT'
+  /** Marketplace sale proceeds released to the seller after the 30-day escrow (inflow). */
+  | 'MARKET_SELL'
+  /** One Energy Ticket (EC) spent to enter a paid arena (no money moves). */
+  | 'EC_CONSUME';
+
+/** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
+export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
+  'GAME_KILL',
+  'CHEST_OPEN',
+  'AD_WATCH',
+  'MLM_COMMISSION',
+  'DEV_MOCK_FAUCET',
+  'CASHOUT_REJECT_REFUND',
+  'QUEST_REWARD',
+  'MARKET_SELL',
+];
+/** Action types that SUBTRACT from the wallet balance. */
+export const LEDGER_OUTFLOW_ACTIONS: FinancialActionType[] = ['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT'];
 
 export interface FinancialLog {
   id?: number;

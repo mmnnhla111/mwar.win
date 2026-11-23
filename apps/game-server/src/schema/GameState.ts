@@ -10,7 +10,7 @@ export class PlayerState extends Schema {
   @type('number') y: number = 0;
   @type('number') z: number = 0;
   @type('number') rotationY: number = 0;
-  // Stance: 'stand' | 'crouch' | 'prone' (drives the 3rd-person posture + hitbox on other clients)
+  /** 'stand' | 'crouch' | 'prone' — drives the 3rd-person posture on other clients. */
   @type('string') stance: string = 'stand';
 
   // Combat status
@@ -45,6 +45,7 @@ export class PlayerState extends Schema {
   // Internal anti-AFK timestamp (not serialized to network)
   lastActiveTime: number = Date.now();
   afkWarningSent: boolean = false;
+  afkKicked: boolean = false;
 }
 
 export class DroppedWeaponState extends Schema {
