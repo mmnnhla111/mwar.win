@@ -136,6 +136,9 @@ interface SessionMeta {
   earned: number;
 }
 
+/** Combat death → respawn delay (ELIMINATED overlay on the client). */
+const RESPAWN_DELAY_MS = 3000;
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
@@ -159,6 +162,8 @@ export class ShootingRoom extends Room<GameState> {
   private meta = new Map<string, SessionMeta>();
   /** chestId → (sessionId → damage dealt): the top-damage dealer gets the bounty. */
   private chestDamage = new Map<string, Map<string, number>>();
+  /** sessionId → last relayed gunshot time (minimap blip rate limit). */
+  private lastFireBlip = new Map<string, number>();
   /** chestId → head bounty of the player whose suicide / environmental death dropped the chest. */
   private chestBounty = new Map<string, { victimId: string; victimSession: string; amount: number }>();
   /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
@@ -226,7 +231,9 @@ export class ShootingRoom extends Room<GameState> {
     // Player Movement & Aiming
     this.onMessage('player_move', (client, data: { x: number; y: number; z: number; rotationY?: number; stance?: string }) => {
       const player = this.state.players.get(client.sessionId);
-      if (!player) return;
+      if (!player || player.isSpectator) return;
+      // A dead player waiting for the 3 s respawn stays where they fell
+      if (player.isGhost) return;
 
       // Update spatial coordinates (Server-Authoritative bounding to 240m map)
       if (![data.x, data.y, data.z].every((v) => typeof v === 'number' && Number.isFinite(v))) return;
@@ -446,30 +453,25 @@ export class ShootingRoom extends Room<GameState> {
       }
     });
 
-    // Respawn after death (client waits ~4 s): revive the ghost at the reported spawn point
+    // Gunshot radar blip: every shot is relayed (server position, not client-reported) so enemies
+    // within radar range see a 2-second red dot on their minimap. Rate-limited per player.
+    this.onMessage('player_fired', (client) => {
+      const shooter = this.state.players.get(client.sessionId);
+      if (!shooter || shooter.isGhost || shooter.isSpectator) return;
+      const now = Date.now();
+      const last = this.lastFireBlip.get(client.sessionId) ?? 0;
+      if (now - last < 400) return;
+      this.lastFireBlip.set(client.sessionId, now);
+      this.broadcast('player_fired', { sessionId: client.sessionId, x: shooter.x, z: shooter.z }, { except: client });
+    });
+
+    // Respawn request (fallback; the 20 Hz loop also respawns automatically after 3 s)
     this.onMessage('player_respawn', (client, data: { x: number; y: number; z: number; primary?: string }) => {
       const player = this.state.players.get(client.sessionId);
       const m = this.meta.get(client.sessionId) as (SessionMeta & { diedAt?: number; lastMoveAt?: number }) | undefined;
-      if (!player || !player.isGhost || !m?.diedAt || Date.now() - m.diedAt < 3000) return;
-      if (![data?.x, data?.y, data?.z].every((v) => typeof v === 'number' && Number.isFinite(v))) return;
-      const halfX = this.state.mapSizeX / 2;
-      const halfZ = this.state.mapSizeZ / 2;
-      player.x = Math.max(-halfX, Math.min(halfX, data.x));
-      player.y = Math.max(-5, Math.min(80, data.y));
-      player.z = Math.max(-halfZ, Math.min(halfZ, data.z));
-      player.health = 100;
-      player.isGhost = false;
-      player.isProp = false;
-      const primary = data.primary && WEAPON_SPECS[data.primary] ? data.primary : player.primaryWeapon || 'ak47';
-      const spec = WEAPON_SPECS[primary];
-      player.primaryWeapon = primary;
-      player.currentWeapon = primary;
-      player.magAmmo = spec.magSize;
-      player.reserveAmmo = spec.reserve;
-      player.grenadesRemaining = 2;
-      player.lastActiveTime = Date.now();
-      m.diedAt = undefined;
-      m.lastMoveAt = Date.now();
+      if (!player || player.isSpectator || !player.isGhost || !m?.diedAt || Date.now() - m.diedAt < RESPAWN_DELAY_MS) return;
+      void data;
+      this.respawnPlayer(client.sessionId, player);
     });
 
     // Anti-AFK Captcha Verification Response
@@ -603,8 +605,9 @@ export class ShootingRoom extends Room<GameState> {
     // Notify victim they are now in Ghost spectator mode
     const victimClient = this.clients.find((c) => c.sessionId === targetSessionId);
     if (victimClient) {
-      victimClient.send('entered_ghost_mode', {
-        message: 'You died. You are now in Ghost Spectator mode!',
+      victimClient.send('player_eliminated', {
+        killerUsername: killer?.username ?? null,
+        respawnInMs: RESPAWN_DELAY_MS,
       });
     }
   }
@@ -726,6 +729,53 @@ export class ShootingRoom extends Room<GameState> {
     });
   }
 
+  /** Spawn point far from every living combatant (and from where this player just died). */
+  private pickRespawnPoint(self: PlayerState) {
+    let best = ARENA_SPAWN_POINTS[0];
+    let bestScore = -1;
+    for (const point of ARENA_SPAWN_POINTS) {
+      let minDist = Infinity;
+      this.state.players.forEach((other) => {
+        if (other === self || other.isGhost || other.isSpectator) return;
+        minDist = Math.min(minDist, Math.hypot(other.x - point.x, other.z - point.z));
+      });
+      const fromDeath = Math.hypot(self.x - point.x, self.z - point.z);
+      const score = Math.min(minDist, 200) + Math.min(fromDeath, 60) * 0.5 + Math.random() * 8;
+      if (score > bestScore) {
+        bestScore = score;
+        best = point;
+      }
+    }
+    return best;
+  }
+
+  /** Clean respawn: full HP, fresh starting ammo, new spawn point — synced to every client. */
+  private respawnPlayer(sessionId: string, player: PlayerState) {
+    const m = this.meta.get(sessionId) as (SessionMeta & { diedAt?: number; lastMoveAt?: number }) | undefined;
+    const point = this.pickRespawnPoint(player);
+    player.x = point.x;
+    player.y = point.y;
+    player.z = point.z;
+    player.health = 100;
+    player.isGhost = false;
+    player.isProp = false;
+    player.stance = 'stand';
+    const primary = WEAPON_SPECS[player.primaryWeapon] ? player.primaryWeapon : 'ak47';
+    const spec = WEAPON_SPECS[primary];
+    player.primaryWeapon = primary;
+    player.currentWeapon = primary;
+    player.magAmmo = spec.magSize;
+    player.reserveAmmo = spec.reserve;
+    player.grenadesRemaining = 2;
+    player.lastActiveTime = Date.now();
+    if (m) {
+      m.diedAt = undefined;
+      m.lastMoveAt = Date.now();
+    }
+    const client = this.clients.find((c) => c.sessionId === sessionId);
+    client?.send('player_respawned', { x: point.x, y: point.y, z: point.z, primary });
+  }
+
   // Update Game Loop (20 Hz)
   private update(deltaTime: number) {
     const now = Date.now();
@@ -750,7 +800,15 @@ export class ShootingRoom extends Room<GameState> {
     this.state.activeDroppedWeaponsCount = this.state.droppedWeapons.size;
 
     // 3. Anti-AFK Detection Check
+    // 3a. Combat death → clean respawn after 3 s (server authoritative: hp, ammo, spawn point)
     this.state.players.forEach((player, sessionId) => {
+      if (!player.isGhost || player.isSpectator) return;
+      const dm = this.meta.get(sessionId) as (SessionMeta & { diedAt?: number }) | undefined;
+      if (dm?.diedAt && now - dm.diedAt >= RESPAWN_DELAY_MS) this.respawnPlayer(sessionId, player);
+    });
+
+    this.state.players.forEach((player, sessionId) => {
+      if (player.isSpectator) return; // spectators are never AFK-kicked by combat rules
       const inactiveSec = (now - player.lastActiveTime) / 1000;
 
       // 5-Minute Inactive Rule: Warning & Captcha
@@ -925,7 +983,7 @@ export class ShootingRoom extends Room<GameState> {
 
   onJoin(
     client: Client,
-    options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string },
+    options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string; spectator?: boolean },
     auth?: { userId: string | null; username?: string; bounty?: number }
   ) {
     console.log(`[ShootingRoom] Player joined: ${client.sessionId} (${options.username || 'Anon'})`);
@@ -966,6 +1024,14 @@ export class ShootingRoom extends Room<GameState> {
     player.z = bestPoint.z;
     player.health = 100;
     player.lastActiveTime = Date.now();
+    if (options?.spectator) {
+      // Ghost Spectator: invisible flying observer — no body, no hitbox, never targetable or paid
+      player.isSpectator = true;
+      player.isGhost = true;
+      player.health = 0;
+      const sm = this.meta.get(client.sessionId);
+      if (sm) sm.paid = false;
+    }
 
     this.state.players.set(client.sessionId, player);
     this.state.activePlayersCount = this.state.players.size;

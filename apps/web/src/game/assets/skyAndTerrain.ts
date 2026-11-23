@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Kit, Frame } from './kit';
 import { makeCloudTexture, makeRoadTexture, MaterialLibrary, textureFactories } from './materials';
+import { map2dTree } from './map2d';
 
 /**
  * Atmosphere, sky, mountains, perimeter forest, roads & grass.
@@ -240,6 +241,7 @@ export function broadleafGeometry() {
 
 /** Collidable park/street tree inside the arena (batched visual + trunk collider). */
 export function addTree(kit: Kit, x: number, z: number, kind: 'pine' | 'broadleaf', scale = 1) {
+  map2dTree(x, z, (kind === 'pine' ? 1.6 : 2.2) * scale);
   const geo = kind === 'pine' ? pineGeometry() : broadleafGeometry();
   geo.scale(scale, scale, scale);
   geo.translate(x, 0, z);

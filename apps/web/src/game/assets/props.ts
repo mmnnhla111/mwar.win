@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Frame, Kit } from './kit';
 import { textureFactories } from './materials';
+import { map2dVehicle } from './map2d';
 
 /**
  * Tactical cover & interactive props: streetlights, sandbag bunkers, Jersey barriers,
@@ -82,6 +83,7 @@ export function placeVehicle(kit: Kit, x: number, z: number, quarterTurns: numbe
   const f = new Frame(x, z, quarterTurns);
   const len = kind === 'truck' ? 6.4 : kind === 'suv' ? 4.8 : 4.4;
   const h = kind === 'sedan' ? 0.75 : 0.95;
+  map2dVehicle(x, z, quarterTurns, 1.9, len, `#${new THREE.Color(color).getHexString()}`);
   // Body (car points along local z)
   kit.solid(f, 'metal', color, 0, 0.35, 0, 1.9, h, len);
   if (kind === 'truck') {

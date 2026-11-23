@@ -42,6 +42,25 @@ import {
 import { BrowserGuard, keyboardLockSupported } from '../../game/input/browserGuard';
 import RadialPropMenu, { propIndexAt, RADIAL } from '../../game/ui/RadialPropMenu';
 import LoadoutScreen from '../../game/ui/LoadoutScreen';
+import { BLIP_LIFETIME_MS, drawMinimap, RadarBlip } from '../../game/ui/minimap';
+import {
+  BulletIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CrateIcon,
+  CrouchIcon,
+  DropIcon,
+  EnterFullscreenIcon,
+  ExitFullscreenIcon,
+  GrenadeIcon,
+  JumpIcon,
+  MagnetIcon,
+  ProneIcon,
+  ReloadIcon,
+  ScopeIcon,
+  SpeakerOffIcon,
+  SpeakerOnIcon,
+} from '../../game/ui/HudIcons';
 
 // ----------------------------------------------------------------------------
 // Tuning constants
@@ -64,6 +83,11 @@ const LEAN_DISTANCE = 0.65; // metres sideways along the camera's horizontal rig
 const LEAN_ROLL = THREE.MathUtils.degToRad(12);
 const LEAN_WALL_MARGIN = 0.28;
 const HIP_FOV = 75;
+// Soft magnetic aim-assist (Free Fire style): acquire inside ~7°, break away beyond ~13°
+const AIM_ASSIST_ACQUIRE = THREE.MathUtils.degToRad(7);
+const AIM_ASSIST_BREAK = THREE.MathUtils.degToRad(13);
+const AIM_ASSIST_STORAGE_KEY = 'mwar_aim_assist';
+const RESPAWN_SECONDS = 3;
 const LOADOUT_STORAGE_KEY = 'mwar_fps_loadout_v2';
 const FALL_SAFE_SPEED = 13; // m/s landing speed before fall damage (~3.8 m drop)
 const BOT_COUNT = 10; // 8–12 bots
@@ -225,6 +249,12 @@ export default function GamePage() {
   const propRotateRef = useRef(0);
   const leanStateRef = useRef<'none' | 'left' | 'right'>('none');
   const firingRef = useRef(false);
+  // Drag-to-aim FIRE button: the firing finger also turns the camera
+  const fireTouchIdRef = useRef<number | null>(null);
+  const lastFireTouchRef = useRef<{ x: number; y: number } | null>(null);
+  const aimAssistRef = useRef(false);
+  const [aimAssist, setAimAssist] = useState(false);
+  const minimapRef = useRef<HTMLCanvasElement>(null);
   const lookRef = useRef({ yaw: 0, pitch: 0, dx: 0, dy: 0 });
   const togglePropRef = useRef<() => void>(() => {});
   const triggerJumpRef = useRef<() => void>(() => {});
@@ -341,6 +371,15 @@ export default function GamePage() {
         navigator.maxTouchPoints > 0 ||
         (window.matchMedia && window.matchMedia('(pointer: coarse)').matches));
     setIsMobile(isTouch);
+    let aa = isTouch;
+    try {
+      const saved = localStorage.getItem(AIM_ASSIST_STORAGE_KEY);
+      if (saved === '1' || saved === '0') aa = saved === '1';
+    } catch {
+      /* ignore */
+    }
+    aimAssistRef.current = aa;
+    setAimAssist(aa);
     isMobileRef.current = isTouch;
     // Phones held sideways get a compact, thumb-reach control layout
     const onOrient = () => setCompactLandscape(isTouch && window.innerWidth > window.innerHeight && window.innerHeight < 560);
@@ -487,7 +526,7 @@ export default function GamePage() {
 
   // Spectator timer heartbeat
   useEffect(() => {
-    const isSpectatorMode = mode === 'spectator' || hudStats.isGhost;
+    const isSpectatorMode = mode === 'spectator';
     if (!isSpectatorMode) return;
     const timer = setInterval(() => {
       setSpectatorSeconds((prev) => {
@@ -933,7 +972,8 @@ export default function GamePage() {
       player.alive = false;
       player.hp = 0;
       player.deaths += 1;
-      player.respawnTimer = 4;
+      player.respawnTimer = RESPAWN_SECONDS;
+      respawnRequested = false;
       player.deathPos.set(body.x, body.y, body.z);
       firingRef.current = false;
       if (player.isProp) setProp(null);
@@ -950,6 +990,32 @@ export default function GamePage() {
       if (botMode) spawnDeathChestLocal(player.deathPos);
       else if (currentRoom) currentRoom.send('player_suicide', { cause: cause.reason, x: body.x, y: body.y, z: body.z });
     };
+    /** The server already killed us (weapon drop + death chest are server-side): local death state only. */
+    const serverDeath = () => {
+      if (!player.alive) return;
+      player.alive = false;
+      player.hp = 0;
+      player.deaths += 1;
+      player.respawnTimer = RESPAWN_SECONDS;
+      respawnRequested = false;
+      player.deathPos.set(body.x, body.y, body.z);
+      firingRef.current = false;
+      if (player.isProp) setProp(null, false);
+      closePropMenu();
+      stanceRef.current = 'stand';
+      inv.primary = null;
+      setIsAdsActive(false);
+    };
+    let respawnRequested = false;
+
+    // ---- Stealth radar: gunshot blips (2 s) ---------------------------------------------------
+    const blips: RadarBlip[] = [];
+    const addBlip = (x: number, z: number) => {
+      blips.push({ x, z, at: performance.now() });
+      if (blips.length > 40) blips.splice(0, blips.length - 40);
+    };
+    let lastFireRelay = 0;
+
     const damagePlayer = (amount: number, from: THREE.Vector3 | null, cause: DeathCause) => {
       if (!player.alive || isGhostSpectator || !deployedRef.current) return;
       player.hp = Math.max(0, player.hp - amount);
@@ -984,7 +1050,10 @@ export default function GamePage() {
       botMode = true;
       bots = new BotManager(scene, world, layout.nav, layout.posts, effects, {
         onPlayerHit,
-        onShot: (from) => soundFX.playEnemyShot(from.distanceTo(camera.position)),
+        onShot: (from) => {
+          soundFX.playEnemyShot(from.distanceTo(camera.position));
+          addBlip(from.x, from.z);
+        },
       }, { count: BOT_COUNT, accuracy: BOT_ACCURACY, playerHalf: PLAY_HALF, spawnPoints: layout.spawnPoints });
       setConnectionStatus(reason === 'practice' ? 'solo_bots' : 'offline_practice');
       feed(`🤖 ${BOT_COUNT} AI bots deployed (70% skill)`);
@@ -1010,6 +1079,8 @@ export default function GamePage() {
       prop: THREE.Group | null;
       propId: PropId | null;
       stance: Stance;
+      /** Dead (waiting to respawn) or a spectator: no mesh, no hitbox. */
+      hidden: boolean;
     }
     const validStance = (v: unknown): Stance => (v === 'crouch' || v === 'prone' ? v : 'stand');
     const remotePlayers = new Map<string, Remote>();
@@ -1024,7 +1095,7 @@ export default function GamePage() {
         rp.prop = null;
       }
       rp.propId = want;
-      rp.rig.root.visible = !want;
+      rp.rig.root.visible = !want && !rp.hidden;
       world.setDynamicBox(`remote_${key}`, null);
       if (want) {
         rp.prop = createPropModel(want);
@@ -1051,7 +1122,8 @@ export default function GamePage() {
         const roomName = arenaMode === 'standard_100' ? 'standard_100' : 'mini_30';
         // Paid arena: spend 1 EC for a signed entry ticket. Without one you still play, unpaid.
         let entryToken: string | undefined;
-        if (meData?.user) {
+        // Spectators never spend EC and never enter a paid seat
+        if (meData?.user && !isGhostSpectator) {
           try {
             const enter = await apiFetch<{ entryToken: string; energyTickets: number }>('/api/game/enter', {
               method: 'POST',
@@ -1078,6 +1150,8 @@ export default function GamePage() {
           username: meData?.user?.username || `Guest_${Math.floor(Math.random() * 900 + 100)}`,
           avatarId: loadoutCharacter,
           primaryWeapon: loadoutPrimary,
+          // Ghost Spectator joins as an invisible observer (no body, no hitbox, no damage)
+          spectator: isGhostSpectator,
         });
         if (meData?.user) {
           const u = meData.user;
@@ -1112,13 +1186,25 @@ export default function GamePage() {
             rig.root.position.set(p.x, p.y || 0, p.z);
             rig.hitMeshes.forEach((m) => (m.userData.remoteId = key));
             scene.add(rig.root);
-            const rp: Remote = { rig, target: new THREE.Vector3(p.x, p.y || 0, p.z), yaw: p.rotationY || 0, speed: 0, prop: null, propId: null, stance: validStance(p.stance) };
+            const rp: Remote = {
+              rig,
+              target: new THREE.Vector3(p.x, p.y || 0, p.z),
+              yaw: p.rotationY || 0,
+              speed: 0,
+              prop: null,
+              propId: null,
+              stance: validStance(p.stance),
+              hidden: !!p.isGhost || !!p.isSpectator,
+            };
+            rig.root.visible = !rp.hidden;
             remotePlayers.set(key, rp);
-            setRemoteProp(key, rp, !!p.isProp, p.propType);
+            setRemoteProp(key, rp, !!p.isProp && !rp.hidden, p.propType);
           }
           p.onChange(() => {
             if (key === roomInstance.sessionId) {
               player.hp = p.health;
+              // Killed on the server (another player / grenade): enter the clean 3 s death state
+              if (p.isGhost && player.alive && !isGhostSpectator) serverDeath();
               setHudStats((prev) => ({
                 ...prev,
                 health: p.health,
@@ -1132,10 +1218,15 @@ export default function GamePage() {
             } else {
               const rp = remotePlayers.get(key);
               if (rp) {
+                const wasHidden = rp.hidden;
+                rp.hidden = !!p.isGhost || !!p.isSpectator;
                 rp.target.set(p.x, p.y || 0, p.z);
+                // Respawned: snap to the new spawn point instead of sliding across the map
+                if (wasHidden && !rp.hidden) rp.rig.root.position.copy(rp.target);
                 rp.yaw = p.rotationY || 0;
                 rp.stance = validStance(p.stance);
-                setRemoteProp(key, rp, !!p.isProp, p.propType);
+                setRemoteProp(key, rp, !!p.isProp && !rp.hidden, p.propType);
+                rp.rig.root.visible = !rp.hidden && !rp.propId;
               }
             }
           });
@@ -1203,6 +1294,17 @@ export default function GamePage() {
           soundFX.playExplosion(new THREE.Vector3(data.x, data.y, data.z).distanceTo(camera.position));
         });
 
+        roomInstance.onMessage('player_respawned', (data: any) => {
+          if (isGhostSpectator) return;
+          if ([data?.x, data?.y, data?.z].every((v: unknown) => typeof v === 'number')) respawnPlayer({ x: data.x, y: data.y, z: data.z });
+          else respawnPlayer();
+        });
+        roomInstance.onMessage('player_eliminated', (data: any) => {
+          if (data?.killerUsername) feed(`☠️ Eliminated by ${data.killerUsername} — respawning…`);
+        });
+        roomInstance.onMessage('player_fired', (data: any) => {
+          if (typeof data?.x === 'number' && typeof data?.z === 'number') addBlip(data.x, data.z);
+        });
         roomInstance.onMessage('player_killed', (data: any) => {
           soundFX.playHitMarker();
           // Kill value split: 75 % to the shooter (+ the victim's accumulated head bounty)
@@ -1450,6 +1552,10 @@ export default function GamePage() {
       gun.mag -= 1;
       player.fireCooldown = def.fireInterval;
       soundFX.playWeaponShot(def.id);
+      if (currentRoom && performance.now() - lastFireRelay > 400) {
+        lastFireRelay = performance.now();
+        currentRoom.send('player_fired');
+      }
       viewmodel.fire(def.id === 'sniper' ? 1.8 : def.id === 'uzi' ? 0.55 : def.id === 'pistol' ? 0.8 : 1);
       if (def.mode === 'bolt') viewmodel.cycleBolt(def.fireInterval * 0.9);
       worldMuzzleLight.intensity = 7;
@@ -1483,6 +1589,7 @@ export default function GamePage() {
       // 3) Bots / remote players (and remote prop disguises)
       const targetObjs: THREE.Object3D[] = bots ? bots.targets.slice() : [];
       remotePlayers.forEach((rp) => {
+        if (rp.hidden) return;
         if (rp.prop) targetObjs.push(rp.prop);
         else targetObjs.push(...rp.rig.hitMeshes);
       });
@@ -1691,6 +1798,21 @@ export default function GamePage() {
     };
 
     const handleMouseDown = (e: MouseEvent) => {
+      if (isGhostSpectator) {
+        // Spectator: click to lock the mouse for free look (or hold + drag if lock is refused)
+        if (e.button === 0) {
+          isMouseDownRef.current = true;
+          if (!isPointerLockedRef.current && !isMobileRef.current) {
+            try {
+              const pr = container.requestPointerLock?.() as unknown as Promise<void> | undefined;
+              pr?.catch?.(() => {});
+            } catch {
+              /* drag-look still works */
+            }
+          }
+        }
+        return;
+      }
       if (!deployedRef.current) return;
       if (propMenuOpenRef.current) {
         if (e.button === 0 && isPointerLockedRef.current) {
@@ -1749,11 +1871,17 @@ export default function GamePage() {
     const forward = new THREE.Vector3();
     const camEuler = new THREE.Euler(0, 0, 0, 'YXZ');
     const orbitTarget = new THREE.Vector3();
+    const tmpEye = new THREE.Vector3();
+    const tmpFwd = new THREE.Vector3();
+    const tmpDir = new THREE.Vector3();
+    let aimLock: string | null = null;
+    let aimCooldown = 0;
+    let minimapTimer = 0;
 
-    const respawnPlayer = () => {
+    const respawnPlayer = (at?: { x: number; y: number; z: number }) => {
       stanceRef.current = 'stand';
       setStanceUi('stand');
-      const s = pickSpawn(player.deathPos);
+      const s = at ?? pickSpawn(player.deathPos);
       body.x = s.x;
       body.y = s.y;
       body.z = s.z;
@@ -1771,8 +1899,8 @@ export default function GamePage() {
       inv.lastGunSlot = 'primary';
       syncViewmodelWeapon(true);
       feed('🛡️ Respawned at a random location — back in the fight');
-      // Server revives the ghost (health, ammo) and accepts the jump to the new spawn point
-      currentRoom?.send('player_respawn', { x: body.x, y: body.y, z: body.z, primary: inv.primary?.id });
+      look.pitch = 0;
+      lastSentKey = '';
     };
 
     const animate = () => {
@@ -1865,6 +1993,11 @@ export default function GamePage() {
       if (!player.alive && !isGhostSpectator) {
         player.respawnTimer -= dt;
         if (player.respawnTimer <= 0 && botMode) respawnPlayer();
+        // Multiplayer: the server respawns us after 3 s (player_respawned); nudge it once as a fallback
+        else if (player.respawnTimer <= -0.5 && currentRoom && !respawnRequested) {
+          respawnRequested = true;
+          currentRoom.send('player_respawn', {});
+        }
       } else if (botMode && player.hp < 100 && tSec - player.lastDamageAt > 6) {
         player.hp = Math.min(100, player.hp + 10 * dt);
       }
@@ -1893,6 +2026,67 @@ export default function GamePage() {
         leanOffset = s * allowed;
       }
       const roll = -player.leanT * LEAN_ROLL;
+
+      // --- Soft magnetic aim-assist: pull gently toward the nearest visible enemy's upper torso
+      if (aimAssistRef.current && player.alive && !player.isProp && deployedRef.current && !isGhostSpectator) {
+        const userSwipe = Math.hypot(look.dx, look.dy);
+        if (userSwipe > 28) {
+          // A forceful swipe breaks the lock and suppresses re-acquiring for a moment
+          aimLock = null;
+          aimCooldown = 0.35;
+        }
+        aimCooldown = Math.max(0, aimCooldown - dt);
+        const eye = tmpEye.set(body.x, player.renderY + player.eyeHeight, body.z);
+        const fwdLook = tmpFwd.set(0, 0, -1).applyEuler(camEuler.set(look.pitch, look.yaw, 0, 'YXZ'));
+        const candidates: { id: string; p: THREE.Vector3 }[] = [];
+        if (bots) {
+          for (const b of bots.bots) {
+            if (b.state === 'dead') continue;
+            candidates.push({ id: `bot_${b.id}`, p: new THREE.Vector3(b.body.x, b.body.y + 1.35 - b.crouchT * 0.45, b.body.z) });
+          }
+        }
+        remotePlayers.forEach((rp, key) => {
+          if (rp.hidden || rp.prop) return;
+          const q = rp.rig.root.position;
+          candidates.push({ id: key, p: new THREE.Vector3(q.x, q.y + (rp.stance === 'prone' ? 0.35 : rp.stance === 'crouch' ? 0.95 : 1.35), q.z) });
+        });
+        const angleTo = (pt: THREE.Vector3) => {
+          const d = tmpDir.copy(pt).sub(eye);
+          const dist = d.length();
+          if (dist < 0.5 || dist > 120) return Infinity;
+          return fwdLook.angleTo(d.divideScalar(dist));
+        };
+        const visible = (pt: THREE.Vector3) => world.lineOfSight(eye.x, eye.y, eye.z, pt.x, pt.y, pt.z);
+        let target: THREE.Vector3 | null = null;
+        if (aimLock) {
+          const c = candidates.find((k) => k.id === aimLock);
+          if (c && angleTo(c.p) < AIM_ASSIST_BREAK && visible(c.p)) target = c.p;
+          else aimLock = null;
+        }
+        if (!target && aimCooldown <= 0) {
+          let best = AIM_ASSIST_ACQUIRE;
+          for (const c of candidates) {
+            const a = angleTo(c.p);
+            if (a < best && visible(c.p)) {
+              best = a;
+              target = c.p;
+              aimLock = c.id;
+            }
+          }
+        }
+        if (target) {
+          const d = tmpDir.copy(target).sub(eye).normalize();
+          const wantYaw = Math.atan2(-d.x, -d.z);
+          const wantPitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1));
+          let dYaw = wantYaw - look.yaw;
+          dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw));
+          // Gentle: stronger while aiming down sights or firing, never a hard snap
+          const strength = (isAdsActiveRef.current ? 7 : 4.5) * (firingRef.current ? 1.3 : 1);
+          const k = 1 - Math.exp(-strength * dt);
+          look.yaw += dYaw * k;
+          look.pitch = THREE.MathUtils.clamp(look.pitch + (wantPitch - look.pitch) * k, -1.45, 1.45);
+        }
+      } else aimLock = null;
 
       // --- Recoil recovery
       player.recoilPitch = THREE.MathUtils.damp(player.recoilPitch, 0, player.recoilRecover, dt);
@@ -2053,7 +2247,7 @@ export default function GamePage() {
 
       // --- Network (20 Hz)
       netTimer -= dt;
-      if (currentRoom && netTimer <= 0 && active) {
+      if (currentRoom && netTimer <= 0 && active && !isGhostSpectator && player.alive) {
         netTimer = 0.05;
         const key = `${body.x.toFixed(2)},${body.y.toFixed(2)},${body.z.toFixed(2)},${(player.isProp ? player.propYaw : look.yaw).toFixed(2)},${stance}`;
         if (key !== lastSentKey) {
@@ -2063,6 +2257,20 @@ export default function GamePage() {
       }
 
       // --- HUD (10 Hz)
+      minimapTimer -= dt;
+      const mm = minimapRef.current;
+      if (mm && minimapTimer <= 0) {
+        minimapTimer = 1 / 30;
+        const ctx2d = mm.getContext('2d');
+        if (ctx2d) {
+          const nowMs = performance.now();
+          while (blips.length && nowMs - blips[0].at > BLIP_LIFETIME_MS) blips.shift();
+          const cx = isGhostSpectator ? camera.position.x : body.x;
+          const cz = isGhostSpectator ? camera.position.z : body.z;
+          drawMinimap(ctx2d, mm.width, { x: cx, z: cz, yaw: look.yaw, radius: 70, fovDeg: camera.fov * camera.aspect }, blips, nowMs);
+        }
+      }
+
       hudTimer -= dt;
       if (hudTimer <= 0) {
         hudTimer = 0.1;
@@ -2164,7 +2372,7 @@ export default function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isGhostSpectator = mode === 'spectator' || hudStats.isGhost;
+  const isGhostSpectator = mode === 'spectator';
   const isBotMode = connectionStatus === 'solo_bots' || connectionStatus === 'offline_practice';
   const showLoadout = !deployed && !isGhostSpectator && !loadingWorld;
   const SLOT_KEYS: { slot: Slot; key: string; label: string | null; ammo: string }[] = [
@@ -2173,6 +2381,60 @@ export default function GamePage() {
     { slot: 'grenade', key: '3', label: hudStats.grenades > 0 ? 'FRAG' : null, ammo: `x${hudStats.grenades}` },
   ];
   const ecRoundPct = Math.min(100, Math.round((hudStats.roundKills / PRACTICE_ROUND_GOAL) * 100));
+  // Bottom banner ad: only in Solo Bot / Practice and Ghost Spectator (never in paid PvP)
+  const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld && (deployed || isGhostSpectator);
+  const liftForAd = showAdBanner && isMobile && !compactLandscape; // portrait phones: raise thumbs above the ad
+  const toggleAimAssist = () => {
+    const next = !aimAssistRef.current;
+    aimAssistRef.current = next;
+    setAimAssist(next);
+    try {
+      localStorage.setItem(AIM_ASSIST_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  };
+  // FIRE button = fire + drag-to-aim with the same finger (independent of the joystick finger)
+  const onFireTouchStart = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    const t = e.changedTouches[0];
+    if (!t || fireTouchIdRef.current !== null) return;
+    fireTouchIdRef.current = t.identifier;
+    lastFireTouchRef.current = { x: t.clientX, y: t.clientY };
+    firingRef.current = true;
+  };
+  const onFireTouchMove = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    let t: React.Touch | null = null;
+    for (let i = 0; i < e.changedTouches.length; i++) if (e.changedTouches[i].identifier === fireTouchIdRef.current) t = e.changedTouches[i];
+    if (!t || !lastFireTouchRef.current) return;
+    const dx = t.clientX - lastFireTouchRef.current.x;
+    const dy = t.clientY - lastFireTouchRef.current.y;
+    lastFireTouchRef.current = { x: t.clientX, y: t.clientY };
+    const sens = isAdsActiveRef.current ? 0.0032 : 0.005;
+    const look = lookRef.current;
+    look.yaw -= dx * sens;
+    look.pitch = THREE.MathUtils.clamp(look.pitch - dy * sens, -1.45, 1.45);
+    look.dx += dx;
+    look.dy += dy;
+  };
+  const onFireTouchEnd = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === fireTouchIdRef.current) {
+        fireTouchIdRef.current = null;
+        lastFireTouchRef.current = null;
+        firingRef.current = false;
+      }
+    }
+  };
+  /** Polar placement around the FIRE button centre (container-local px, y up = positive angle). */
+  const ARC_BOX = 280;
+  const FIRE_C = ARC_BOX - 80;
+  const arcPos = (deg: number, r: number, size: number) => ({
+    left: FIRE_C + r * Math.cos((deg * Math.PI) / 180) - size / 2,
+    top: FIRE_C - r * Math.sin((deg * Math.PI) / 180) - size / 2,
+  });
 
   return (
     <div
@@ -2211,7 +2473,7 @@ export default function GamePage() {
       {/* Mobile Touch Aim Surface */}
       {isMobile && (
         <div
-          className="absolute top-16 right-0 bottom-0 left-1/3 pointer-events-auto touch-none select-none z-10"
+          className={`absolute top-16 right-0 bottom-0 ${isGhostSpectator ? 'left-0' : 'left-1/3'} pointer-events-auto touch-none select-none z-10`}
           onTouchStart={handleTouchLookStart}
           onTouchMove={handleTouchLookMove}
           onTouchEnd={handleTouchLookEnd}
@@ -2252,7 +2514,7 @@ export default function GamePage() {
 
       {/* Energy Recharge Mode banner (solo bots — zero cash payout) */}
       {isBotMode && (
-        <div className={`absolute left-1/2 -translate-x-1/2 z-20 pointer-events-none ${isMobile ? 'hidden' : 'bottom-4 w-[min(92vw,560px)]'}`}>
+        <div className={`absolute left-1/2 -translate-x-1/2 z-20 pointer-events-none ${isMobile ? 'hidden' : 'bottom-[4.5rem] w-[min(92vw,560px)]'}`}>
           <div className="bg-slate-950/85 border border-amber-400/60 backdrop-blur-md rounded-2xl px-4 py-2 shadow-xl shadow-amber-500/10">
             <div className="text-[11px] font-black text-amber-300 text-center tracking-wide flex items-center justify-center gap-2">
               <span>⚡ ENERGY RECHARGE MODE</span>
@@ -2282,8 +2544,8 @@ export default function GamePage() {
       {!hudStats.alive && !isGhostSpectator && (
         <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
           <div className="bg-slate-950/80 border border-rose-500/60 rounded-3xl px-8 py-5 text-center">
-            <div className="text-rose-400 font-black text-xl tracking-widest">ELIMINATED</div>
-            <div className="text-slate-300 text-xs font-bold mt-1">Respawning in {hudStats.respawnIn}s…</div>
+            <div className="text-rose-400 font-black text-xl tracking-widest">ELIMINATED — Respawning…</div>
+            <div className="text-slate-300 text-xs font-bold mt-1">Back in the fight in {Math.max(1, hudStats.respawnIn)}s</div>
           </div>
         </div>
       )}
@@ -2291,6 +2553,16 @@ export default function GamePage() {
       {/* Top HUD */}
       <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-20">
         <div className="flex flex-col items-start gap-1 max-w-[60%]">
+        <div className="flex items-start gap-2">
+        {(deployed || isGhostSpectator) && (
+          <canvas
+            ref={minimapRef}
+            width={230}
+            height={230}
+            aria-label="Tactical minimap"
+            className={`${compactLandscape ? 'w-[96px] h-[96px]' : 'w-[115px] h-[115px]'} shrink-0 rounded-[14px] border border-white/25 shadow-xl bg-slate-900/40`}
+          />
+        )}
         <div className={`bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-2xl flex flex-wrap items-center shadow-xl pointer-events-auto ${isMobile ? 'p-2 gap-1.5' : 'p-3 sm:p-3.5 gap-3'}`}>
           <div>
             <div className="flex justify-between items-center text-[10px] text-slate-400 font-black uppercase">
@@ -2346,6 +2618,7 @@ export default function GamePage() {
           {hudStats.isGhost && (
             <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">👻 GHOST</span>
           )}
+        </div>
         </div>
         {/* Single latest status line: replaces the previous one instantly, fades + unmounts after 10 s */}
         {toast && (
@@ -2405,13 +2678,33 @@ export default function GamePage() {
               </span>
             </div>
           </div>
-          <button
-            onClick={toggleMute}
-            className="bg-slate-900/90 hover:bg-slate-800 border border-slate-700 p-2.5 rounded-2xl text-xs font-bold transition shadow-md active:scale-95"
-            title={isMuted ? 'Unmute Sound' : 'Mute Sound'}
-          >
-            {isMuted ? '🔇' : '🔊'}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={toggleMute}
+              className="bg-slate-900/90 hover:bg-slate-800 border border-slate-700 w-9 h-9 rounded-xl text-white flex items-center justify-center transition shadow-md active:scale-95"
+              title={isMuted ? 'Unmute Sound' : 'Mute Sound'}
+              aria-label={isMuted ? 'Unmute sound' : 'Mute sound'}
+            >
+              {isMuted ? <SpeakerOffIcon /> : <SpeakerOnIcon />}
+            </button>
+            {deployed && !isGhostSpectator && (
+              <button
+                onClick={toggleAimAssist}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  toggleAimAssist();
+                }}
+                className={`w-9 h-9 rounded-xl border flex items-center justify-center transition shadow-md active:scale-95 ${
+                  aimAssist ? 'bg-sky-500/80 border-sky-300 text-white' : 'bg-slate-900/90 border-slate-700 text-slate-400'
+                }`}
+                title={aimAssist ? 'Aim assist ON' : 'Aim assist OFF'}
+                aria-label="Toggle aim assist"
+              >
+                <MagnetIcon />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2438,62 +2731,70 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Weapon / ammo HUD (strict limited ammo: MAG / RESERVE) */}
-      {!isGhostSpectator && !hudStats.isProp && deployed && (
-        <div className={`absolute ${isMobile ? 'top-16 right-4' : 'bottom-16 right-4'} z-20 pointer-events-none flex flex-col items-end gap-1.5`}>
-          <div className={`gap-1 ${isMobile ? 'hidden' : 'flex'}`}>
-            {SLOT_KEYS.map((s) => (
-              <div
-                key={s.slot}
-                className={`px-2 py-1 rounded-lg border text-[9px] font-black leading-tight text-center min-w-[54px] ${
-                  hudStats.slot === s.slot ? 'bg-amber-400 text-slate-950 border-white' : s.label ? 'bg-slate-950/80 text-slate-300 border-slate-700' : 'bg-slate-950/50 text-slate-600 border-slate-800'
+      {/* Compact top-right weapon switcher: Primary · Pistol · Frag · Drop + live ammo (keeps the thumb area clear) */}
+      {!isGhostSpectator && !hudStats.isProp && deployed && hudStats.alive && (
+        <div className={`absolute right-4 z-20 pointer-events-auto flex flex-col items-end gap-1 ${compactLandscape ? 'top-[4.1rem] scale-90 origin-top-right' : 'top-[5.4rem]'}`}>
+          <div className="flex items-stretch gap-1 bg-slate-950/70 border border-slate-700/70 backdrop-blur-md rounded-2xl p-1 shadow-xl">
+            {SLOT_KEYS.map((sl) => (
+              <button
+                key={sl.slot}
+                onClick={() => equipRef.current(sl.slot)}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  equipRef.current(sl.slot);
+                }}
+                disabled={!sl.label}
+                className={`px-2 py-1 rounded-xl text-[9px] font-black leading-tight text-center min-w-[46px] border transition ${
+                  hudStats.slot === sl.slot
+                    ? 'bg-amber-400 text-slate-950 border-white'
+                    : sl.label
+                      ? 'bg-slate-900/80 text-slate-200 border-slate-700'
+                      : 'bg-slate-900/40 text-slate-600 border-slate-800'
                 }`}
               >
-                <div>
-                  {s.key} · {s.label ?? 'EMPTY'}
-                </div>
-                {s.label && <div className="font-mono opacity-80">{s.ammo}</div>}
-              </div>
+                <div>{sl.slot === 'grenade' ? `${sl.key} · FRAG` : `${sl.key} · ${sl.label ?? '—'}`}</div>
+                {sl.label && <div className="font-mono opacity-80">{sl.ammo}</div>}
+              </button>
             ))}
-          </div>
-          <div className={`bg-slate-950/85 border border-slate-800 backdrop-blur-md rounded-2xl text-right shadow-xl ${isMobile ? 'px-2.5 py-1 scale-90 origin-top-right' : 'px-4 py-2'}`}>
-            <div className="text-[10px] font-black text-slate-400 tracking-widest uppercase">{hudStats.weaponName}</div>
-            {hudStats.slot === 'grenade' ? (
-              <div className="font-mono font-black text-2xl leading-none text-white">💣 {hudStats.grenades}</div>
-            ) : (
-              <div className={`font-mono font-black text-2xl leading-none ${hudStats.ammo <= 3 ? 'text-rose-400' : 'text-white'}`}>
-                {hudStats.reloading ? 'RELOAD' : hudStats.ammo}
-                <span className={`text-sm ${hudStats.reserve === 0 ? 'text-rose-400' : 'text-slate-400'}`}> / {hudStats.reserve}</span>
-              </div>
-            )}
-            {hudStats.slot !== 'grenade' && hudStats.ammo === 0 && hudStats.reserve === 0 && !hudStats.reloading && (
-              <div className="text-[9px] font-black text-rose-400">EMPTY — G to discard, F to pick up</div>
-            )}
-          </div>
-          <div className="flex gap-1 pointer-events-auto">
             <button
               onClick={() => throwWeaponRef.current()}
               onTouchStart={(e) => {
                 e.stopPropagation();
+                e.preventDefault();
                 throwWeaponRef.current();
               }}
-              className="bg-slate-900/90 hover:bg-slate-800 border border-slate-600 text-[10px] font-black text-slate-200 px-2.5 py-1 rounded-lg active:scale-95"
+              title="Drop / throw weapon (G)"
+              aria-label="Drop weapon"
+              className="px-2 rounded-xl bg-slate-900/80 border border-slate-700 text-slate-200 flex flex-col items-center justify-center active:scale-95"
             >
-              G · DROP
+              <DropIcon />
+              <span className="text-[8px] font-black">DROP</span>
             </button>
-            {hudStats.pickupPrompt && (
-              <button
-                onClick={() => pickupRef.current()}
-                onTouchStart={(e) => {
-                  e.stopPropagation();
-                  pickupRef.current();
-                }}
-                className="bg-amber-500 text-slate-950 border border-white text-[10px] font-black px-2.5 py-1 rounded-lg active:scale-95"
-              >
-                F · PICKUP
-              </button>
+          </div>
+          <div className="bg-slate-950/70 border border-slate-700/70 backdrop-blur-md rounded-xl px-2.5 py-0.5 text-right shadow-xl">
+            {hudStats.slot === 'grenade' ? (
+              <div className="font-mono font-black text-lg leading-tight text-white">FRAG × {hudStats.grenades}</div>
+            ) : (
+              <div className={`font-mono font-black text-lg leading-tight ${hudStats.ammo <= 3 ? 'text-rose-400' : 'text-white'}`}>
+                {hudStats.reloading ? 'RELOAD' : hudStats.ammo}
+                <span className={`text-xs ${hudStats.reserve === 0 ? 'text-rose-400' : 'text-slate-400'}`}> / {hudStats.reserve}</span>
+              </div>
             )}
           </div>
+          {hudStats.pickupPrompt && (
+            <button
+              onClick={() => pickupRef.current()}
+              onTouchStart={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                pickupRef.current();
+              }}
+              className="bg-amber-500 text-slate-950 border border-white text-[10px] font-black px-2.5 py-1 rounded-lg active:scale-95"
+            >
+              F · PICK UP
+            </button>
+          )}
         </div>
       )}
 
@@ -2588,189 +2889,129 @@ export default function GamePage() {
       )}
 
       {/* Mobile / Tablet Touch Controls — every button handles its own finger (true multi-touch) */}
-      {isMobile && deployed && (
-        <>
-          <div className={`absolute pointer-events-auto touch-none select-none z-20 ${compactLandscape ? 'bottom-4 left-5' : 'bottom-6 left-6'}`}>
+      {isMobile && (deployed || isGhostSpectator) && (
+        <div
+          className={`absolute pointer-events-auto touch-none select-none z-20 ${compactLandscape ? 'bottom-4 left-5' : 'bottom-6 left-6'}`}
+          style={liftForAd ? { marginBottom: 58 } : undefined}
+        >
+          <div
+            className={`relative rounded-full border-2 border-white/20 bg-slate-900/50 backdrop-blur-md flex items-center justify-center shadow-2xl active:border-rose-500/50 ${
+              compactLandscape ? 'w-28 h-28' : 'w-32 h-32'
+            }`}
+            onTouchStart={handleJoystickTouchStart}
+            onTouchMove={handleJoystickTouchMove}
+            onTouchEnd={handleJoystickTouchEnd}
+            onTouchCancel={handleJoystickTouchEnd}
+          >
+            <div className="absolute inset-2 rounded-full border border-dashed border-white/10 pointer-events-none" />
             <div
-              className={`relative rounded-full border-2 border-white/20 bg-slate-900/60 backdrop-blur-md flex items-center justify-center shadow-2xl active:border-rose-500/50 ${
-                compactLandscape ? 'w-28 h-28' : 'w-32 h-32'
-              }`}
-              onTouchStart={handleJoystickTouchStart}
-              onTouchMove={handleJoystickTouchMove}
-              onTouchEnd={handleJoystickTouchEnd}
-              onTouchCancel={handleJoystickTouchEnd}
+              className="w-12 h-12 rounded-full bg-gradient-to-tr from-rose-600 to-amber-500 shadow-lg shadow-rose-600/40 border border-white/40 flex items-center justify-center pointer-events-none transition-transform duration-75"
+              style={{ transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)` }}
             >
-              <div className="absolute inset-2 rounded-full border border-dashed border-white/10 pointer-events-none" />
-              <div
-                className="w-12 h-12 rounded-full bg-gradient-to-tr from-rose-600 to-amber-500 shadow-lg shadow-rose-600/40 border border-white/40 flex items-center justify-center pointer-events-none transition-transform duration-75"
-                style={{ transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)` }}
-              >
-                <div className="w-3.5 h-3.5 rounded-full bg-white/70" />
-              </div>
+              <div className="w-3.5 h-3.5 rounded-full bg-white/70" />
             </div>
           </div>
-
-          {/* Prop rotation (only while disguised): hold to turn the prop, camera keeps orbiting freely */}
-          {hudStats.isProp && (
-            <div className={`absolute z-20 pointer-events-auto touch-none select-none flex gap-2 ${compactLandscape ? 'bottom-36 left-5' : 'bottom-44 left-6'}`}>
-              {([1, -1] as const).map((dir) => (
-                <button
-                  key={dir}
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    propRotateRef.current = dir;
-                  }}
-                  onTouchEnd={(e) => {
-                    e.stopPropagation();
-                    propRotateRef.current = 0;
-                  }}
-                  onTouchCancel={() => {
-                    propRotateRef.current = 0;
-                  }}
-                  aria-label={dir === 1 ? 'Rotate prop counter-clockwise' : 'Rotate prop clockwise'}
-                  className="w-12 h-12 rounded-2xl bg-slate-900/80 active:bg-amber-500 active:text-slate-950 text-white text-xl font-black flex items-center justify-center shadow-lg border border-amber-400/40"
-                >
-                  {dir === 1 ? '‹' : '›'}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div
-            className={`absolute pointer-events-auto touch-none flex select-none z-20 ${
-              compactLandscape ? 'bottom-2 right-3 flex-row-reverse items-end gap-2 scale-[0.85] origin-bottom-right' : 'bottom-6 right-4 flex-col items-end gap-2 opacity-80'
-            }`}
-          >
+        </div>
+      )}
+      {isGhostSpectator && isMobile && (
+        <div className="absolute right-5 bottom-8 z-20 flex flex-col gap-2 pointer-events-auto touch-none select-none" style={showAdBanner ? { marginBottom: 58 } : undefined}>
+          {[{ label: 'Fly up', key: 'Space', icon: <JumpIcon /> }, { label: 'Fly down', key: 'ControlLeft', icon: <CrouchIcon /> }].map((b) => (
             <button
+              key={b.key}
+              aria-label={b.label}
               onTouchStart={(e) => {
                 e.stopPropagation();
-                firingRef.current = true;
+                window.dispatchEvent(new KeyboardEvent('keydown', { code: b.key }));
               }}
               onTouchEnd={(e) => {
                 e.stopPropagation();
-                firingRef.current = false;
+                window.dispatchEvent(new KeyboardEvent('keyup', { code: b.key }));
               }}
-              onTouchCancel={() => {
-                firingRef.current = false;
-              }}
-              className={`${compactLandscape ? 'w-[4.5rem] h-[4.5rem]' : 'w-20 h-20 order-last'} rounded-3xl bg-gradient-to-tr from-rose-600 via-rose-500 to-amber-500 active:scale-95 text-white font-black text-base flex flex-col items-center justify-center shadow-2xl shadow-rose-600/50 border-2 border-white/60 transition`}
+              className="w-12 h-12 rounded-full bg-slate-900/55 border border-white/25 text-white flex items-center justify-center backdrop-blur-sm active:bg-white/30"
             >
-              <span>🔥</span>
-              <span className="text-[11px] tracking-wider">FIRE</span>
+              {b.icon}
             </button>
-            <div className="flex flex-col items-end gap-2">
-              {!hudStats.isProp && (
-                <div className="flex items-center gap-1.5">
-                  {SLOT_KEYS.map((sl) => (
-                    <button
-                      key={sl.slot}
-                      onTouchStart={(e) => {
-                        e.stopPropagation();
-                        equipRef.current(sl.slot);
-                      }}
-                      className={`h-9 px-2 rounded-xl text-[10px] font-black border shadow ${
-                        hudStats.slot === sl.slot ? 'bg-amber-400 text-slate-950 border-white' : 'bg-slate-900/80 text-white border-slate-700'
-                      }`}
-                    >
-                      {sl.key} {sl.label ?? '—'}
-                    </button>
-                  ))}
-                  <button
-                    onTouchStart={(e) => {
-                      e.stopPropagation();
-                      quickGrenadeRef.current();
-                    }}
-                    className="h-9 px-2 rounded-xl text-[10px] font-black border shadow bg-emerald-800/90 text-white border-emerald-500/60"
-                  >
-                    💣 V
-                  </button>
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                {!hudStats.isProp &&
-                  (['left', 'right'] as const).map((side) => (
-                    <button
-                      key={side}
-                      onTouchStart={(e) => {
-                        e.stopPropagation();
-                        setLeanState((prev) => (prev === side ? 'none' : side));
-                      }}
-                      className={`w-11 h-11 rounded-xl text-xs font-black flex items-center justify-center shadow-md border transition ${
-                        leanState === side ? 'bg-amber-500 text-slate-950 border-white' : 'bg-slate-900/80 text-white border-slate-700'
-                      }`}
-                    >
-                      {side === 'left' ? '◀ Q' : 'E ▶'}
-                    </button>
-                  ))}
-                <button
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    setIsAdsActive((prev) => !prev);
-                  }}
-                  className={`w-12 h-12 rounded-2xl text-xs font-black flex items-center justify-center shadow-lg border transition ${
-                    isAdsActive ? 'bg-emerald-500 text-slate-950 border-white shadow-emerald-500/50 scale-105' : 'bg-slate-900/80 text-white border-slate-700'
-                  }`}
-                >
-                  🎯 ADS
-                </button>
-                <button
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    reloadRef.current?.();
-                  }}
-                  className="w-12 h-12 rounded-2xl bg-slate-800/90 text-white font-black text-xs flex items-center justify-center shadow-lg border border-slate-600 active:scale-95 transition"
-                >
-                  🔄 R
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    togglePropRef.current?.();
-                  }}
-                  className="w-12 h-12 rounded-2xl bg-amber-600/90 active:bg-amber-500 text-white font-black text-xs flex items-center justify-center shadow-lg border border-amber-400/50 active:scale-95 transition"
-                >
-                  📦 PROP
-                </button>
-                <button
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    setStanceRef.current(stanceRef.current === 'crouch' ? 'stand' : 'crouch');
-                  }}
-                  className={`w-12 h-12 rounded-2xl text-[10px] font-black flex flex-col items-center justify-center shadow-lg border transition ${
-                    stanceUi === 'crouch' ? 'bg-amber-500 text-slate-950 border-white scale-105' : 'bg-slate-900/80 text-white border-slate-700'
-                  }`}
-                >
-                  <span>🧎</span>
-                  <span>CROUCH</span>
-                </button>
-                <button
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    setStanceRef.current(stanceRef.current === 'prone' ? 'stand' : 'prone');
-                  }}
-                  className={`w-12 h-12 rounded-2xl text-[10px] font-black flex flex-col items-center justify-center shadow-lg border transition ${
-                    stanceUi === 'prone' ? 'bg-lime-500 text-slate-950 border-white scale-105' : 'bg-slate-900/80 text-white border-slate-700'
-                  }`}
-                >
-                  <span>🐍</span>
-                  <span>นอนราบ</span>
-                </button>
-                <button
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    triggerJumpRef.current?.();
-                  }}
-                  className="w-12 h-12 rounded-2xl bg-indigo-600/90 active:bg-indigo-500 text-white font-black text-[10px] flex flex-col items-center justify-center shadow-lg border border-indigo-400/50 active:scale-95 transition"
-                >
-                  <span>⬆️</span>
-                  <span>{stanceUi === 'stand' ? 'JUMP' : 'STAND'}</span>
-                </button>
-              </div>
-            </div>
+          ))}
+        </div>
+      )}
+
+      {isMobile && deployed && !isGhostSpectator && hudStats.alive && (
+        <div
+          className="absolute right-0 bottom-0 z-20 pointer-events-none select-none origin-bottom-right"
+          style={{ width: ARC_BOX, height: ARC_BOX, transform: compactLandscape ? 'scale(0.82)' : undefined, marginBottom: liftForAd ? 58 : 0 }}
+        >
+          {/* FIRE: hold to shoot, drag the same finger to aim */}
+          <button
+            aria-label="Fire (drag to aim)"
+            onTouchStart={onFireTouchStart}
+            onTouchMove={onFireTouchMove}
+            onTouchEnd={onFireTouchEnd}
+            onTouchCancel={onFireTouchEnd}
+            className="absolute pointer-events-auto touch-none rounded-full bg-rose-600/55 border-[3px] border-white/70 text-white flex items-center justify-center shadow-2xl shadow-rose-600/40 backdrop-blur-sm active:bg-rose-500/80 active:scale-95 transition"
+            style={{ left: FIRE_C - 44, top: FIRE_C - 44, width: 88, height: 88 }}
+          >
+            <BulletIcon size={38} />
+          </button>
+          {(hudStats.isProp
+            ? [
+                { k: 'rotL', deg: 180, r: 92, icon: <ChevronLeftIcon />, label: 'Rotate prop left', hold: 1 as const },
+                { k: 'rotR', deg: 148, r: 92, icon: <ChevronRightIcon />, label: 'Rotate prop right', hold: -1 as const },
+                { k: 'jump', deg: 96, r: 92, icon: <JumpIcon />, label: 'Jump', act: () => triggerJumpRef.current?.() },
+                { k: 'prop', deg: 120, r: 152, icon: <CrateIcon />, label: 'Leave disguise', act: () => togglePropRef.current?.(), on: true },
+              ]
+            : [
+                { k: 'ads', deg: 180, r: 92, icon: <ScopeIcon />, label: 'Aim down sights', act: () => setIsAdsActive((v) => !v), on: isAdsActive },
+                { k: 'crouch', deg: 150, r: 92, icon: <CrouchIcon />, label: 'Crouch', act: () => setStanceRef.current(stanceRef.current === 'crouch' ? 'stand' : 'crouch'), on: stanceUi === 'crouch' },
+                { k: 'prone', deg: 120, r: 92, icon: <ProneIcon />, label: 'Prone', act: () => setStanceRef.current(stanceRef.current === 'prone' ? 'stand' : 'prone'), on: stanceUi === 'prone' },
+                { k: 'jump', deg: 90, r: 92, icon: <JumpIcon />, label: stanceUi === 'stand' ? 'Jump' : 'Stand up', act: () => triggerJumpRef.current?.() },
+                { k: 'reload', deg: 172, r: 152, icon: <ReloadIcon />, label: 'Reload', act: () => reloadRef.current?.() },
+                { k: 'nade', deg: 140, r: 152, icon: <GrenadeIcon />, label: 'Throw grenade', act: () => quickGrenadeRef.current() },
+                { k: 'prop', deg: 108, r: 152, icon: <CrateIcon />, label: 'Prop disguise', act: () => togglePropRef.current?.() },
+              ]
+          ).map((b) => {
+            const size = b.r > 120 ? 46 : 50;
+            const pos = arcPos(b.deg, b.r, size);
+            const hold = 'hold' in b ? b.hold : 0;
+            return (
+              <button
+                key={b.k}
+                aria-label={b.label}
+                title={b.label}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  if (hold) propRotateRef.current = hold;
+                  else if ('act' in b && b.act) b.act();
+                }}
+                onTouchEnd={(e) => {
+                  e.stopPropagation();
+                  if (hold) propRotateRef.current = 0;
+                }}
+                onTouchCancel={() => {
+                  if (hold) propRotateRef.current = 0;
+                }}
+                className={`absolute pointer-events-auto touch-none rounded-full border flex items-center justify-center backdrop-blur-sm shadow-lg active:scale-95 transition ${
+                  'on' in b && b.on ? 'bg-amber-400/85 text-slate-950 border-white' : 'bg-slate-900/45 text-white border-white/30 active:bg-white/30'
+                }`}
+                style={{ left: pos.left, top: pos.top, width: size, height: size }}
+              >
+                {b.icon}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Compact bottom banner ad slot — Solo Bot / Practice and Ghost Spectator only (never paid PvP) */}
+      {showAdBanner && (
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 z-[15] pointer-events-auto">
+          <div
+            id="mwar-ad-banner"
+            data-ad-slot="game-bottom"
+            className={`${isMobile ? 'w-[320px] h-[50px]' : 'w-[468px] h-[60px]'} bg-slate-950/70 border border-slate-700/70 border-b-0 rounded-t-lg flex items-center justify-center text-[10px] font-bold tracking-widest text-slate-500`}
+          >
+            ADVERTISEMENT
           </div>
-        </>
+        </div>
       )}
 
       {/* Dedicated fullscreen toggle (never automatic): top-right of the viewport, under the top HUD */}
@@ -2784,7 +3025,7 @@ export default function GamePage() {
         aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
         className="absolute top-4 right-4 z-[100] w-9 h-9 rounded-xl bg-slate-900/85 hover:bg-slate-800 border border-slate-600 text-white text-base font-black flex items-center justify-center shadow-lg active:scale-95 transition"
       >
-        {isFullscreen ? '🗗' : '⛶'}
+        {isFullscreen ? <ExitFullscreenIcon /> : <EnterFullscreenIcon />}
       </button>
 
       {/* Anti-AFK Verification Modal */}

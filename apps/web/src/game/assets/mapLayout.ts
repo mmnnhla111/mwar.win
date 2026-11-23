@@ -15,6 +15,7 @@ import {
   placeVehicle,
 } from './props';
 import { PLAY_HALF, ROAD_LINES, ROAD_WIDTH, SIDEWALK_WIDTH, addTree, buildSkyAndTerrain, SkyAndTerrain } from './skyAndTerrain';
+import { MAP2D } from './map2d';
 
 /**
  * City layout for the 240 m × 240 m arena:
@@ -82,6 +83,7 @@ function facingTurns(x: number, z: number) {
 const v3 = (p: Vec3) => new THREE.Vector3(p[0], p[1], p[2]);
 
 export function buildArena(scene: THREE.Scene, world: CollisionWorld, lib: MaterialLibrary): ArenaLayout {
+  MAP2D.reset(); // minimap footprints are re-collected for every build
   const batcher = new StaticBatcher();
   const kit = new Kit(batcher, world);
   const rand = seeded(9001);
@@ -334,5 +336,10 @@ export function buildArena(scene: THREE.Scene, world: CollisionWorld, lib: Mater
     s.rooftops.forEach((p) => tryAdd(p[0], p[1] - 0.05, p[2]));
   });
 
+  // Building / house roof footprints for the minimap
+  for (const st of structures) {
+    const f = st.footprint;
+    MAP2D.rects.push({ x: (f.minX + f.maxX) / 2, z: (f.minZ + f.maxZ) / 2, w: f.maxX - f.minX, d: f.maxZ - f.minZ, kind: /house/i.test(st.name) ? 'house' : 'building' });
+  }
   return { structures, nav, posts, playerSpawns, chestSpots, spawnPoints, terrain, staticMeshes };
 }

@@ -35,6 +35,8 @@ export class PlayerState extends Schema {
 
   // Spectator mode upon death
   @type('boolean') isGhost: boolean = false;
+  // Joined in "Spectate Match" mode: invisible, no collision / damage, never respawns
+  @type('boolean') isSpectator: boolean = false;
 
   // Performance & Earnings stats
   @type('number') kills: number = 0;
