@@ -8,6 +8,7 @@ import { formatMicroUsd } from '@mwar/shared';
 import { QuestSpectateIcon } from '../../components/icons';
 import { soundFX } from '../../game/audio';
 import { CollisionWorld, MoveBody } from '../../game/physics/collision';
+import { MAP2D, type WindowSpot } from '../../game/assets/map2d';
 import { MaterialLibrary } from '../../game/assets/materials';
 import { buildArena } from '../../game/assets/mapLayout';
 import { PLAY_HALF } from '../../game/assets/skyAndTerrain';
@@ -58,6 +59,7 @@ import {
   ExitFullscreenIcon,
   GrenadeIcon,
   JumpIcon,
+  VaultIcon,
   ProneIcon,
   ReloadIcon,
   ScopeIcon,
@@ -285,6 +287,9 @@ export default function GamePage() {
   const lookRef = useRef({ yaw: 0, pitch: 0, dx: 0, dy: 0 });
   const togglePropRef = useRef<() => void>(() => {});
   const triggerJumpRef = useRef<() => void>(() => {});
+  /** Vault through the window in front of you (T on PC, contextual button on mobile). */
+  const vaultWindowRef = useRef<() => void>(() => {});
+  const [canVault, setCanVault] = useState(false);
   const reloadRef = useRef<() => void>(() => {});
   const deployRef = useRef<(primary: PrimaryId, character: CharacterId) => void>(() => {});
   const deployedRef = useRef(false);
@@ -1500,6 +1505,58 @@ export default function GamePage() {
       }
       world.jump(body, 7.4);
     };
+    // ── Window vault: find a window you are facing within reach, then carry the body through ──
+    let vault: { t: number; dur: number; a: THREE.Vector3; b: THREE.Vector3; c: THREE.Vector3 } | null = null;
+    let vaultCandidate: { w: WindowSpot; dir: number } | null = null;
+    let vaultScanT = 0;
+    const vaultEnd = (w: WindowSpot, dir: number) => {
+      const off = w.t / 2 + body.radius + 0.25;
+      return new THREE.Vector3(w.x + w.nx * dir * off, w.sill + 0.02, w.z + w.nz * dir * off);
+    };
+    const findVaultWindow = (): { w: WindowSpot; dir: number } | null => {
+      if (!player.alive || player.isProp || vault) return null;
+      const fx = -Math.sin(look.yaw);
+      const fz = -Math.cos(look.yaw);
+      let best: { w: WindowSpot; dir: number } | null = null;
+      let bestD = Infinity;
+      for (const w of MAP2D.windows) {
+        const rx = body.x - w.x;
+        const rz = body.z - w.z;
+        if (Math.abs(rx) > 3 || Math.abs(rz) > 3) continue;
+        const s = rx * w.nx + rz * w.nz; // signed distance from the wall plane
+        if (Math.abs(s) > w.t / 2 + 1.3) continue;
+        const lat = Math.abs(rx * -w.nz + rz * w.nx);
+        if (lat > w.halfW + 0.15) continue;
+        const rise = w.sill - body.y;
+        if (rise > 1.7 || rise < -0.5) continue;
+        const dir = s >= 0 ? -1 : 1; // go to the other side
+        if (fx * w.nx * dir + fz * w.nz * dir < 0.35) continue; // must be facing the window
+        const e = vaultEnd(w, dir);
+        if (world.pointInSolid(e.x, e.y + 0.2, e.z) || world.pointInSolid(e.x, e.y + 1.0, e.z)) continue;
+        const d = Math.abs(s) + lat * 0.5;
+        if (d < bestD) {
+          bestD = d;
+          best = { w, dir };
+        }
+      }
+      return best;
+    };
+    vaultWindowRef.current = () => {
+      if (!deployedRef.current) return;
+      const cand = findVaultWindow();
+      if (!cand) return;
+      const { w, dir } = cand;
+      const a = new THREE.Vector3(body.x, body.y, body.z);
+      // Pass through the middle of the opening, feet just above the sill
+      const lat = (body.x - w.x) * -w.nz + (body.z - w.z) * w.nx;
+      const latC = THREE.MathUtils.clamp(lat, -(w.halfW - 0.3), w.halfW - 0.3);
+      const mid = new THREE.Vector3(w.x - w.nz * latC, w.sill + 0.05, w.z + w.nx * latC);
+      const end = vaultEnd(w, dir);
+      end.x -= w.nz * latC;
+      end.z += w.nx * latC;
+      vault = { t: 0, dur: 0.42, a, b: mid, c: end };
+      body.velY = 0;
+    };
     const startReload = () => {
       const gun = currentGun();
       if (!gun || player.reloadTimer >= 0 || !player.alive || player.isProp) return;
@@ -1775,6 +1832,8 @@ export default function GamePage() {
     if (new URLSearchParams(window.location.search).has('debug')) {
       (window as any).__mwar = {
         body,
+        vault: () => vaultWindowRef.current(),
+        windows: MAP2D.windows,
         setStance,
         stance: () => stanceRef.current,
         animateCharacter,
@@ -1817,6 +1876,7 @@ export default function GamePage() {
         if (!e.repeat) triggerJumpRef.current();
       }
       if (e.code === 'KeyC' && !e.repeat) togglePropRef.current();
+      if (e.code === 'KeyT' && !e.repeat) vaultWindowRef.current();
       if (e.code === 'Escape' && propMenuOpenRef.current) closePropMenu();
       if (e.code === 'KeyF' && !e.repeat) {
         // F = pick up a nearby weapon (falls back to fire when nothing is near)
@@ -2089,7 +2149,27 @@ export default function GamePage() {
         body.height = STANCE_HEIGHT[stance];
         const wasAir = !body.onGround;
         const fallSpeed = -body.velY;
-        world.moveBody(body, dx, dz, dt);
+        if (vault) {
+          // Scripted vault: start → over the sill → far side, collision ignored for 0.42 s
+          vault.t += dt;
+          const k = Math.min(1, vault.t / vault.dur);
+          const p = k < 0.5 ? vault.a.clone().lerp(vault.b, k / 0.5) : vault.b.clone().lerp(vault.c, (k - 0.5) / 0.5);
+          if (k < 0.5) p.y = vault.a.y + (vault.b.y + 0.25 - vault.a.y) * Math.sin((k / 0.5) * Math.PI * 0.5);
+          else p.y = Math.max(vault.c.y, vault.b.y + 0.25 - (vault.b.y + 0.25 - vault.c.y) * ((k - 0.5) / 0.5));
+          body.x = p.x;
+          body.y = p.y;
+          body.z = p.z;
+          body.velY = 0;
+          body.onGround = false;
+          if (k >= 1) vault = null;
+        } else world.moveBody(body, dx, dz, dt);
+        vaultScanT -= dt;
+        if (vaultScanT <= 0) {
+          vaultScanT = 0.1;
+          const c = findVaultWindow();
+          if (!!c !== !!vaultCandidate) setCanVault(!!c);
+          vaultCandidate = c;
+        }
         player.speed = Math.hypot(body.x - px, body.z - pz) / Math.max(dt, 1e-4);
         // Fall damage (environmental death → counts as a suicide-type death)
         const impact = Math.max(fallSpeed, -body.velY);
@@ -2361,6 +2441,7 @@ export default function GamePage() {
           else pickupPrompt = `F — Pick up ${WEAPONS[near.id].name} (${near.mag}/${near.reserve})`;
         }
       }
+      if (!pickupPrompt && vaultCandidate && !isMobileRef.current) pickupPrompt = 'T — Vault through window';
 
       // --- Bots (paused until the player deploys)
       if (bots && active) {
@@ -2620,6 +2701,7 @@ export default function GamePage() {
     prop: { x: EDGE_X - 158, y: 292 },
     rotR: { x: EDGE_X - 210, y: 292 },
     rotL: { x: EDGE_X - 254, y: 292 },
+    vault: { x: EDGE_X - 96, y: 104 },
   };
 
   return (
@@ -3191,6 +3273,7 @@ export default function GamePage() {
                 { k: 'prone', at: PAD.prone, icon: <ProneIcon />, label: 'Prone', act: () => setStanceRef.current(stanceRef.current === 'prone' ? 'stand' : 'prone'), on: stanceUi === 'prone' },
                 { k: 'ads', at: PAD.ads, icon: <ScopeIcon />, label: 'Aim down sights', act: () => setIsAdsActive((v) => !v), on: isAdsActive },
                 { k: 'prop', at: PAD.prop, icon: <CrateIcon />, label: 'Prop disguise', act: () => togglePropRef.current?.() },
+                ...(canVault ? [{ k: 'vault', at: PAD.vault, icon: <VaultIcon />, label: 'Vault through window', act: () => vaultWindowRef.current(), on: true }] : []),
               ]
           ).map((b) => {
             const size = 'small' in b && b.small ? 40 : 50;

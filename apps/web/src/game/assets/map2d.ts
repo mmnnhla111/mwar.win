@@ -27,7 +27,21 @@ export interface Map2DRoad {
   dirt?: boolean;
 }
 
+/** A window opening the player can vault through (world space). n = unit wall normal. */
+export interface WindowSpot {
+  x: number;
+  z: number;
+  sill: number;
+  top: number;
+  nx: number;
+  nz: number;
+  halfW: number;
+  t: number;
+}
+
 export const MAP2D = {
+  /** Vaultable window openings, collected while walls are built. */
+  windows: [] as WindowSpot[],
   rects: [] as Map2DRect[],
   trees: [] as Map2DTree[],
   /** Explicit road rectangles (large map). Empty → the minimap draws the small map's 3×3 grid. */
@@ -38,6 +52,7 @@ export const MAP2D = {
   mapHalf: 0,
   reset() {
     this.rects.length = 0;
+    this.windows.length = 0;
     this.trees.length = 0;
     this.roads.length = 0;
     this.hills.length = 0;

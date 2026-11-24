@@ -136,3 +136,13 @@ export const MagnetIcon = ({ className, size = 16 }: P) => (
     <path d="M6 7h4M14 7h4" />
   </svg>
 );
+
+/** Window frame with an arrow going through it (vault through window). */
+export const VaultIcon = ({ className, size }: P) => (
+  <svg {...base(size)} className={className}>
+    <rect x="7" y="4" width="10" height="13" rx="1" />
+    <path d="M7 11h10" />
+    <path d="M2 15c4-6 12-6 20-2" />
+    <path d="M19 10.5l3 2.5-3.5 1.5" />
+  </svg>
+);

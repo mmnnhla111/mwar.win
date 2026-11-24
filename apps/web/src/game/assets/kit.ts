@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CollisionWorld } from '../physics/collision';
 import { MaterialKey, MaterialLibrary, TEXTURE_SCALE } from './materials';
+import { MAP2D } from './map2d';
 
 /**
  * Modular building kit.
@@ -313,6 +314,22 @@ export class Kit {
       const td = alongX ? t + 0.08 : b - a + 0.16;
       this.deco(f, 'trim', trimColor, cx, y0 + Math.min(o.top, h) - 0.02, cz, tw, 0.12, td, false);
       if (o.sill > 0) this.deco(f, 'trim', trimColor, cx, y0 + o.sill - 0.1, cz, tw, 0.12, td, false);
+      // Register real (non-slit) windows for the vault action
+      if (o.sill >= 0.4 && Math.min(o.top, h) - o.sill >= 0.9 && b - a >= 0.7) {
+        const [wx, wz] = f.toWorld(cx, cz);
+        const lnx = alongX ? 0 : 1;
+        const lnz = alongX ? 1 : 0;
+        MAP2D.windows.push({
+          x: wx,
+          z: wz,
+          sill: f.baseY + y0 + o.sill,
+          top: f.baseY + y0 + Math.min(o.top, h),
+          nx: lnx * f.cos + lnz * f.sin,
+          nz: -lnx * f.sin + lnz * f.cos,
+          halfW: (b - a) / 2,
+          t,
+        });
+      }
       if (o.glass) {
         const gw = alongX ? b - a : 0.05;
         const gd = alongX ? 0.05 : b - a;
