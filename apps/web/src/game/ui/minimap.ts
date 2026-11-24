@@ -51,35 +51,56 @@ export function drawMinimap(
   ctx.translate(-view.x, -view.z);
 
   // Forest / mountains outside the playable area, grass inside
+  const playHalf = MAP2D.playHalf || PLAY_HALF;
+  const mapHalf = MAP2D.mapHalf || MAP_HALF;
   ctx.fillStyle = 'rgba(22, 64, 32, 0.92)';
-  ctx.fillRect(-MAP_HALF - 40, -MAP_HALF - 40, MAP_HALF * 2 + 80, MAP_HALF * 2 + 80);
+  ctx.fillRect(-mapHalf - 40, -mapHalf - 40, mapHalf * 2 + 80, mapHalf * 2 + 80);
   ctx.fillStyle = 'rgba(74, 124, 58, 0.88)';
-  ctx.fillRect(-PLAY_HALF, -PLAY_HALF, PLAY_HALF * 2, PLAY_HALF * 2);
+  ctx.fillRect(-playHalf, -playHalf, playHalf * 2, playHalf * 2);
 
-  // Asphalt roads (3×3 grid) + sidewalks + dashed lane lines
-  const hw = ROAD_WIDTH / 2;
-  ctx.fillStyle = 'rgba(148, 163, 184, 0.55)'; // sidewalks
-  for (const l of ROAD_LINES) {
-    ctx.fillRect(l - hw - 2.5, -PLAY_HALF, ROAD_WIDTH + 5, PLAY_HALF * 2);
-    ctx.fillRect(-PLAY_HALF, l - hw - 2.5, PLAY_HALF * 2, ROAD_WIDTH + 5);
+  // Mountains (large map): contour rings
+  for (const h of MAP2D.hills) {
+    if (Math.abs(h.x - view.x) > reach + h.r || Math.abs(h.z - view.z) > reach + h.r) continue;
+    for (let k = 0; k < 5; k++) {
+      ctx.fillStyle = `rgba(${110 + k * 18}, ${105 + k * 14}, ${80 + k * 16}, 0.55)`;
+      ctx.beginPath();
+      ctx.arc(h.x, h.z, h.r * (1 - k * 0.19), 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
-  ctx.fillStyle = 'rgba(51, 55, 62, 0.95)';
-  for (const l of ROAD_LINES) {
-    ctx.fillRect(l - hw, -PLAY_HALF, ROAD_WIDTH, PLAY_HALF * 2);
-    ctx.fillRect(-PLAY_HALF, l - hw, PLAY_HALF * 2, ROAD_WIDTH);
+
+  if (MAP2D.roads.length) {
+    for (const rd of MAP2D.roads) {
+      if (Math.abs(rd.x - view.x) > reach + rd.w / 2 || Math.abs(rd.z - view.z) > reach + rd.d / 2) continue;
+      ctx.fillStyle = rd.dirt ? 'rgba(146, 116, 80, 0.9)' : 'rgba(51, 55, 62, 0.95)';
+      ctx.fillRect(rd.x - rd.w / 2, rd.z - rd.d / 2, rd.w, rd.d);
+    }
+  } else {
+    // Asphalt roads (3×3 grid) + sidewalks + dashed lane lines
+    const hw = ROAD_WIDTH / 2;
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.55)'; // sidewalks
+    for (const l of ROAD_LINES) {
+      ctx.fillRect(l - hw - 2.5, -PLAY_HALF, ROAD_WIDTH + 5, PLAY_HALF * 2);
+      ctx.fillRect(-PLAY_HALF, l - hw - 2.5, PLAY_HALF * 2, ROAD_WIDTH + 5);
+    }
+    ctx.fillStyle = 'rgba(51, 55, 62, 0.95)';
+    for (const l of ROAD_LINES) {
+      ctx.fillRect(l - hw, -PLAY_HALF, ROAD_WIDTH, PLAY_HALF * 2);
+      ctx.fillRect(-PLAY_HALF, l - hw, PLAY_HALF * 2, ROAD_WIDTH);
+    }
+    ctx.strokeStyle = 'rgba(250, 204, 21, 0.55)';
+    ctx.lineWidth = 0.35;
+    ctx.setLineDash([3, 3]);
+    for (const l of ROAD_LINES) {
+      ctx.beginPath();
+      ctx.moveTo(l, -PLAY_HALF);
+      ctx.lineTo(l, PLAY_HALF);
+      ctx.moveTo(-PLAY_HALF, l);
+      ctx.lineTo(PLAY_HALF, l);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
   }
-  ctx.strokeStyle = 'rgba(250, 204, 21, 0.55)';
-  ctx.lineWidth = 0.35;
-  ctx.setLineDash([3, 3]);
-  for (const l of ROAD_LINES) {
-    ctx.beginPath();
-    ctx.moveTo(l, -PLAY_HALF);
-    ctx.lineTo(l, PLAY_HALF);
-    ctx.moveTo(-PLAY_HALF, l);
-    ctx.lineTo(PLAY_HALF, l);
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
 
   const near = (x: number, z: number, extra = 0) => Math.abs(x - view.x) < reach + extra && Math.abs(z - view.z) < reach + extra;
 

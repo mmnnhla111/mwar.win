@@ -72,6 +72,14 @@ export interface CollisionWorldOptions {
   stepHeight?: number;
   gravity?: number;
   cellSize?: number;
+  /** Optional height-field terrain (mountains). Flat y = 0 everywhere outside `bounds`. */
+  terrain?: TerrainField;
+}
+
+export interface TerrainField {
+  height(x: number, z: number): number;
+  /** XZ rectangles where the terrain is not flat (terrain checks are skipped elsewhere). */
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number }[];
 }
 
 const EPS = 1e-4;
@@ -91,9 +99,11 @@ export class CollisionWorld {
   /** Dynamic movable boxes (prop disguises) keyed by owner. */
   private dynamic = new Map<string, SolidBox>();
   private ignoreOwner: string | undefined;
+  readonly terrain: TerrainField | undefined;
 
   constructor(opts: CollisionWorldOptions) {
     this.halfSize = opts.halfSize;
+    this.terrain = opts.terrain;
     this.stepHeight = opts.stepHeight ?? 0.45;
     this.gravity = opts.gravity ?? -22;
     this.cellSize = opts.cellSize ?? 8;
@@ -101,6 +111,44 @@ export class CollisionWorld {
 
   get boxCount() {
     return this.boxes.length;
+  }
+
+  /** Terrain height (0 when the world has no terrain). */
+  terrainHeight(x: number, z: number): number {
+    return this.terrain ? this.terrain.height(x, z) : 0;
+  }
+
+  private segmentTouchesTerrain(ax: number, az: number, bx: number, bz: number) {
+    if (!this.terrain) return false;
+    const minX = Math.min(ax, bx);
+    const maxX = Math.max(ax, bx);
+    const minZ = Math.min(az, bz);
+    const maxZ = Math.max(az, bz);
+    return this.terrain.bounds.some((r) => !(maxX < r.minX || minX > r.maxX || maxZ < r.minZ || minZ > r.maxZ));
+  }
+
+  /** First terrain hit along a ray (marching + bisection), or null. */
+  private terrainRay(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxDist: number): number | null {
+    if (!this.terrain || !this.segmentTouchesTerrain(ox, oz, ox + dx * maxDist, oz + dz * maxDist)) return null;
+    const h = (t: number) => oy + dy * t - this.terrain!.height(ox + dx * t, oz + dz * t);
+    if (h(0) < 0) return 0;
+    const step = 1.25;
+    let prev = 0;
+    for (let t = step; ; t += step) {
+      const tt = Math.min(t, maxDist);
+      if (h(tt) < 0) {
+        let lo = prev;
+        let hi = tt;
+        for (let i = 0; i < 8; i++) {
+          const mid = (lo + hi) / 2;
+          if (h(mid) < 0) hi = mid;
+          else lo = mid;
+        }
+        return hi;
+      }
+      prev = tt;
+      if (tt >= maxDist) return null;
+    }
   }
 
   private key(cx: number, cz: number) {
@@ -225,7 +273,8 @@ export class CollisionWorld {
    * is at most `maxY` (the body can reach it by stepping). Terrain is y = 0.
    */
   groundHeightAt(x: number, z: number, radius: number, maxY: number): number {
-    let best = 0;
+    // Terrain is solid ground under everything (slopes are always walkable / climbable)
+    let best = this.terrain ? this.terrain.height(x, z) : 0;
     const r = radius * 0.7; // feet footprint slightly smaller than body
     this.forBoxesNear(x - r, z - r, x + r, z + r, (b) => {
       if (!b.walkable || !b.blocksMovement) return;
@@ -262,6 +311,30 @@ export class CollisionWorld {
       if (dx * dx + dz * dz < radius * radius - EPS) hit = true;
     });
     return hit;
+  }
+
+  /**
+   * Total xz penetration depth of the body into movement-blocking solids (0 = free). Used to let a
+   * body that got wedged (e.g. jumped into a window opening it cannot fit through) slide back out.
+   */
+  private overlapDepth(x: number, feetY: number, z: number, radius: number, height: number, stepAllowance: number): number {
+    let depth = 0;
+    const lowY = feetY + stepAllowance;
+    const highY = feetY + height;
+    this.forBoxesNear(x - radius, z - radius, x + radius, z + radius, (b) => {
+      if (!b.blocksMovement) return;
+      if (b.maxY <= lowY || b.minY >= highY) return;
+      const inside = x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ;
+      if (inside) {
+        depth += radius + Math.min(x - b.minX, b.maxX - x, z - b.minZ, b.maxZ - z);
+        return;
+      }
+      const cx = Math.max(b.minX, Math.min(x, b.maxX));
+      const cz = Math.max(b.minZ, Math.min(z, b.maxZ));
+      const d = Math.hypot(x - cx, z - cz);
+      if (d < radius) depth += radius - d;
+    });
+    return depth;
   }
 
   /** Lowest ceiling (box bottom) above `feetY` that overlaps the body footprint. */
@@ -355,8 +428,9 @@ export class CollisionWorld {
     }
 
     // Safety: never sink inside a solid (e.g. spawned overlapping) — push up onto its top.
-    if (body.y < 0) {
-      body.y = 0;
+    const floor = this.terrain ? this.terrain.height(body.x, body.z) : 0;
+    if (body.y < floor) {
+      body.y = floor;
       body.velY = 0;
       body.onGround = true;
     }
@@ -371,6 +445,14 @@ export class CollisionWorld {
         ? this.overlapsSolid(v, body.y, body.z, body.radius, body.height, stepAllow)
         : this.overlapsSolid(body.x, body.y, v, body.radius, body.height, stepAllow);
     if (!test(start + delta)) return start + delta;
+    if (test(start)) {
+      // Already wedged: allow any move that reduces the penetration (slide back out of the frame)
+      const depthAt = (v: number) =>
+        axis === 'x'
+          ? this.overlapDepth(v, body.y, body.z, body.radius, body.height, stepAllow)
+          : this.overlapDepth(body.x, body.y, v, body.radius, body.height, stepAllow);
+      return depthAt(start + delta) < depthAt(start) - 1e-5 ? start + delta : start;
+    }
     let lo = 0;
     let hi = 1;
     for (let i = 0; i < 4; i++) {
@@ -445,11 +527,57 @@ export class CollisionWorld {
       }
     };
 
-    // Walk the grid cells along the ray's bounding rectangle (cheap enough for our ray lengths).
-    if (maxDist <= 160) {
+    // Spatial hash: short rays scan their bounding rectangle; long rays walk only the grid cells the
+    // ray actually crosses (2D DDA), stopping once the next cell starts beyond the best hit.
+    if (maxDist <= 24) {
       this.forBoxesNear(Math.min(ox, ex), Math.min(oz, ez), Math.max(ox, ex), Math.max(oz, ez), testBox);
     } else {
-      for (const b of this.boxes) testBox(b);
+      this.dynamic.forEach((b, owner) => {
+        if (owner !== this.ignoreOwner) testBox(b);
+      });
+      const c = this.cellSize;
+      const stamp = ++this.queryStamp;
+      let cx = Math.floor(ox / c);
+      let cz = Math.floor(oz / c);
+      const stepX = dx > 0 ? 1 : -1;
+      const stepZ = dz > 0 ? 1 : -1;
+      const tDeltaX = Math.abs(ix) * c;
+      const tDeltaZ = Math.abs(iz) * c;
+      let tMaxX = Math.abs(dx) < 1e-9 ? Infinity : ((dx > 0 ? (cx + 1) * c : cx * c) - ox) * ix;
+      let tMaxZ = Math.abs(dz) < 1e-9 ? Infinity : ((dz > 0 ? (cz + 1) * c : cz * c) - oz) * iz;
+      let tEnter = 0;
+      for (let guard = 0; guard < 4096; guard++) {
+        if (tEnter > best || tEnter > maxDist) break;
+        const list = this.boxGrid.get(this.key(cx, cz));
+        if (list) {
+          for (const idx of list) {
+            if (this.boxStamps[idx] === stamp) continue;
+            this.boxStamps[idx] = stamp;
+            testBox(this.boxes[idx]);
+          }
+        }
+        if (tMaxX < tMaxZ) {
+          tEnter = tMaxX;
+          tMaxX += tDeltaX;
+          cx += stepX;
+        } else {
+          tEnter = tMaxZ;
+          tMaxZ += tDeltaZ;
+          cz += stepZ;
+        }
+      }
+    }
+
+    // Height-field terrain (mountains)
+    const tt = this.terrainRay(ox, oy, oz, dx, dy, dz, Math.min(best, maxDist));
+    if (tt !== null && tt < best) {
+      const px = ox + dx * tt;
+      const pz = oz + dz * tt;
+      const e = 0.5;
+      const nx = this.terrainHeight(px - e, pz) - this.terrainHeight(px + e, pz);
+      const nz = this.terrainHeight(px, pz - e) - this.terrainHeight(px, pz + e);
+      const nl = Math.hypot(nx, 2 * e, nz) || 1;
+      return { distance: tt, point: { x: px, y: oy + dy * tt, z: pz }, normal: { x: nx / nl, y: (2 * e) / nl, z: nz / nl }, boxId: 0 };
     }
 
     // Ground plane
@@ -493,6 +621,7 @@ export class CollisionWorld {
 
   /** Is a point inside any movement-blocking solid? */
   pointInSolid(x: number, y: number, z: number): boolean {
+    if (this.terrain && y < this.terrain.height(x, z) - 0.05) return true;
     let inside = false;
     this.forBoxesNear(x, z, x, z, (b) => {
       if (inside || !b.blocksMovement) return;

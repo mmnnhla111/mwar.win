@@ -18,13 +18,17 @@ import {
   COLLUSION_WINDOW_MS,
   WEAPON_MIN_SHOT_INTERVAL_MS,
   earnerAndBountyShares,
+  mapKindForMode,
+  LARGE_MAP_SPAWN_POINTS,
+  LARGE_MAP_SIZE,
+  SMALL_MAP_SIZE,
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
 import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState } from '../schema/GameState';
 
 interface RoomOptions {
-  mode?: 'mini_30' | 'standard_100';
+  mode?: 'mini_30' | 'standard_100' | 'fast_mini';
   gameId?: string;
   workerApiUrl?: string;
   internalSecret?: string;
@@ -172,6 +176,8 @@ export class ShootingRoom extends Room<GameState> {
   /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
   private pairKills = new Map<string, number[]>();
   private usedEntryIds = new Set<string>();
+  private largeMap = false;
+  private spawnPoints: Array<{ x: number; y: number; z: number }> = ARENA_SPAWN_POINTS;
   /** sessionId → medkit cast in progress (start time + position; any movement cancels). */
   private medkitCasts = new Map<string, { startedAt: number; x: number; z: number }>();
 
@@ -187,11 +193,15 @@ export class ShootingRoom extends Room<GameState> {
 
     const modeKey = options.mode === 'standard_100' ? 'STANDARD_100' : 'MINI_30';
     const spec = MAP_SPECS[modeKey] || MAP_SPECS.MINI_30;
+    // Map per mode: 100P Warzone + 30P Skirmish → 960 m large map; Fast & Mini → 240 m small map
+    const kind = mapKindForMode(options.mode ?? 'mini_30');
+    this.largeMap = kind === 'large';
+    this.spawnPoints = this.largeMap ? LARGE_MAP_SPAWN_POINTS : ARENA_SPAWN_POINTS;
 
     this.maxClients = spec.maxPlayers;
-    this.state.mapMode = spec.id;
-    this.state.mapSizeX = spec.sizeX;
-    this.state.mapSizeZ = spec.sizeZ;
+    this.state.mapMode = options.mode === 'fast_mini' ? 'fast_mini' : spec.id;
+    this.state.mapSizeX = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
+    this.state.mapSizeZ = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
     this.gameId = `game_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     // Never take the API URL or the shared secret from room options: those come from the first
     // client's joinOrCreate() call and would let a player redirect payouts or forge entry tokens.
@@ -287,7 +297,7 @@ export class ShootingRoom extends Room<GameState> {
       }
       if (m) (m as SessionMeta & { lastMoveAt?: number }).lastMoveAt = now;
       player.x = Math.max(-halfX, Math.min(halfX, data.x));
-      player.y = Math.max(-5, Math.min(80, data.y));
+      player.y = Math.max(-5, Math.min(this.largeMap ? 140 : 80, data.y));
       player.z = Math.max(-halfZ, Math.min(halfZ, data.z));
       if (typeof data.rotationY === 'number') {
         player.rotationY = data.rotationY;
@@ -782,9 +792,9 @@ export class ShootingRoom extends Room<GameState> {
 
   /** Spawn point far from every living combatant (and from where this player just died). */
   private pickRespawnPoint(self: PlayerState) {
-    let best = ARENA_SPAWN_POINTS[0];
+    let best = this.spawnPoints[0];
     let bestScore = -1;
-    for (const point of ARENA_SPAWN_POINTS) {
+    for (const point of this.spawnPoints) {
       let minDist = Infinity;
       this.state.players.forEach((other) => {
         if (other === self || other.isGhost || other.isSpectator) return;
@@ -1067,10 +1077,10 @@ export class ShootingRoom extends Room<GameState> {
     player.grenadesRemaining = 2;
 
     // Select a validated spawn point from ARENA_SPAWN_POINTS (far from existing players)
-    let bestPoint = ARENA_SPAWN_POINTS[0];
+    let bestPoint = this.spawnPoints[0];
     let maxDist = -1;
 
-    for (const point of ARENA_SPAWN_POINTS) {
+    for (const point of this.spawnPoints) {
       let minDistToOthers = Infinity;
       this.state.players.forEach((other) => {
         const d = Math.hypot(other.x - point.x, other.z - point.z);

@@ -257,7 +257,8 @@ function redDot(parent: THREE.Object3D, metal: THREE.Material, y: number, z: num
   parent.add(lens);
   const dotMat = new THREE.SpriteMaterial({ color: 0xff2a2a, depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
   const dot = new THREE.Sprite(dotMat);
-  dot.scale.setScalar(0.0027); // ~40 % smaller ADS dot
+  dot.scale.setScalar(0.0027);
+  dot.visible = false; // the HUD reticle (green ● / red ( ● )) is the aiming dot
   dot.position.set(0, y, z - 0.035);
   dot.renderOrder = 10;
   parent.add(dot);

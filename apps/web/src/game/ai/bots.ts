@@ -75,6 +75,9 @@ interface Bot {
   animT: number;
   /** Current target: -1 = player, otherwise another bot id (free-for-all). */
   targetId: number;
+  /** Remaining nav-node route for continuous roaming (patrol bots). */
+  route: number[];
+  stuckCount?: number;
 }
 
 
@@ -87,9 +90,10 @@ export interface BotManagerOptions {
   spawnPoints: THREE.Vector3[];
 }
 
-/** Overwatch bots favour the sniper; street patrols carry assault rifles / SMGs. */
+/** Overwatch bots are the snipers (rooftops / 2nd-floor windows); roaming bots carry M16 / AK-47 / Uzi. */
 function pickBotWeapon(overwatch: boolean): PrimaryId {
-  if (overwatch) return Math.random() < 0.6 ? 'sniper' : PRIMARY_IDS[Math.floor(Math.random() * PRIMARY_IDS.length)];
+  if (overwatch) return 'sniper';
+  void PRIMARY_IDS;
   const street: PrimaryId[] = ['ak47', 'm16', 'uzi', 'ak47', 'm16'];
   return street[Math.floor(Math.random() * street.length)];
 }
@@ -116,7 +120,7 @@ export class BotManager {
     scene.add(this.group);
     // Pick overwatch posts spread across the map (about a third of the squad)
     const postPool = posts.slice().sort(() => Math.random() - 0.5);
-    const overwatchCount = Math.min(postPool.length, Math.round(opts.count * 0.35));
+    const overwatchCount = Math.min(postPool.length, Math.round(opts.count * 0.2)); // ~1 in 5 bots is a sniper
     for (let i = 0; i < opts.count; i++) {
       const overwatch = i < overwatchCount;
       const weapon = pickBotWeapon(overwatch);
@@ -130,6 +134,7 @@ export class BotManager {
         id: i,
         name: botName,
         targetId: -1,
+        route: [],
         rig,
         weapon,
         crouchT: 0,
@@ -205,6 +210,7 @@ export class BotManager {
     bot.burstLeft = 0;
     bot.coverPoint = null;
     bot.crouchT = 0;
+    bot.route = [];
     bot.rig.root.visible = true;
     bot.rig.body.rotation.set(0, 0, 0);
     bot.yaw = Math.random() * Math.PI * 2;
@@ -231,7 +237,10 @@ export class BotManager {
       if (p) bot.post = p.clone();
     }
     if (!p) {
-      const pool = this.opts.spawnPoints.length ? this.opts.spawnPoints : this.nav.map((n) => n.p);
+      // Roaming bots spawn at street level (rooftop / upper-floor points are for snipers only),
+      // otherwise they start cut off from the street graph and stand still.
+      const ground = this.opts.spawnPoints.filter((q) => q.y - this.world.terrainHeight(q.x, q.z) < 0.5);
+      const pool = ground.length ? ground : this.opts.spawnPoints.length ? this.opts.spawnPoints : this.nav.map((n) => n.p);
       const shuffled = pool.slice().sort(() => Math.random() - 0.5);
       p = shuffled.find((c) => ok(c, 40, 35)) ?? shuffled.find((c) => ok(c, 20, 20)) ?? shuffled[0];
       if (bot.kind === 'overwatch') bot.post = null;
@@ -244,6 +253,48 @@ export class BotManager {
     bot.body.velY = 0;
     bot.body.onGround = true;
     bot.lastPos.set(p.x, p.y, p.z);
+  }
+
+  /** BFS route from `from` to a random waypoint 35–140 m away (roads, alleys, lots, building entrances). */
+  private planRoute(from: number): number[] {
+    const start = this.nav[from];
+    if (!start) return [];
+    const far = this.nav.filter((n) => {
+      const d = n.p.distanceTo(start.p);
+      return d > 35 && d < 140;
+    });
+    const goal = (far.length ? far : this.nav)[Math.floor(Math.random() * (far.length || this.nav.length))].id;
+    const prev = new Map<number, number>([[from, -1]]);
+    const queue = [from];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      if (cur === goal) break;
+      for (const nb of this.nav[cur].links) {
+        if (prev.has(nb)) continue;
+        prev.set(nb, cur);
+        queue.push(nb);
+      }
+    }
+    if (!prev.has(goal)) {
+      const links = start.links;
+      return links.length ? [links[Math.floor(Math.random() * links.length)]] : [];
+    }
+    const path: number[] = [];
+    for (let n = goal; n !== from && n !== -1; n = prev.get(n)!) path.unshift(n);
+    return path;
+  }
+
+  private nearestVisibleNode(bot: Bot): number {
+    let best = -1;
+    let bd = 50 * 50;
+    for (const n of this.nav) {
+      const d = (n.p.x - bot.body.x) ** 2 + (n.p.z - bot.body.z) ** 2;
+      if (d < 1 || d >= bd) continue;
+      if (!this.world.lineOfSight(bot.body.x, bot.body.y + 0.6, bot.body.z, n.p.x, n.p.y + 0.6, n.p.z)) continue;
+      bd = d;
+      best = n.id;
+    }
+    return best;
   }
 
   private nearestNode(p: THREE.Vector3) {
@@ -469,14 +520,15 @@ export class BotManager {
             bot.yaw += Math.sin(bot.animT * 0.4) * 0.5 * dt;
             this.moveToward(bot, bot.post.x, bot.post.z, 1.2, dt);
           } else {
+            // Continuous roaming: follow a route to a random far waypoint, then pick another one
             const target = this.nav[bot.targetNode]?.p;
             if (!target) break;
-            const d = this.moveToward(bot, target.x, target.z, 2.6, dt);
+            const d = this.moveToward(bot, target.x, target.z, 3.1, dt);
             this.faceToward(bot, target.x, target.z, 5, dt);
             if (d < 0.8) {
               bot.node = bot.targetNode;
-              const links = this.nav[bot.node].links;
-              bot.targetNode = links.length ? links[Math.floor(Math.random() * links.length)] : bot.node;
+              if (!bot.route.length) bot.route = this.planRoute(bot.node);
+              bot.targetNode = bot.route.shift() ?? bot.node;
             }
           }
           break;
@@ -503,7 +555,11 @@ export class BotManager {
           let mx = -fz * bot.strafeDir;
           let mz = fx * bot.strafeDir;
           if (bot.kind === 'patrol') {
-            if (dist > 32) {
+            if (!bot.hasLos) {
+              // Lost sight: push toward the last known position at an angle (flank)
+              mx = fx * 1.1 - fz * bot.strafeDir * 0.5;
+              mz = fz * 1.1 + fx * bot.strafeDir * 0.5;
+            } else if (dist > 32) {
               mx += fx * 1.2;
               mz += fz * 1.2;
             } else if (dist < 8) {
@@ -571,6 +627,7 @@ export class BotManager {
             if (bot.kind === 'patrol') {
               bot.node = this.nearestNode(tmpA.set(bot.body.x, 0, bot.body.z));
               bot.targetNode = bot.node;
+              bot.route = [];
             }
           }
           break;
@@ -584,8 +641,20 @@ export class BotManager {
         bot.stuckTimer = moved < 0.2 * dt ? bot.stuckTimer + dt : 0;
         if (bot.stuckTimer > 1.4) {
           bot.stuckTimer = 0;
-          const links = this.nav[bot.node]?.links ?? [];
-          bot.targetNode = links.length ? links[Math.floor(Math.random() * links.length)] : this.nearestNode(tmpA.set(bot.body.x, 0, bot.body.z));
+          bot.stuckCount = (bot.stuckCount ?? 0) + 1;
+          bot.route = [];
+          if (bot.stuckCount >= 2) {
+            // Repeatedly blocked: re-anchor on the nearest waypoint it can actually walk to
+            bot.stuckCount = 0;
+            const vis = this.nearestVisibleNode(bot);
+            if (vis >= 0) {
+              bot.node = vis;
+              bot.targetNode = vis;
+            }
+          } else {
+            const links = this.nav[bot.node]?.links ?? [];
+            bot.targetNode = links.length ? links[Math.floor(Math.random() * links.length)] : this.nearestNode(tmpA.set(bot.body.x, 0, bot.body.z));
+          }
         }
       }
       // Keep inside the arena
@@ -593,7 +662,10 @@ export class BotManager {
       // Gravity when not moving this frame
       if (moved === 0) this.world.moveBody(bot.body, 0, 0, dt);
       // Crouch behind cover once there
-      const wantCrouch = bot.state === 'cover' && !!bot.coverPoint && Math.hypot(bot.coverPoint.x - bot.body.x, bot.coverPoint.z - bot.body.z) < 1 ? 1 : 0;
+      const inCover = bot.state === 'cover' && !!bot.coverPoint && Math.hypot(bot.coverPoint.x - bot.body.x, bot.coverPoint.z - bot.body.z) < 1;
+      // Snipers stay low on their rooftop / window post
+      const atPost = bot.kind === 'overwatch' && !!bot.post && Math.hypot(bot.post.x - bot.body.x, bot.post.z - bot.body.z) < 1.5;
+      const wantCrouch = inCover || atPost ? 1 : 0;
       bot.crouchT = THREE.MathUtils.damp(bot.crouchT, wantCrouch, 6, dt);
       this.syncRig(bot, bot.speed, aiming);
     }

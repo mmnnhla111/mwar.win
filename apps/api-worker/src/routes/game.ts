@@ -35,7 +35,7 @@ async function signEntryToken(secret: string, payload: Record<string, unknown>) 
 gameRouter.post('/enter', authMiddleware, async (c) => {
   const user = c.get('user');
   const body = await c.req.json().catch(() => ({}));
-  const mode = body?.mode === 'standard_100' ? 'standard_100' : 'mini_30';
+  const mode = body?.mode === 'standard_100' ? 'standard_100' : body?.mode === 'fast_mini' ? 'fast_mini' : 'mini_30';
   const now = Math.floor(Date.now() / 1000);
   const res = await c.env.DB
     .prepare(

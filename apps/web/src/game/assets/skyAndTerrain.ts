@@ -252,16 +252,15 @@ export function addTree(kit: Kit, x: number, z: number, kind: 'pine' | 'broadlea
   kit.solid(f, 'foliage', 0, 0, 2.6 * scale, 0, 2.6 * scale, 3.2 * scale, 2.6 * scale, { visual: false, blocksMovement: false, walkable: false });
 }
 
-function createPerimeterForest(parent: THREE.Object3D) {
+function createPerimeterForest(parent: THREE.Object3D, playHalf = PLAY_HALF, mapHalf = MAP_HALF, step = 5.2) {
   const rand = seeded(2024);
   const pine = pineGeometry();
   const broad = broadleafGeometry();
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  const inner = PLAY_HALF + 2;
-  const outer = MAP_HALF + 70;
+  const inner = playHalf + 2;
+  const outer = mapHalf + 70;
   const spots: { x: number; z: number; s: number; r: number; kind: number }[] = [];
   // Poisson-ish jittered grid in the square ring
-  const step = 5.2;
   for (let x = -outer; x <= outer; x += step) {
     for (let z = -outer; z <= outer; z += step) {
       const jx = x + (rand() - 0.5) * step * 0.9;
@@ -299,7 +298,7 @@ function createPerimeterForest(parent: THREE.Object3D) {
   const rockGeo = new THREE.DodecahedronGeometry(1, 0);
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8d91, roughness: 1, flatShading: true, map: textureFactories.rock() });
   const rocks: THREE.Matrix4[] = [];
-  const edge = PLAY_HALF + 3.5;
+  const edge = playHalf + 3.5;
   for (let side = 0; side < 4; side++) {
     for (let t = -edge; t <= edge; t += 3.2) {
       if (rand() < 0.25) continue;
@@ -469,10 +468,14 @@ export function buildSkyAndTerrain(
   scene: THREE.Scene,
   kit: Kit,
   lib: MaterialLibrary,
-  plazas: { x: number; z: number; w: number; d: number }[]
+  plazas: { x: number; z: number; w: number; d: number }[],
+  opts: { playHalf?: number; mapHalf?: number; ground?: boolean; ringScale?: number; fogNear?: number; fogFar?: number; forestStep?: number } = {}
 ): SkyAndTerrain {
+  const playHalf = opts.playHalf ?? PLAY_HALF;
+  const mapHalf = opts.mapHalf ?? MAP_HALF;
+  const ringScale = opts.ringScale ?? 1;
   scene.background = HORIZON.clone();
-  scene.fog = new THREE.Fog(HORIZON.clone().lerp(new THREE.Color(0xb8c9d6), 0.3), 140, 1100);
+  scene.fog = new THREE.Fog(HORIZON.clone().lerp(new THREE.Color(0xb8c9d6), 0.3), opts.fogNear ?? 140, opts.fogFar ?? 1100);
 
   const sky = createSkyDome();
   scene.add(sky);
@@ -483,9 +486,9 @@ export function buildSkyAndTerrain(
 
   const mountains = new THREE.Group();
   // Pre-hazed colours (far = bluer/lighter) instead of fog so silhouettes stay crisp.
-  mountains.add(createMountainRing(980, 70, 190, 11, new THREE.Color(0x9fb4c9), new THREE.Color(0xb7c8d9), true));
-  mountains.add(createMountainRing(720, 45, 130, 23, new THREE.Color(0x7d9a9a), new THREE.Color(0x93aeb0), true));
-  mountains.add(createMountainRing(470, 25, 80, 37, new THREE.Color(0x4d7356), new THREE.Color(0x6b8f67), false));
+  mountains.add(createMountainRing(980 * ringScale, 70, 190, 11, new THREE.Color(0x9fb4c9), new THREE.Color(0xb7c8d9), true));
+  mountains.add(createMountainRing(720 * ringScale, 45, 130, 23, new THREE.Color(0x7d9a9a), new THREE.Color(0x93aeb0), true));
+  mountains.add(createMountainRing(470 * ringScale, 25, 80, 37, new THREE.Color(0x4d7356), new THREE.Color(0x6b8f67), false));
   scene.add(mountains);
 
   const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x4a5d3a, 0.85);
@@ -506,8 +509,8 @@ export function buildSkyAndTerrain(
   scene.add(sun);
   scene.add(sun.target);
 
-  const forest = createPerimeterForest(scene);
-  const groundDisposables = createGround(scene, kit, lib, plazas);
+  const forest = createPerimeterForest(scene, playHalf, mapHalf, opts.forestStep ?? 5.2);
+  const groundDisposables = opts.ground === false ? [] : createGround(scene, kit, lib, plazas);
 
   const snap = 4; // snap shadow frustum to reduce shimmering
   return {

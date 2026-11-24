@@ -68,6 +68,13 @@ function prepareGeometry(geo: THREE.BufferGeometry, key: MaterialKey, color: THR
 export class StaticBatcher {
   private buckets = new Map<string, BatchItem[]>();
 
+  /**
+   * @param chunkSize When > 0, geometry is also bucketed by its XZ grid chunk (metres) so every
+   *   merged mesh covers one chunk: frustum culling and distance culling then work per chunk
+   *   (used by the 960 m large map).
+   */
+  constructor(private readonly chunkSize = 0) {}
+
   add(
     key: MaterialKey,
     color: THREE.ColorRepresentation,
@@ -76,7 +83,13 @@ export class StaticBatcher {
   ) {
     const castShadow = opts.castShadow ?? !(key === 'glass' || key === 'emissive' || key === 'asphalt' || key === 'grass' || key === 'sidewalk');
     const g = prepareGeometry(geometry, key, color, opts.worldUv ?? true, opts.keepColors);
-    const bucketKey = `${key}|${castShadow ? 1 : 0}`;
+    let chunk = '';
+    if (this.chunkSize > 0) {
+      g.computeBoundingBox();
+      const bb = g.boundingBox!;
+      chunk = `|${Math.floor((bb.min.x + bb.max.x) / 2 / this.chunkSize)},${Math.floor((bb.min.z + bb.max.z) / 2 / this.chunkSize)}`;
+    }
+    const bucketKey = `${key}|${castShadow ? 1 : 0}${chunk}`;
     let list = this.buckets.get(bucketKey);
     if (!list) this.buckets.set(bucketKey, (list = []));
     list.push({ geometry: g, castShadow });
@@ -104,6 +117,7 @@ export class StaticBatcher {
         merged.computeBoundingSphere();
         merged.computeBoundingBox();
         const mesh = new THREE.Mesh(merged, lib.get(key as MaterialKey));
+        if (this.chunkSize > 0) mesh.userData.chunked = true;
         mesh.castShadow = shadow === '1';
         mesh.receiveShadow = key !== 'glass' && key !== 'emissive';
         mesh.matrixAutoUpdate = false;
@@ -408,8 +422,10 @@ export class Kit {
       y1: f.baseY + (lowIsMin ? y1 : y0),
     });
 
-    // Side rails: block stepping off the open side of the flight (and guard the stair well).
-    const railH = 1.0;
+    // Side rails: a LOW rail (0.8 m) that follows the slope — it stops accidental falls but can be
+    // jumped over (jump clears ~1.3 m) to drop down quickly. The upper floor gets a matching low
+    // guard along the well, so the stairwell can be vaulted into from the side.
+    const railH = 0.8;
     for (const side of opts.rails ?? []) {
       const s = side === 'right' ? 1 : -1;
       const ox = x + (px * s * width) / 2;
@@ -424,8 +440,30 @@ export class Kit {
       const len = run - startAlong;
       const w = ax !== 0 ? len : 0.08;
       const d = ax !== 0 ? 0.08 : len;
-      // Collider spans from the bottom to rail height above the top tread.
-      this.solid(f, 'metal', 0x52525b, cx, y0, cz, w, rise + railH, d, { visual: false, walkable: false, blocksBullets: false });
+      // Collider follows the slope in 4 stepped pieces (never a full-height invisible wall)
+      const pieces = 4;
+      for (let k = 0; k < pieces; k++) {
+        const s0 = startAlong + (len * k) / pieces;
+        const s1 = startAlong + (len * (k + 1)) / pieces;
+        const top = (rise * s1) / run + railH;
+        const pcx = ox + ax * ((s0 + s1) / 2);
+        const pcz = oz + az * ((s0 + s1) / 2);
+        const pw = ax !== 0 ? s1 - s0 : 0.08;
+        const pd = ax !== 0 ? 0.08 : s1 - s0;
+        this.solid(f, 'metal', 0x52525b, pcx, y0, pcz, pw, top, pd, { visual: false, walkable: false, blocksBullets: false });
+      }
+      // Low guard on the upper floor along the well edge (vaultable)
+      const gcx = ox + ax * (run / 2);
+      const gcz = oz + az * (run / 2);
+      const gw = ax !== 0 ? run : 0.08;
+      const gd = ax !== 0 ? 0.08 : run;
+      this.solid(f, 'metal', 0x52525b, gcx, y1, gcz, gw, railH, gd, { visual: false, walkable: false, blocksBullets: false });
+      this.deco(f, 'metal', 0x27272a, gcx, y1 + railH - 0.05, gcz, ax !== 0 ? run : 0.07, 0.05, ax !== 0 ? 0.07 : run, false);
+      const gPosts = Math.max(2, Math.round(run / 1.2));
+      for (let i = 0; i <= gPosts; i++) {
+        const along = (run * i) / gPosts;
+        this.deco(f, 'metal', 0x3f3f46, ox + ax * along, y1, oz + az * along, 0.05, railH, 0.05, false);
+      }
       // Visual: slanted handrail + posts
       const posts = Math.max(2, Math.round(len / 1.2));
       for (let i = 0; i <= posts; i++) {

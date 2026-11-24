@@ -11,6 +11,8 @@ import { CollisionWorld, MoveBody } from '../../game/physics/collision';
 import { MaterialLibrary } from '../../game/assets/materials';
 import { buildArena } from '../../game/assets/mapLayout';
 import { PLAY_HALF } from '../../game/assets/skyAndTerrain';
+import { buildLargeArena } from '../../game/maps/largeMap';
+import { LARGE_PLAY_HALF, LARGE_TERRAIN_BOUNDS, largeMapTerrainHeight, mapKindForMode } from '@mwar/shared';
 import { animateBountyChest, createBountyChest } from '../../game/assets/props';
 import { Viewmodel } from '../../game/viewmodel';
 import { CombatEffects } from '../../game/effects';
@@ -56,7 +58,6 @@ import {
   ExitFullscreenIcon,
   GrenadeIcon,
   JumpIcon,
-  MagnetIcon,
   ProneIcon,
   ReloadIcon,
   ScopeIcon,
@@ -85,14 +86,23 @@ const LEAN_DISTANCE = 0.65; // metres sideways along the camera's horizontal rig
 const LEAN_ROLL = THREE.MathUtils.degToRad(12);
 const LEAN_WALL_MARGIN = 0.28;
 const HIP_FOV = 75;
-// Soft magnetic aim-assist (Free Fire style): acquire inside ~7°, break away beyond ~13°
-const AIM_ASSIST_ACQUIRE = THREE.MathUtils.degToRad(7);
-const AIM_ASSIST_BREAK = THREE.MathUtils.degToRad(13);
-const AIM_ASSIST_STORAGE_KEY = 'mwar_aim_assist';
+// Narrow aim-assist: only when genuinely aiming at a visible enemy — acquire inside ~2.2°,
+// break away beyond ~4.5°, max 65 m hip-fire / 130 m aiming down sights, strict line of sight
+// (walls, terrain and foliage block it). The same lock drives the green ● / red ( ● ) reticle.
+const AIM_ASSIST_ACQUIRE = THREE.MathUtils.degToRad(1.8);
+const AIM_ASSIST_BREAK = THREE.MathUtils.degToRad(3.5);
+/** The crosshair must rest on the target this long before it locks (a mouse / thumb sweep never locks). */
+const AIM_ASSIST_DWELL = 0.15;
+const AIM_ASSIST_HIP_RANGE = 65;
+const AIM_ASSIST_ADS_RANGE = 130;
+// PC (mouse): slightly tighter than touch — the crosshair must be on the target (≈1.5°), lock drops past ≈3°
+const AIM_ASSIST_ACQUIRE_PC = THREE.MathUtils.degToRad(1.5);
+const AIM_ASSIST_BREAK_PC = THREE.MathUtils.degToRad(3);
+// v2: aim-assist is now on by default on PC too (very narrow, soft, never a hard lock)
 const RESPAWN_SECONDS = 3;
 const LOADOUT_STORAGE_KEY = 'mwar_fps_loadout_v2';
 const FALL_SAFE_SPEED = 13; // m/s landing speed before fall damage (~3.8 m drop)
-const BOT_COUNT = 10; // 8–12 bots
+const BOT_COUNT = 20; // free-for-all solo bots
 const BOT_ACCURACY = 0.7; // 70 % skill
 
 type ArenaMode = 'mini_30' | 'standard_100' | 'fast_mini' | 'practice' | 'spectator';
@@ -270,7 +280,7 @@ export default function GamePage() {
   const fireTouchIdRef = useRef<number | null>(null);
   const lastFireTouchRef = useRef<{ x: number; y: number } | null>(null);
   const aimAssistRef = useRef(false);
-  const [aimAssist, setAimAssist] = useState(false);
+  const [targetLocked, setTargetLocked] = useState(false);
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const lookRef = useRef({ yaw: 0, pitch: 0, dx: 0, dy: 0 });
   const togglePropRef = useRef<() => void>(() => {});
@@ -389,15 +399,8 @@ export default function GamePage() {
         navigator.maxTouchPoints > 0 ||
         (window.matchMedia && window.matchMedia('(pointer: coarse)').matches));
     setIsMobile(isTouch);
-    let aa = isTouch;
-    try {
-      const saved = localStorage.getItem(AIM_ASSIST_STORAGE_KEY);
-      if (saved === '1' || saved === '0') aa = saved === '1';
-    } catch {
-      /* ignore */
-    }
-    aimAssistRef.current = aa;
-    setAimAssist(aa);
+    // Aim-assist is always on (touch and PC) — narrow, soft, never a hard lock; no toggle
+    aimAssistRef.current = true;
     isMobileRef.current = isTouch;
     // Phones held sideways get a compact, thumb-reach control layout
     const onOrient = () => setCompactLandscape(isTouch && window.innerWidth > window.innerHeight && window.innerHeight < 560);
@@ -623,9 +626,20 @@ export default function GamePage() {
     const camera = new THREE.PerspectiveCamera(HIP_FOV, width / height, 0.05, 2200);
     scene.add(camera);
 
-    const world = new CollisionWorld({ halfSize: PLAY_HALF, stepHeight: 0.45, gravity: -22 });
+    // Map per mode: Warzone / 30P Skirmish / Spectator → 960 m large map; Fast & Mini / Solo Bot → 240 m small map
+    const largeMap = mapKindForMode(arenaMode) === 'large';
+    const playHalf = largeMap ? LARGE_PLAY_HALF : PLAY_HALF;
+    const world = new CollisionWorld(
+      largeMap
+        ? { halfSize: LARGE_PLAY_HALF, stepHeight: 0.45, gravity: -22, terrain: { height: largeMapTerrainHeight, bounds: LARGE_TERRAIN_BOUNDS } }
+        : { halfSize: PLAY_HALF, stepHeight: 0.45, gravity: -22 }
+    );
     const lib = new MaterialLibrary();
-    const layout = buildArena(scene, world, lib);
+    const layout = largeMap ? buildLargeArena(scene, world, lib) : buildArena(scene, world, lib);
+    // Per-chunk distance culling for the large map (beyond the fog nothing is drawn)
+    const chunkedMeshes = layout.staticMeshes.filter((m) => m.userData.chunked);
+    const CHUNK_CULL_DIST = 700;
+    let cullTimer = 0;
     const effects = new CombatEffects(scene);
     const viewmodel = new Viewmodel(width / height);
     setLoadingWorld(false);
@@ -653,11 +667,11 @@ export default function GamePage() {
       return shuffled.find((c) => score(c, true)) ?? shuffled.find((c) => score(c, false)) ?? shuffled[0];
     };
     const spawn = layout.playerSpawns[Math.floor(Math.random() * layout.playerSpawns.length)];
-    const body: MoveBody = { x: spawn.x, y: 0, z: spawn.z, velY: 0, onGround: true, radius: 0.36, height: 1.78, owner: 'local' };
+    const body: MoveBody = { x: spawn.x, y: spawn.y, z: spawn.z, velY: 0, onGround: true, radius: 0.36, height: 1.78, owner: 'local' };
     const look = lookRef.current;
     look.yaw = Math.atan2(spawn.x, spawn.z); // face the map centre
     look.pitch = 0;
-    if (isGhostSpectator) camera.position.set(0, 18, 40);
+    if (isGhostSpectator) camera.position.set(largeMap ? -230 : 0, 18, largeMap ? -230 : 40);
 
     const player = {
       hp: 100,
@@ -1112,7 +1126,7 @@ export default function GamePage() {
           soundFX.playEnemyShot(from.distanceTo(camera.position));
           addBlip(from.x, from.z);
         },
-      }, { count: BOT_COUNT, accuracy: BOT_ACCURACY, playerHalf: PLAY_HALF, spawnPoints: layout.spawnPoints });
+      }, { count: BOT_COUNT, accuracy: BOT_ACCURACY, playerHalf: playHalf, spawnPoints: layout.spawnPoints });
       setConnectionStatus(reason === 'practice' ? 'solo_bots' : 'offline_practice');
       feed(`🤖 ${BOT_COUNT} AI bots deployed (70% skill)`);
       feed('⚔️ FREE-FOR-ALL • bots fight each other too • 0 EC / 0 Micro-USD per kill');
@@ -1179,7 +1193,8 @@ export default function GamePage() {
         } catch {
           // Guest mode
         }
-        const roomName = arenaMode === 'standard_100' ? 'standard_100' : 'mini_30';
+        // Room per mode: standard_100 / mini_30 (large map), fast_mini (small map); spectators watch mini_30
+        const roomName = arenaMode === 'standard_100' ? 'standard_100' : arenaMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
         // Paid arena: spend 1 EC for a signed entry ticket. Without one you still play, unpaid.
         let entryToken: string | undefined;
         // Spectators never spend EC and never enter a paid seat
@@ -1843,6 +1858,14 @@ export default function GamePage() {
     const onMouseMove = (e: MouseEvent) => {
       const dx = e.movementX || 0;
       const dy = e.movementY || 0;
+      // Browser pointer-lock bug: a single bogus event can report a huge jump (hundreds of px), which
+      // flips the view backwards. Drop such spikes when they are far above the recent motion.
+      const mag = Math.max(Math.abs(dx), Math.abs(dy));
+      if (mag > 120 && mag > lastMouseAbs * 6 + 40) {
+        lastMouseAbs = Math.max(lastMouseAbs * 0.5, 1);
+        return;
+      }
+      lastMouseAbs = lastMouseAbs * 0.6 + mag * 0.4;
       if (propMenuOpenRef.current) {
         // Virtual cursor for the radial wheel while the pointer is locked
         if (!isPointerLockedRef.current) return;
@@ -1962,6 +1985,11 @@ export default function GamePage() {
     const tmpFwd = new THREE.Vector3();
     const tmpDir = new THREE.Vector3();
     let aimLock: string | null = null;
+    let reticleLocked = false;
+    const debugAim = new URLSearchParams(window.location.search).has('debug');
+    let dwellId: string | null = null;
+    let dwellT = 0;
+    let lastMouseAbs = 0;
     let aimCooldown = 0;
     let minimapTimer = 0;
 
@@ -2045,8 +2073,8 @@ export default function GamePage() {
         if (keys.Space) camera.position.y += 8 * dt;
         if (keys.ControlLeft || keys.KeyZ) camera.position.y -= 8 * dt;
         camera.position.y = THREE.MathUtils.clamp(camera.position.y, 1, 80);
-        camera.position.x = THREE.MathUtils.clamp(camera.position.x, -PLAY_HALF, PLAY_HALF);
-        camera.position.z = THREE.MathUtils.clamp(camera.position.z, -PLAY_HALF, PLAY_HALF);
+        camera.position.x = THREE.MathUtils.clamp(camera.position.x, -playHalf, playHalf);
+        camera.position.z = THREE.MathUtils.clamp(camera.position.z, -playHalf, playHalf);
         camera.quaternion.setFromEuler(camEuler.set(look.pitch, look.yaw, 0, 'YXZ'));
       } else {
         let speed = 6.2 * (player.isProp ? 1 : heldDef.moveMult);
@@ -2121,7 +2149,9 @@ export default function GamePage() {
       const roll = -player.leanT * LEAN_ROLL;
 
       // --- Soft magnetic aim-assist: pull gently toward the nearest visible enemy's upper torso
-      if (aimAssistRef.current && player.alive && !player.isProp && deployedRef.current && !isGhostSpectator) {
+      // Lock detection always runs (it drives the reticle colour); the camera pull only when assist is on.
+      let lockedNow = false;
+      if (player.alive && !player.isProp && deployedRef.current && !isGhostSpectator) {
         const userSwipe = Math.hypot(look.dx, look.dy);
         if (userSwipe > 28) {
           // A forceful swipe breaks the lock and suppresses re-acquiring for a moment
@@ -2146,40 +2176,60 @@ export default function GamePage() {
         const angleTo = (pt: THREE.Vector3) => {
           const d = tmpDir.copy(pt).sub(eye);
           const dist = d.length();
-          if (dist < 0.5 || dist > 120) return Infinity;
+          if (dist < 0.5 || dist > (isAdsActiveRef.current ? AIM_ASSIST_ADS_RANGE : AIM_ASSIST_HIP_RANGE)) return Infinity;
           return fwdLook.angleTo(d.divideScalar(dist));
         };
         const visible = (pt: THREE.Vector3) => world.lineOfSight(eye.x, eye.y, eye.z, pt.x, pt.y, pt.z);
         let target: THREE.Vector3 | null = null;
         if (aimLock) {
           const c = candidates.find((k) => k.id === aimLock);
-          if (c && angleTo(c.p) < AIM_ASSIST_BREAK && visible(c.p)) target = c.p;
+          if (c && angleTo(c.p) < (isMobileRef.current ? AIM_ASSIST_BREAK : AIM_ASSIST_BREAK_PC) && visible(c.p)) target = c.p;
           else aimLock = null;
         }
-        if (!target && aimCooldown <= 0) {
-          let best = AIM_ASSIST_ACQUIRE;
+        // Acquire only when the crosshair rests on a visible enemy (not mid-sweep) for AIM_ASSIST_DWELL
+        if (!target && aimCooldown <= 0 && userSwipe < (isMobileRef.current ? 9 : 6)) {
+          let best = isMobileRef.current ? AIM_ASSIST_ACQUIRE : AIM_ASSIST_ACQUIRE_PC;
+          let pick: { id: string; p: THREE.Vector3 } | null = null;
           for (const c of candidates) {
             const a = angleTo(c.p);
             if (a < best && visible(c.p)) {
               best = a;
-              target = c.p;
-              aimLock = c.id;
+              pick = c;
             }
           }
+          if (pick && pick.id === dwellId) dwellT += dt;
+          else {
+            dwellId = pick ? pick.id : null;
+            dwellT = 0;
+          }
+          if (pick && dwellT >= AIM_ASSIST_DWELL) {
+            target = pick.p;
+            aimLock = pick.id;
+          }
+        } else if (!target) {
+          dwellId = null;
+          dwellT = 0;
         }
-        if (target) {
+        if (debugAim) (window as any).__aimDbg = { swipe: userSwipe, cd: aimCooldown, dwellId, dwellT, n: candidates.length, angles: candidates.slice(0, 3).map((c) => angleTo(c.p)), lock: aimLock };
+        lockedNow = !!target;
+        if (target && aimAssistRef.current) {
           const d = tmpDir.copy(target).sub(eye).normalize();
           const wantYaw = Math.atan2(-d.x, -d.z);
           const wantPitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1));
           let dYaw = wantYaw - look.yaw;
           dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw));
           // Gentle: stronger while aiming down sights or firing, never a hard snap
-          const strength = (isAdsActiveRef.current ? 7 : 4.5) * (firingRef.current ? 1.3 : 1);
+          // Soft pull (never a snap); weaker on PC so the mouse stays fully in control
+          const strength = (isAdsActiveRef.current ? 7 : 4.5) * (firingRef.current ? 1.3 : 1) * (isMobileRef.current ? 1 : 0.45);
           const k = 1 - Math.exp(-strength * dt);
           look.yaw += dYaw * k;
           look.pitch = THREE.MathUtils.clamp(look.pitch + (wantPitch - look.pitch) * k, -1.45, 1.45);
         }
       } else aimLock = null;
+      if (lockedNow !== reticleLocked) {
+        reticleLocked = lockedNow;
+        setTargetLocked(lockedNow);
+      }
 
       // --- Recoil recovery
       player.recoilPitch = THREE.MathUtils.damp(player.recoilPitch, 0, player.recoilRecover, dt);
@@ -2348,6 +2398,15 @@ export default function GamePage() {
       chestMeshes.forEach((g) => animateBountyChest(g, now));
       effects.update(dt);
       layout.terrain.update(dt, camera);
+      cullTimer -= dt;
+      if (chunkedMeshes.length && cullTimer <= 0) {
+        cullTimer = 0.25;
+        for (const m of chunkedMeshes) {
+          const sph = (m as unknown as THREE.InstancedMesh).isInstancedMesh ? (m as unknown as THREE.InstancedMesh).boundingSphere : m.geometry.boundingSphere;
+          if (!sph) continue;
+          m.visible = camera.position.distanceTo(sph.center) - sph.radius < CHUNK_CULL_DIST;
+        }
+      }
 
       // --- Network (20 Hz)
       netTimer -= dt;
@@ -2504,20 +2563,10 @@ export default function GamePage() {
     firingRef.current = false;
     setVideoAd(f);
   };
-  const adsDot = isAdsActive && !hudStats.isProp && hudStats.alive && (hudStats.weaponId === 'ak47' || hudStats.weaponId === 'uzi');
   // Bottom banner ad: only in Solo Bot / Practice and Ghost Spectator (never in paid PvP)
   const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld && (deployed || isGhostSpectator);
   const liftForAd = showAdBanner && isMobile && !compactLandscape; // portrait phones: raise thumbs above the ad
-  const toggleAimAssist = () => {
-    const next = !aimAssistRef.current;
-    aimAssistRef.current = next;
-    setAimAssist(next);
-    try {
-      localStorage.setItem(AIM_ASSIST_STORAGE_KEY, next ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
-  };
+
   // FIRE button = fire + drag-to-aim with the same finger (independent of the joystick finger)
   const onFireTouchStart = (e: React.TouchEvent) => {
     e.stopPropagation();
@@ -2618,19 +2667,33 @@ export default function GamePage() {
         />
       )}
 
-      {/* Crosshair (hidden while aiming: the rifle's red-dot sight is centred instead) */}
+      {/* Reticle: green ● by default; red ( ● ) with lock brackets while the narrow aim-assist lock is on a visible enemy */}
       {!isGhostSpectator && !hudStats.isProp && hudStats.alive && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-20">
           {!isAdsActive && (
-            <div className="relative w-8 h-8">
-              <div className="absolute left-1/2 top-0 -translate-x-1/2 w-0.5 h-2.5 bg-white/90 shadow" />
-              <div className="absolute left-1/2 bottom-0 -translate-x-1/2 w-0.5 h-2.5 bg-white/90 shadow" />
-              <div className="absolute top-1/2 left-0 -translate-y-1/2 h-0.5 w-2.5 bg-white/90 shadow" />
-              <div className="absolute top-1/2 right-0 -translate-y-1/2 h-0.5 w-2.5 bg-white/90 shadow" />
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-rose-500" />
+            <div className="absolute w-8 h-8 opacity-70">
+              <div className="absolute left-1/2 top-0 -translate-x-1/2 w-0.5 h-2 bg-white/80" />
+              <div className="absolute left-1/2 bottom-0 -translate-x-1/2 w-0.5 h-2 bg-white/80" />
+              <div className="absolute top-1/2 left-0 -translate-y-1/2 h-0.5 w-2 bg-white/80" />
+              <div className="absolute top-1/2 right-0 -translate-y-1/2 h-0.5 w-2 bg-white/80" />
             </div>
           )}
-          {adsDot && <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[3px] h-[3px] rounded-full bg-rose-500 shadow-[0_0_3px_rgba(244,63,94,0.9)]" />}
+          <div
+            data-reticle={targetLocked ? 'locked' : 'free'}
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full"
+            style={{
+              width: isAdsActive ? 4 : 5,
+              height: isAdsActive ? 4 : 5,
+              background: targetLocked ? '#ef4444' : '#22c55e',
+              boxShadow: `0 0 4px ${targetLocked ? 'rgba(239,68,68,0.95)' : 'rgba(34,197,94,0.9)'}`,
+            }}
+          />
+          {targetLocked && (
+            <svg className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" width={isAdsActive ? 26 : 30} height={isAdsActive ? 26 : 30} viewBox="0 0 30 30" aria-hidden="true">
+              <path d="M10 5 A11 11 0 0 0 10 25" fill="none" stroke="#ef4444" strokeWidth="2.2" strokeLinecap="round" />
+              <path d="M20 5 A11 11 0 0 1 20 25" fill="none" stroke="#ef4444" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+          )}
           {hitMarker && (
             <div className={`absolute w-7 h-7 ${hitMarker.kill ? 'text-rose-500' : hitMarker.head ? 'text-amber-300' : 'text-white'}`}>
               <div className="absolute left-1/2 top-1/2 w-6 h-0.5 bg-current -translate-x-1/2 -translate-y-1/2 rotate-45" />
@@ -2835,23 +2898,6 @@ export default function GamePage() {
             >
               {isMuted ? <SpeakerOffIcon /> : <SpeakerOnIcon />}
             </button>
-            {deployed && !isGhostSpectator && (
-              <button
-                onClick={toggleAimAssist}
-                onTouchStart={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  toggleAimAssist();
-                }}
-                className={`w-9 h-9 rounded-xl border flex items-center justify-center transition shadow-md active:scale-95 ${
-                  aimAssist ? 'bg-sky-500/80 border-sky-300 text-white' : 'bg-slate-900/90 border-slate-700 text-slate-400'
-                }`}
-                title={aimAssist ? 'Aim assist ON' : 'Aim assist OFF'}
-                aria-label="Toggle aim assist"
-              >
-                <MagnetIcon />
-              </button>
-            )}
           </div>
         </div>
       </div>

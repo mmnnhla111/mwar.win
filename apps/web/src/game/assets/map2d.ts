@@ -19,12 +19,30 @@ export interface Map2DTree {
   r: number;
 }
 
+export interface Map2DRoad {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  dirt?: boolean;
+}
+
 export const MAP2D = {
   rects: [] as Map2DRect[],
   trees: [] as Map2DTree[],
+  /** Explicit road rectangles (large map). Empty → the minimap draws the small map's 3×3 grid. */
+  roads: [] as Map2DRoad[],
+  hills: [] as { x: number; z: number; r: number; peak: number }[],
+  /** Playable / full half-size overrides (large map); 0 = small map defaults. */
+  playHalf: 0,
+  mapHalf: 0,
   reset() {
     this.rects.length = 0;
     this.trees.length = 0;
+    this.roads.length = 0;
+    this.hills.length = 0;
+    this.playHalf = 0;
+    this.mapHalf = 0;
   },
 };
 

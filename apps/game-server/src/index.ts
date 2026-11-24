@@ -36,7 +36,7 @@ app.get('/health', (_req, res) => {
     status: 'ok',
     service: 'MWAR Authoritative Game Server (Colyseus v0.15+)',
     tickRateHz: 20,
-    roomsAvailable: ['mini_30', 'standard_100'],
+    roomsAvailable: ['mini_30', 'standard_100', 'fast_mini'],
     timestamp: new Date().toISOString(),
   });
 });
@@ -58,8 +58,13 @@ gameServer
   .define('standard_100', ShootingRoom, { mode: 'standard_100' })
   .enableRealtimeListing();
 
+// Fast & Mini Mode keeps the compact 240 m map (30P Skirmish + 100P Warzone use the 960 m map)
+gameServer
+  .define('fast_mini', ShootingRoom, { mode: 'fast_mini' })
+  .enableRealtimeListing();
+
 httpServer.listen(port, host, () => {
   console.log(`[Game Server] Colyseus authoritative shooter server listening on ws://${host}:${port}`);
   console.log(`[Game Server] Healthcheck: http://${host}:${port}/health`);
-  console.log(`[Game Server] Defined Rooms: 'mini_30' (30-player, 250m) and 'standard_100' (100-player, 600m)`);
+  console.log(`[Game Server] Defined Rooms: 'mini_30' (30P, 960m map), 'standard_100' (100P, 960m map), 'fast_mini' (240m map)`);
 });
