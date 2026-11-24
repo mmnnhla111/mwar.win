@@ -57,10 +57,11 @@ export async function resolveAdValue(
  * (15 s = 5 000 bp, 30 s = 10 000 bp). A banner earns in proportion to its value against a 30 s
  * rewarded video in the same country (a 30 s video's value = 1 full EC).
  */
-export function ecProgressBpFor(format: AdFormat, valueMicroUsd: number, country: string): number {
+export function ecProgressBpFor(format: AdFormat, valueMicroUsd: number, country: string, video30sMicroUsd?: number): number {
   if (format === 'video_30s') return 10_000;
   if (format === 'video_15s') return 5_000;
-  const ref = Math.max(1, getStatisticalAdMicroUsd(country, 'video_30s'));
+  // Revenue parity: banner value ÷ 30 s video value from the same pricing tier (TH 350/8 500 = 4.12 %)
+  const ref = Math.max(1, video30sMicroUsd ?? getStatisticalAdMicroUsd(country, 'video_30s'));
   return Math.max(1, Math.min(10_000, Math.round((valueMicroUsd / ref) * EC_PROGRESS_BP_PER_TICKET)));
 }
 

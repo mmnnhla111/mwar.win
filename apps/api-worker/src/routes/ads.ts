@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
   formatMicroUsd,
+  getStatisticalAdMicroUsd,
   type AdFormat,
   AD_BANNER_MIN_GAP_SECONDS,
   AD_VIDEO_SECONDS,
@@ -225,7 +226,19 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
   }
 
   const value: { microUsd: number; source: AdValueSource } = await resolveAdValue(c.env.DB, { country, format });
-  const ecBp = format === 'video_5s' ? 0 : ecProgressBpFor(format, value.microUsd, country);
+  // Banner parity uses the 30 s video value from the same tier: yesterday's averages when the banner
+  // came from yesterday's average, otherwise the country table for both (no mixed-tier ratios).
+  let video30Ref: number | undefined;
+  let parityValue = value.microUsd;
+  if (format === 'banner') {
+    video30Ref = getStatisticalAdMicroUsd(country, 'video_30s');
+    if (value.source === 'yesterday_avg') {
+      const v = await resolveAdValue(c.env.DB, { country, format: 'video_30s' });
+      if (v.source === 'yesterday_avg') video30Ref = v.microUsd;
+      else parityValue = getStatisticalAdMicroUsd(country, 'banner');
+    }
+  }
+  const ecBp = format === 'video_5s' ? 0 : ecProgressBpFor(format, parityValue, country, video30Ref);
   await logAdImpression(c.env.DB, { userId: user.userId, provider, country, format, purpose, microUsd: value.microUsd, source: value.source, ecBp });
   const ec = ecBp > 0 ? await creditEcProgress(c.env, user.userId, ecBp, `${provider}:${format}`) : null;
   return c.json({

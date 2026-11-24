@@ -240,6 +240,8 @@ export default function GamePage() {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'offline_practice' | 'solo_bots'>('connecting');
   const [loadingWorld, setLoadingWorld] = useState(true);
   const [damageFlash, setDamageFlash] = useState(0);
+  const [ecToast, setEcToast] = useState<string | null>(null);
+  const ecToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [damageIndicators, setDamageIndicators] = useState<DamageIndicator[]>([]);
   const [hitMarker, setHitMarker] = useState<{ at: number; kill: boolean; head: boolean } | null>(null);
   const [roundBanner, setRoundBanner] = useState<string | null>(null);
@@ -292,6 +294,9 @@ export default function GamePage() {
   const [canVault, setCanVault] = useState(false);
   const reloadRef = useRef<() => void>(() => {});
   const deployRef = useRef<(primary: PrimaryId, character: CharacterId) => void>(() => {});
+  /** Solo Bot death: after the 3 s elimination screen, reopen the loadout to pick weapon / operator. */
+  const reopenLoadoutRef = useRef<() => void>(() => {});
+  const [respawnLoadout, setRespawnLoadout] = useState(false);
   const deployedRef = useRef(false);
   const propMenuOpenRef = useRef(false);
   const menuCursorRef = useRef({ x: 0, y: 0 });
@@ -460,6 +465,7 @@ export default function GamePage() {
     }
     deployedRef.current = true;
     setDeployed(true);
+    setRespawnLoadout(false);
     deployRef.current(loadoutPrimary, loadoutCharacter);
     if (isMobileRef.current) {
       setIsOverlayDismissed(true);
@@ -1827,6 +1833,16 @@ export default function GamePage() {
         });
       }
       feed(`🪂 Deployed as ${character.replace(/_/g, ' ')} with ${WEAPONS[primary].name} + Pistol + ${GRENADE.start} frags`);
+      // Redeploy after a Solo Bot death: bring the player back with the newly picked loadout
+      if (!player.alive) respawnPlayer({ x: s.x, y: s.y, z: s.z });
+    };
+    reopenLoadoutRef.current = () => {
+      deployedRef.current = false;
+      setDeployed(false);
+      setRespawnLoadout(true);
+      setIsAdsActive(false);
+      firingRef.current = false;
+      if (document.pointerLockElement) document.exitPointerLock?.();
     };
 
     if (new URLSearchParams(window.location.search).has('debug')) {
@@ -2194,7 +2210,9 @@ export default function GamePage() {
       // --- Respawn / regen
       if (!player.alive && !isGhostSpectator) {
         player.respawnTimer -= dt;
-        if (player.respawnTimer <= 0 && botMode) respawnPlayer();
+        if (player.respawnTimer <= 0 && botMode) {
+          if (deployedRef.current) reopenLoadoutRef.current();
+        }
         // Multiplayer: the server respawns us after 3 s (player_respawned); nudge it once as a fallback
         else if (player.respawnTimer <= -0.5 && currentRoom && !respawnRequested) {
           respawnRequested = true;
@@ -2628,6 +2646,11 @@ export default function GamePage() {
     { slot: 'grenade', key: '3', label: hudStats.grenades > 0 ? 'FRAG' : null, ammo: `x${hudStats.grenades}` },
   ];
   const applyEcResult = (r: AdEcResult) => {
+    if (r.format === 'banner' && typeof r.ecProgressAddedPct === 'number' && r.ecProgressAddedPct > 0) {
+      setEcToast(`Banner impression credited (+${r.ecProgressAddedPct.toFixed(1)}% EC)`);
+      if (ecToastTimer.current) clearTimeout(ecToastTimer.current);
+      ecToastTimer.current = setTimeout(() => setEcToast(null), 4000);
+    }
     setHudStats((prev) => ({
       ...prev,
       energyTickets: r.energy_tickets ?? prev.energyTickets,
@@ -2645,7 +2668,9 @@ export default function GamePage() {
     setVideoAd(f);
   };
   // Bottom banner ad: only in Solo Bot / Practice and Ghost Spectator (never in paid PvP)
-  const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld && (deployed || isGhostSpectator);
+  // Also shown over the Solo / Practice loadout screen (first deploy and after every death) so the
+  // impression clock keeps running while the player picks a new weapon / operator.
+  const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld;
   const liftForAd = showAdBanner && isMobile && !compactLandscape; // portrait phones: raise thumbs above the ad
 
   // FIRE button = fire + drag-to-aim with the same finger (independent of the joystick finger)
@@ -2721,11 +2746,11 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Damage vignette */}
+      {/* Damage vignette (never in Ghost Spectator or on the loadout screen) */}
       <div
         className="pointer-events-none absolute inset-0 z-20 transition-opacity duration-150"
         style={{
-          opacity: Math.max(damageFlash, hudStats.alive ? Math.max(0, (40 - hudStats.health) / 60) : 0.8),
+          opacity: isGhostSpectator || !deployed ? 0 : Math.max(damageFlash, hudStats.alive ? Math.max(0, (40 - hudStats.health) / 60) : 0.8),
           background: 'radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(220,38,38,0.75) 100%)',
         }}
       />
@@ -2881,8 +2906,9 @@ export default function GamePage() {
           )}
           <span className="w-px h-3 bg-white/15" />
           <span className="text-yellow-300">
-            ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {Math.floor(hudStats.ecProgress)}%
+            ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%
           </span>
+          {ecToast && <span className="text-[10px] font-semibold text-yellow-200/70">{ecToast}</span>}
           {hudStats.isGhost && <span className="text-purple-300 animate-pulse">👻 GHOST</span>}
         </div>
         {(isBotMode || isGhostSpectator) && (deployed || isGhostSpectator) && <RechargeVideoButtons compact={isMobile} onPick={openVideoAd} />}
@@ -3098,6 +3124,8 @@ export default function GamePage() {
           onPrimary={setLoadoutPrimary}
           onCharacter={setLoadoutCharacter}
           onDeploy={deploy}
+          respawn={respawnLoadout}
+          bottomPad={showAdBanner ? (isMobile ? 80 : 92) : 0}
         />
       )}
 
@@ -3166,12 +3194,11 @@ export default function GamePage() {
       )}
 
       {isGhostSpectator && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
-          <div className="bg-purple-950/90 border border-purple-500/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-bold text-purple-200 shadow-xl flex items-center gap-2">
-            <span>👻 GHOST SPECTATOR</span>
-            <span className="text-slate-400">•</span>
-            <span className="text-[11px] text-purple-300 font-mono">WASD: Fly | Space: Up | Ctrl: Down | Drag: Look</span>
-          </div>
+        <div
+          data-spectator-hint
+          className="absolute bottom-2 left-3 z-20 pointer-events-none text-[11px] font-semibold text-white/60 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
+        >
+          👻 Ghost Spectator • {isMobile ? 'Joystick: Fly • Buttons: Up / Down • Drag: Look' : 'WASD: Fly • Space: Up • Ctrl: Down • Drag: Look'}
         </div>
       )}
 
@@ -3310,7 +3337,13 @@ export default function GamePage() {
 
       {/* Compact bottom banner ad slot — Solo Bot / Practice and Ghost Spectator only (never paid PvP) */}
       {showAdBanner && (
-        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 z-[15] pointer-events-auto">
+        <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 ${showLoadout ? 'z-[45]' : 'z-[15]'} pointer-events-auto flex flex-col items-center`}>
+          {showLoadout && (
+            <div className="mb-1 text-[11px] font-black text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] whitespace-nowrap">
+              ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%
+              {ecToast && <span className="ml-2 font-semibold text-yellow-200/70">{ecToast}</span>}
+            </div>
+          )}
           <SimulatedAdBanner
             onResult={applyEcResult}
             className={`${isMobile ? 'w-[320px] h-[50px]' : 'w-[468px] h-[60px]'} border border-slate-700/70 border-b-0 rounded-t-lg`}

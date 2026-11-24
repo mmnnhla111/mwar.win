@@ -41,7 +41,6 @@ export function SimulatedAdBanner({ className, onResult }: { className?: string;
   onResultRef.current = onResult;
 
   useEffect(() => {
-    const rotate = setInterval(() => setI((x) => (x + 1) % CREATIVES.length), 7000);
     let visibleSince = document.visibilityState === 'visible' ? Date.now() : 0;
     const onVis = () => {
       visibleSince = document.visibilityState === 'visible' ? Date.now() : 0;
@@ -52,6 +51,8 @@ export function SimulatedAdBanner({ className, onResult }: { className?: string;
       if (document.visibilityState !== 'visible' || !visibleSince) return;
       if (Date.now() - visibleSince < AD_BANNER_INTERVAL_SECONDS * 1000 - 500) return;
       visibleSince = Date.now();
+      // One creative per impression: the banner rotates only when its impression completes
+      setI((x) => (x + 1) % CREATIVES.length);
       if (!getAuthToken()) return;
       apiFetch<AdEcResult>('/api/ads/simulate-view', { method: 'POST', body: JSON.stringify({ format: 'banner', purpose: 'ec_recharge' }) })
         .then((r) => onResultRef.current?.(r))
@@ -60,7 +61,6 @@ export function SimulatedAdBanner({ className, onResult }: { className?: string;
         });
     }, 1000);
     return () => {
-      clearInterval(rotate);
       clearInterval(tick);
       document.removeEventListener('visibilitychange', onVis);
     };

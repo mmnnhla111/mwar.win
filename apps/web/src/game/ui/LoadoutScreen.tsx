@@ -15,6 +15,10 @@ interface Props {
   onPrimary(id: PrimaryId): void;
   onCharacter(id: CharacterId): void;
   onDeploy(dragLook: boolean): void;
+  /** Space kept free at the bottom for the ad banner (Solo / Practice). */
+  bottomPad?: number;
+  /** Shown after a death in Solo Bot mode: respawn instead of first deploy. */
+  respawn?: boolean;
 }
 
 const WEAPON_ICON: Record<PrimaryId, string> = { sniper: '🎯', ak47: '💥', m16: '🎖️', uzi: '⚡' };
@@ -36,13 +40,14 @@ function Bar({ label, v, color }: { label: string; v: number; color: string }) {
  */
 export default function LoadoutScreen(p: Props) {
   return (
-    <div className="absolute inset-0 z-40 overflow-y-auto bg-slate-950/88 backdrop-blur-sm">
+    <div className="absolute inset-0 z-40 overflow-y-auto bg-slate-950/88 backdrop-blur-sm" style={p.bottomPad ? { paddingBottom: p.bottomPad } : undefined}>
       <div className="min-h-full flex items-center justify-center p-2 sm:p-4">
         <div className="w-full max-w-5xl bg-slate-900/95 border border-slate-700 rounded-3xl p-3 sm:p-4 shadow-2xl">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div className="flex items-baseline gap-2">
               <h2 className="text-base sm:text-lg font-black text-white tracking-tight">PRE-DEPLOY LOADOUT</h2>
               <span className="text-[10px] font-black tracking-widest text-slate-400">{p.modeLabel}</span>
+              {p.respawn && <span className="text-[10px] font-black tracking-widest text-rose-400">ELIMINATED • CHANGE LOADOUT &amp; REDEPLOY</span>}
             </div>
             <div
               className={`text-[10px] font-bold rounded-lg px-2.5 py-1 border ${
