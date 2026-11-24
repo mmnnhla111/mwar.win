@@ -188,14 +188,15 @@ export function RewardedVideoModal({
 }
 
 export function RechargeVideoButtons({ onPick, compact }: { onPick: (f: VideoFormat) => void; compact?: boolean }) {
-  const btn = `rounded-xl font-black border transition active:scale-95 ${compact ? 'px-2 py-1 text-[10px]' : 'px-3 py-2 text-xs'}`;
+  const btn = `rounded-full font-black border whitespace-nowrap transition active:scale-95 ${compact ? 'text-[10px] px-2.5 py-1' : 'text-xs px-3 py-1'}`;
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   return (
-    <div className="flex gap-1.5 pointer-events-auto">
-      <button onClick={() => onPick('video_15s')} onTouchStart={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className={`${btn} bg-slate-900/80 border-amber-400/50 text-amber-200 hover:bg-slate-800`}>
-        ▶ Recharge EC via Video Ad 15s (+50%)
+    <div className="flex flex-nowrap gap-1.5 pointer-events-auto">
+      <button title="Recharge EC via Video Ad (15 s)" onClick={() => onPick('video_15s')} onTouchStart={stop} onMouseDown={stop} className={`${btn} bg-slate-950/45 border-amber-300/40 text-amber-200 hover:bg-slate-900/70`}>
+        ▶ 15s Video (+50% EC)
       </button>
-      <button onClick={() => onPick('video_30s')} onTouchStart={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className={`${btn} bg-amber-500 border-white/60 text-slate-950 hover:bg-amber-400`}>
-        ▶ Recharge EC via Video Ad 30s (+100%)
+      <button title="Recharge EC via Video Ad (30 s)" onClick={() => onPick('video_30s')} onTouchStart={stop} onMouseDown={stop} className={`${btn} bg-amber-500/85 border-white/50 text-slate-950 hover:bg-amber-400`}>
+        ▶ 30s Video (+100% EC)
       </button>
     </div>
   );

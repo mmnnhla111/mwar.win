@@ -111,6 +111,14 @@ const MODE_LABEL: Record<ArenaMode, string> = {
   practice: 'PRACTICE RANGE / SOLO BOTS',
   spectator: 'GHOST SPECTATOR',
 };
+/** Short labels for the single-row status strip. */
+const MODE_SHORT: Record<ArenaMode, string> = {
+  mini_30: '30P SKIRMISH',
+  standard_100: '100P WARZONE',
+  fast_mini: 'FAST MINI',
+  practice: 'SOLO BOT',
+  spectator: 'SPECTATOR',
+};
 
 interface HudState {
   health: number;
@@ -2544,13 +2552,26 @@ export default function GamePage() {
       }
     }
   };
-  /** Polar placement around the FIRE button centre (container-local px, y up = positive angle). */
-  const ARC_BOX = 280;
-  const FIRE_C = ARC_BOX - 80;
-  const arcPos = (deg: number, r: number, size: number) => ({
-    left: FIRE_C + r * Math.cos((deg * Math.PI) / 180) - size / 2,
-    top: FIRE_C - r * Math.sin((deg * Math.PI) / 180) - size / 2,
-  });
+  /**
+   * Right-hand touch pad (container-local px, anchored bottom-right). Right-edge column top→bottom:
+   * Reload, Frag (with a wide gap above the action cluster), Jump, Crouch, Prone. FIRE sits in the
+   * open thumb zone left of Jump / Crouch; ADS directly below FIRE; Prop left of ADS (‹ › beside it).
+   */
+  const PAD_W = 330;
+  const PAD_H = 330;
+  const EDGE_X = PAD_W - 36;
+  const PAD = {
+    reload: { x: EDGE_X, y: 44 },
+    nade: { x: EDGE_X, y: 102 },
+    jump: { x: EDGE_X, y: 172 },
+    crouch: { x: EDGE_X, y: 232 },
+    prone: { x: EDGE_X, y: 292 },
+    fire: { x: EDGE_X - 96, y: 202 },
+    ads: { x: EDGE_X - 96, y: 292 },
+    prop: { x: EDGE_X - 158, y: 292 },
+    rotR: { x: EDGE_X - 210, y: 292 },
+    rotL: { x: EDGE_X - 254, y: 292 },
+  };
 
   return (
     <div
@@ -2629,40 +2650,7 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* EC recharge (Practice / Solo Bot + Ghost Spectator): ads only — bot kills give 0 EC / 0 Micro-USD */}
-      {(isBotMode || isGhostSpectator) && (deployed || isGhostSpectator) && (
-        <div
-          className={`absolute left-1/2 -translate-x-1/2 z-20 pointer-events-none ${
-            isMobile ? (compactLandscape ? 'top-14 scale-90' : 'top-[8.5rem]') : 'bottom-[4.6rem] w-[min(92vw,600px)]'
-          }`}
-        >
-          <div className="bg-slate-950/80 border border-amber-400/50 backdrop-blur-md rounded-2xl px-3 py-1.5 shadow-xl flex flex-col items-center gap-1">
-            <div className="text-[10px] font-black text-amber-300 tracking-wide flex items-center gap-2 whitespace-nowrap">
-              <span>⚡ EC {hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
-              <span className="text-amber-400/60">•</span>
-              <span className="text-yellow-300">RECHARGE {Math.floor(hudStats.ecProgress)}%</span>
-              {!isMobile && <span className="text-slate-400 font-bold">• banner every 20 s / video ads</span>}
-            </div>
-            <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-amber-400 to-yellow-300 transition-all" style={{ width: `${Math.min(100, hudStats.ecProgress)}%` }} />
-            </div>
-            <RechargeVideoButtons compact={isMobile} onPick={openVideoAd} />
-          </div>
-        </div>
-      )}
-
       {videoAd && <RewardedVideoModal format={videoAd} onClose={() => setVideoAd(null)} onResult={applyEcResult} />}
-
-      {/* Free-for-all kill leaderboard (Top 5) — faint text, no box */}
-      {isBotMode && deployed && hudStats.leaderboard.length > 0 && (
-        <div className={`absolute left-4 z-20 pointer-events-none text-[11px] text-slate-300/60 leading-[1.35] font-semibold ${compactLandscape ? 'top-[7.2rem]' : 'top-[8.6rem]'}`} style={{ textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}>
-          {hudStats.leaderboard.map((r, i) => (
-            <div key={r.name} className={r.name === 'You' ? 'text-amber-200/70' : undefined}>
-              {i + 1}. {r.name} — {r.kills}
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Medkit cast progress (4 s, stand still) */}
       {hudStats.medkitCast >= 0 && hudStats.alive && (
@@ -2694,88 +2682,66 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Top HUD */}
-      <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-20">
-        <div className="flex flex-col items-start gap-1 max-w-[60%]">
-        <div className="flex items-start gap-2">
-        {(deployed || isGhostSpectator) && (
-          <canvas
-            ref={minimapRef}
-            width={230}
-            height={230}
-            aria-label="Tactical minimap"
-            className={`${compactLandscape ? 'w-[96px] h-[96px]' : 'w-[115px] h-[115px]'} shrink-0 rounded-[14px] border border-white/25 shadow-xl bg-slate-900/40`}
-          />
-        )}
-        <div className={`bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-2xl flex flex-wrap items-center shadow-xl pointer-events-auto ${isMobile ? 'p-2 gap-1.5' : 'p-3 sm:p-3.5 gap-3'}`}>
-          <div>
-            <div className="flex justify-between items-center text-[10px] text-slate-400 font-black uppercase">
-              <span>HP</span>
-              <span>{hudStats.health}</span>
-            </div>
-            <div className="w-24 sm:w-32 h-2.5 bg-slate-800 rounded-full overflow-hidden mt-1">
-              <div
-                className={`h-full transition-all duration-300 ${hudStats.health > 50 ? 'bg-emerald-500' : hudStats.health > 25 ? 'bg-amber-500' : 'bg-rose-600'}`}
-                style={{ width: `${hudStats.health}%` }}
-              />
-            </div>
-          </div>
+      {/* Center top: single slim status row, then the video-ad EC recharge row strictly below it */}
+      <div
+        className={`absolute -translate-x-1/2 z-20 pointer-events-none flex flex-col items-center gap-1.5 ${compactLandscape ? 'top-3' : 'top-4'}`}
+        // Phones: centre in the gap between the minimap (~112 px) and the K/D + weapon panel (~335 px)
+        style={{ left: isMobile ? 'calc(50% - 110px)' : '50%' }}
+      >
+        <div
+          className={`flex flex-nowrap items-center whitespace-nowrap rounded-full bg-slate-950/30 backdrop-blur-[2px] border border-white/10 font-black text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.7)] ${
+            isMobile ? 'h-[26px] px-2.5 gap-2 text-[10px]' : 'h-8 px-3.5 gap-3 text-[11px]'
+          }`}
+        >
+          {!isGhostSpectator && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-300/80">HP</span>
+              <span className={`${isMobile ? 'w-12' : 'w-20'} h-1.5 bg-white/15 rounded-full overflow-hidden`}>
+                <span
+                  className={`block h-full transition-all duration-300 ${hudStats.health > 50 ? 'bg-emerald-400' : hudStats.health > 25 ? 'bg-amber-400' : 'bg-rose-500'}`}
+                  style={{ width: `${hudStats.health}%` }}
+                />
+              </span>
+              <span className="tabular-nums">{hudStats.health}</span>
+            </span>
+          )}
+          <span className="w-px h-3 bg-white/15" />
           {connectionStatus === 'connected' ? (
-            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1.5">
+            <span className="flex items-center gap-1 text-emerald-300">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              20Hz MULTIPLAYER • {MODE_LABEL[mode]}
+              {MODE_SHORT[mode]}
             </span>
           ) : isBotMode ? (
-            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1.5">
+            <span className="flex items-center gap-1 text-amber-300" title={`${hudStats.botsAlive} bots alive`}>
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              {connectionStatus === 'solo_bots' ? 'SOLO BOT MODE' : 'OFFLINE • SOLO BOTS'} • {hudStats.botsAlive} BOTS ALIVE
+              {connectionStatus === 'solo_bots' ? 'SOLO BOT' : 'OFFLINE BOT'}
+              {!isMobile && <span className="text-amber-200/60">• {hudStats.botsAlive} alive</span>}
             </span>
+          ) : isGhostSpectator ? (
+            <span className="text-purple-300">👻 SPECTATOR</span>
           ) : (
-            <span className="bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+            <span className="flex items-center gap-1 text-sky-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-ping" />
               CONNECTING…
             </span>
           )}
-          {hudStats.leanDir !== 0 && (
-            <span className="bg-sky-500/20 text-sky-300 border border-sky-500/40 text-[10px] font-black px-2 py-0.5 rounded-full">
-              {hudStats.leanDir < 0 ? '◀ LEAN L' : 'LEAN R ▶'}
-            </span>
+          {deployed && !isGhostSpectator && (
+            <>
+              <span className="w-px h-3 bg-white/15" />
+              <span className={hudStats.stance === 'prone' ? 'text-lime-300' : hudStats.stance === 'crouch' ? 'text-slate-100' : 'text-slate-300/80'}>
+                {hudStats.isProp ? 'PROP' : hudStats.stance === 'prone' ? 'PRONE' : hudStats.stance === 'crouch' ? 'CROUCH' : 'STAND'}
+                {hudStats.leanDir !== 0 && <span className="text-sky-300"> {hudStats.leanDir < 0 ? '◀' : '▶'}</span>}
+              </span>
+            </>
           )}
-          {deployed && !hudStats.isProp && (
-            <span
-              className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-                hudStats.stance === 'prone'
-                  ? 'bg-lime-500/20 text-lime-300 border-lime-500/40'
-                  : hudStats.stance === 'crouch'
-                    ? 'bg-slate-600/50 text-slate-100 border-slate-500/50'
-                    : 'bg-slate-800/50 text-slate-400 border-slate-700/60'
-              }`}
-            >
-              {hudStats.stance === 'prone' ? '🐍 PRONE' : hudStats.stance === 'crouch' ? '🧎 CROUCH' : '🧍 STAND'}
-            </span>
-          )}
-          <span className="bg-amber-500/20 text-yellow-300 border border-amber-500/40 text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1">
-            <span>⚡ EC:</span>
-            <span>{hudStats.energyTickets}/{hudStats.maxEnergyTickets}</span>
-            <span className="text-amber-400/80">({Math.round(hudStats.ecProgress)}%)</span>
+          <span className="w-px h-3 bg-white/15" />
+          <span className="text-yellow-300">
+            ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {Math.floor(hudStats.ecProgress)}%
           </span>
-          {hudStats.isGhost && (
-            <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">👻 GHOST</span>
-          )}
+          {hudStats.isGhost && <span className="text-purple-300 animate-pulse">👻 GHOST</span>}
         </div>
-        </div>
-        {/* Single latest status line: replaces the previous one instantly, fades + unmounts after 10 s */}
-        {toast && (
-          <div
-            key={toast.id}
-            className={`pl-1 text-xs text-slate-300/75 [text-shadow:0_1px_2px_rgba(0,0,0,0.85)] transition-opacity duration-700 ${toastFading ? 'opacity-0' : 'opacity-100'}`}
-          >
-            {toast.text}
-          </div>
-        )}
-        </div>
-
-        {isGhostSpectator && (
+        {(isBotMode || isGhostSpectator) && (deployed || isGhostSpectator) && <RechargeVideoButtons compact={isMobile} onPick={openVideoAd} />}
+        {isGhostSpectator && !compactLandscape && (
           <div className="bg-slate-950/90 backdrop-blur-md border border-indigo-500/50 px-4 py-2 rounded-2xl flex items-center space-x-3 shadow-lg shadow-indigo-500/20 pointer-events-auto">
             <QuestSpectateIcon size={22} className="animate-pulse" />
             <div>
@@ -2795,6 +2761,44 @@ export default function GamePage() {
             )}
           </div>
         )}
+
+      </div>
+
+      {/* Top HUD */}
+      <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-20">
+        {/* Left column: minimap → latest status line → Top-5 leaderboard (separate stacked slots, never overlap) */}
+        <div className={`flex flex-col items-start gap-1 ${compactLandscape ? 'max-w-[26%]' : 'max-w-[30%]'}`}>
+          {(deployed || isGhostSpectator) && (
+            <canvas
+              ref={minimapRef}
+              width={230}
+              height={230}
+              aria-label="Tactical minimap"
+              className={`${compactLandscape ? 'w-[96px] h-[96px]' : 'w-[115px] h-[115px]'} shrink-0 rounded-[14px] border border-white/25 shadow-xl bg-slate-900/40`}
+            />
+          )}
+          {/* Single latest status line: replaces the previous one instantly, fades + unmounts after 10 s */}
+          <div className="min-h-[16px]">
+            {toast && (
+              <div
+                key={toast.id}
+                className={`pl-1 text-xs leading-snug text-slate-300/75 [text-shadow:0_1px_2px_rgba(0,0,0,0.85)] transition-opacity duration-700 ${toastFading ? 'opacity-0' : 'opacity-100'}`}
+              >
+                {toast.text}
+              </div>
+            )}
+          </div>
+          {/* Free-for-all kill leaderboard (Top 5) — faint text, no box */}
+          {isBotMode && deployed && hudStats.leaderboard.length > 0 && (
+            <div className="pl-1 text-[11px] text-slate-300/60 leading-[1.35] font-semibold" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}>
+              {hudStats.leaderboard.map((r, i) => (
+                <div key={r.name} className={r.name === 'You' ? 'text-amber-200/70' : undefined}>
+                  {i + 1}. {r.name} — {r.kills}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center space-x-2 pointer-events-auto mr-11">
           <div className={`bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-2xl flex items-center text-right shadow-xl ${isMobile ? 'p-2 space-x-2' : 'p-3 sm:p-3.5 space-x-4'}`}>
@@ -3112,9 +3116,9 @@ export default function GamePage() {
       {isMobile && deployed && !isGhostSpectator && hudStats.alive && (
         <div
           className="absolute right-0 bottom-0 z-20 pointer-events-none select-none origin-bottom-right"
-          style={{ width: ARC_BOX, height: ARC_BOX, transform: compactLandscape ? 'scale(0.82)' : undefined, marginBottom: liftForAd ? 58 : 0 }}
+          style={{ width: PAD_W, height: PAD_H, transform: compactLandscape ? 'scale(0.82)' : undefined, marginBottom: liftForAd ? 58 : 0 }}
         >
-          {/* FIRE: hold to shoot, drag the same finger to aim */}
+          {/* FIRE: open right-thumb zone left of the Jump / Crouch column — hold to shoot, drag the same finger to aim */}
           <button
             aria-label="Fire (drag to aim)"
             onTouchStart={onFireTouchStart}
@@ -3122,35 +3126,35 @@ export default function GamePage() {
             onTouchEnd={onFireTouchEnd}
             onTouchCancel={onFireTouchEnd}
             className="absolute pointer-events-auto touch-none rounded-full bg-rose-600/55 border-[3px] border-white/70 text-white flex items-center justify-center shadow-2xl shadow-rose-600/40 backdrop-blur-sm active:bg-rose-500/80 active:scale-95 transition"
-            style={{ left: FIRE_C - 44, top: FIRE_C - 44, width: 88, height: 88 }}
+            style={{ left: PAD.fire.x - 44, top: PAD.fire.y - 44, width: 88, height: 88 }}
           >
             <BulletIcon size={38} />
           </button>
           {(hudStats.isProp
             ? [
-                { k: 'rotL', deg: 180, r: 92, icon: <ChevronLeftIcon />, label: 'Rotate prop left', hold: 1 as const },
-                { k: 'rotR', deg: 148, r: 92, icon: <ChevronRightIcon />, label: 'Rotate prop right', hold: -1 as const },
-                { k: 'jump', deg: 96, r: 92, icon: <JumpIcon />, label: 'Jump', act: () => triggerJumpRef.current?.() },
-                { k: 'prop', deg: 120, r: 152, icon: <CrateIcon />, label: 'Leave disguise', act: () => togglePropRef.current?.(), on: true },
+                { k: 'jump', at: PAD.jump, icon: <JumpIcon />, label: 'Jump', act: () => triggerJumpRef.current?.() },
+                { k: 'prop', at: PAD.prop, icon: <CrateIcon />, label: 'Leave disguise', act: () => togglePropRef.current?.(), on: true },
+                { k: 'rotR', at: PAD.rotR, small: true, icon: <ChevronRightIcon />, label: 'Rotate prop right', hold: -1 as const },
+                { k: 'rotL', at: PAD.rotL, small: true, icon: <ChevronLeftIcon />, label: 'Rotate prop left', hold: 1 as const },
               ]
             : [
-                { k: 'ads', deg: 180, r: 92, icon: <ScopeIcon />, label: 'Aim down sights', act: () => setIsAdsActive((v) => !v), on: isAdsActive },
-                { k: 'crouch', deg: 150, r: 92, icon: <CrouchIcon />, label: 'Crouch', act: () => setStanceRef.current(stanceRef.current === 'crouch' ? 'stand' : 'crouch'), on: stanceUi === 'crouch' },
-                { k: 'prone', deg: 120, r: 92, icon: <ProneIcon />, label: 'Prone', act: () => setStanceRef.current(stanceRef.current === 'prone' ? 'stand' : 'prone'), on: stanceUi === 'prone' },
-                { k: 'jump', deg: 90, r: 92, icon: <JumpIcon />, label: stanceUi === 'stand' ? 'Jump' : 'Stand up', act: () => triggerJumpRef.current?.() },
-                { k: 'reload', deg: 172, r: 152, icon: <ReloadIcon />, label: 'Reload', act: () => reloadRef.current?.() },
-                { k: 'nade', deg: 140, r: 152, icon: <GrenadeIcon />, label: 'Throw grenade', act: () => quickGrenadeRef.current() },
-                { k: 'prop', deg: 108, r: 152, icon: <CrateIcon />, label: 'Prop disguise', act: () => togglePropRef.current?.() },
+                { k: 'reload', at: PAD.reload, icon: <ReloadIcon />, label: 'Reload', act: () => reloadRef.current?.() },
+                { k: 'nade', at: PAD.nade, icon: <GrenadeIcon />, label: 'Throw grenade', act: () => quickGrenadeRef.current() },
+                { k: 'jump', at: PAD.jump, icon: <JumpIcon />, label: stanceUi === 'stand' ? 'Jump' : 'Stand up', act: () => triggerJumpRef.current?.() },
+                { k: 'crouch', at: PAD.crouch, icon: <CrouchIcon />, label: 'Crouch', act: () => setStanceRef.current(stanceRef.current === 'crouch' ? 'stand' : 'crouch'), on: stanceUi === 'crouch' },
+                { k: 'prone', at: PAD.prone, icon: <ProneIcon />, label: 'Prone', act: () => setStanceRef.current(stanceRef.current === 'prone' ? 'stand' : 'prone'), on: stanceUi === 'prone' },
+                { k: 'ads', at: PAD.ads, icon: <ScopeIcon />, label: 'Aim down sights', act: () => setIsAdsActive((v) => !v), on: isAdsActive },
+                { k: 'prop', at: PAD.prop, icon: <CrateIcon />, label: 'Prop disguise', act: () => togglePropRef.current?.() },
               ]
           ).map((b) => {
-            const size = b.r > 120 ? 46 : 50;
-            const pos = arcPos(b.deg, b.r, size);
+            const size = 'small' in b && b.small ? 40 : 50;
             const hold = 'hold' in b ? b.hold : 0;
             return (
               <button
                 key={b.k}
                 aria-label={b.label}
                 title={b.label}
+                data-btn={b.k}
                 onTouchStart={(e) => {
                   e.stopPropagation();
                   if (hold) propRotateRef.current = hold;
@@ -3166,7 +3170,7 @@ export default function GamePage() {
                 className={`absolute pointer-events-auto touch-none rounded-full border flex items-center justify-center backdrop-blur-sm shadow-lg active:scale-95 transition ${
                   'on' in b && b.on ? 'bg-amber-400/85 text-slate-950 border-white' : 'bg-slate-900/45 text-white border-white/30 active:bg-white/30'
                 }`}
-                style={{ left: pos.left, top: pos.top, width: size, height: size }}
+                style={{ left: b.at.x - size / 2, top: b.at.y - size / 2, width: size, height: size }}
               >
                 {b.icon}
               </button>
