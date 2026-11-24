@@ -76,17 +76,23 @@ export async function logAdImpression(
     microUsd: number;
     source: AdValueSource;
     ecBp?: number;
-  }
+  },
+  /** Batched banner impressions: one row per impression, written in a single D1 batch. */
+  count = 1
 ) {
-  const id = `adi_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
-  await db
-    .prepare(
-      `INSERT INTO ad_impressions (id, user_id, provider, country_code, ad_format, purpose, amount_micro_usd, value_source, ec_progress_bp, date_key, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
-    )
-    .bind(id, row.userId, row.provider, row.country, row.format, row.purpose, row.microUsd, row.source, row.ecBp ?? 0, utcDateKey(), Math.floor(Date.now() / 1000))
-    .run();
-  return id;
+  const now = Math.floor(Date.now() / 1000);
+  const dateKey = utcDateKey();
+  const stmt = db.prepare(
+    `INSERT INTO ad_impressions (id, user_id, provider, country_code, ad_format, purpose, amount_micro_usd, value_source, ec_progress_bp, date_key, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+  );
+  const ids: string[] = [];
+  const n = Math.max(1, Math.floor(count));
+  for (let i = 0; i < n; i++) ids.push(`adi_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`);
+  const binds = ids.map((id) => stmt.bind(id, row.userId, row.provider, row.country, row.format, row.purpose, row.microUsd, row.source, row.ecBp ?? 0, dateKey, now));
+  if (binds.length === 1) await binds[0].run();
+  else await db.batch(binds);
+  return ids[0];
 }
 
 /**

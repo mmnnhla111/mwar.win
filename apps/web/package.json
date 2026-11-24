@@ -6,7 +6,8 @@
     "dev": "next dev -p 3001",
     "build": "next build",
     "start": "next start -p 3001",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy:pages": "next build && wrangler pages deploy out --project-name=mwar-web --branch=main"
   },
   "dependencies": {
     "@mwar/shared": "file:../../packages/shared",

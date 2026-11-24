@@ -6,7 +6,11 @@ import type { TodayQuestsResponse, DailyMlmSummary } from '@mwar/shared';
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== 'undefined' && (window.location.hostname === 'mwar.win' || window.location.hostname.endsWith('.mwar.win'))
+  (typeof window !== 'undefined' && (window.location.hostname === 'mwar.win' ||
+    window.location.hostname.endsWith('.mwar.win') ||
+    // Cloudflare Pages: production + preview deployments of the mwar-web project
+    window.location.hostname === 'mwar-web.pages.dev' ||
+    window.location.hostname.endsWith('.mwar-web.pages.dev'))
     ? 'https://api.mwar.win'
     : 'http://127.0.0.1:8787');
 

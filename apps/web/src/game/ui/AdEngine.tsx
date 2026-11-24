@@ -20,6 +20,8 @@ export interface AdEcResult {
   max_energy_tickets?: number;
   energy_progress_pct?: number;
   ecProgressAddedPct?: number;
+  /** Banner impressions credited by this (batched) request. */
+  impressions?: number;
   ticketsAwarded?: number;
   ticketsFull?: boolean;
   adValueMicroUsd?: number;
@@ -35,17 +37,68 @@ const CREATIVES = [
   { title: 'Ghost Spectator', line: 'Watch live arenas • earn EC from ads', from: '#8b5cf6', to: '#ec4899' },
 ];
 
+/**
+ * Completed banner impressions are batched: credited in one POST every BANNER_BATCH impressions,
+ * or immediately when the player opens a video ad, deploys, hides the tab or leaves the page.
+ * Keeps Worker / D1 requests ~5× lower than one request per 20 s banner.
+ */
+export const BANNER_BATCH = 5;
+const BANNER_BATCH_MAX = 10;
+let pendingBanners = 0;
+let bannerFlushing = false;
+let bannerResultCb: ((r: AdEcResult) => void) | null = null;
+const bannerListeners = new Set<(pending: number) => void>();
+const notifyPending = () => bannerListeners.forEach((f) => f(pendingBanners));
+
+export function flushBannerImpressions(opts: { keepalive?: boolean } = {}) {
+  if (pendingBanners <= 0 || bannerFlushing || !getAuthToken()) return;
+  const count = Math.min(BANNER_BATCH_MAX, pendingBanners);
+  bannerFlushing = true;
+  apiFetch<AdEcResult>('/api/ads/simulate-view', {
+    method: 'POST',
+    body: JSON.stringify({ format: 'banner', purpose: 'ec_recharge', count }),
+    keepalive: opts.keepalive,
+  })
+    .then((r) => {
+      pendingBanners = Math.max(0, pendingBanners - count);
+      notifyPending();
+      bannerResultCb?.(r);
+    })
+    .catch(() => {
+      /* rate-limited / offline: keep the impressions and retry with the next flush */
+    })
+    .finally(() => {
+      bannerFlushing = false;
+    });
+}
+
+/** Number of completed banner impressions waiting for the next batched credit. */
+export function usePendingBanners() {
+  const [n, setN] = useState(pendingBanners);
+  useEffect(() => {
+    bannerListeners.add(setN);
+    return () => {
+      bannerListeners.delete(setN);
+    };
+  }, []);
+  return n;
+}
+
 export function SimulatedAdBanner({ className, onResult }: { className?: string; onResult?: (r: AdEcResult) => void }) {
   const [i, setI] = useState(0);
   const onResultRef = useRef(onResult);
   onResultRef.current = onResult;
 
   useEffect(() => {
+    bannerResultCb = (r) => onResultRef.current?.(r);
     let visibleSince = document.visibilityState === 'visible' ? Date.now() : 0;
     const onVis = () => {
       visibleSince = document.visibilityState === 'visible' ? Date.now() : 0;
+      if (document.visibilityState === 'hidden') flushBannerImpressions({ keepalive: true });
     };
+    const onHide = () => flushBannerImpressions({ keepalive: true });
     document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pagehide', onHide);
     // One verified impression per 20 s of continuous visibility
     const tick = setInterval(() => {
       if (document.visibilityState !== 'visible' || !visibleSince) return;
@@ -54,15 +107,15 @@ export function SimulatedAdBanner({ className, onResult }: { className?: string;
       // One creative per impression: the banner rotates only when its impression completes
       setI((x) => (x + 1) % CREATIVES.length);
       if (!getAuthToken()) return;
-      apiFetch<AdEcResult>('/api/ads/simulate-view', { method: 'POST', body: JSON.stringify({ format: 'banner', purpose: 'ec_recharge' }) })
-        .then((r) => onResultRef.current?.(r))
-        .catch(() => {
-          /* guest / offline / rate-limited: ignore */
-        });
+      pendingBanners = Math.min(BANNER_BATCH_MAX, pendingBanners + 1);
+      notifyPending();
+      if (pendingBanners >= BANNER_BATCH) flushBannerImpressions();
     }, 1000);
     return () => {
       clearInterval(tick);
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pagehide', onHide);
+      flushBannerImpressions({ keepalive: true });
     };
   }, []);
 

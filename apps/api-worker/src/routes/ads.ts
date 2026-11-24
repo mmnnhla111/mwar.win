@@ -193,14 +193,21 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
   const now = Math.floor(Date.now() / 1000);
   const provider = 'mwar_simulated';
 
+  // Banner impressions are batched client-side (up to 10 completed impressions per request)
+  const count = format === 'banner' ? Math.floor(Number(body.count ?? 1)) : 1;
+  if (format === 'banner' && (!Number.isFinite(count) || count < 1 || count > 10)) {
+    return c.json({ error: 'count must be 1..10' }, 400);
+  }
   if (format === 'banner') {
-    // Passive banner: at most one verified impression per ~20 s per user (tab must be visible client-side)
+    // Passive banner: at most one verified impression per ~20 s per user (tab must be visible client-side).
+    // A batch of N needs N × the minimum gap since the last credited banner.
     const last = await c.env.DB
       .prepare("SELECT MAX(created_at) AS t FROM ad_impressions WHERE user_id = ?1 AND ad_format = 'banner'")
       .bind(user.userId)
       .first<{ t: number | null }>();
-    if (last?.t && now - last.t < AD_BANNER_MIN_GAP_SECONDS) {
-      return c.json({ error: 'Banner impression too soon', retryInSeconds: AD_BANNER_MIN_GAP_SECONDS - (now - last.t) }, 429);
+    const need = count * AD_BANNER_MIN_GAP_SECONDS;
+    if (last?.t && now - last.t < need) {
+      return c.json({ error: 'Banner impressions too soon', retryInSeconds: need - (now - last.t) }, 429);
     }
   } else {
     const viewId = typeof body.viewId === 'string' ? body.viewId : '';
@@ -238,9 +245,10 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
       else parityValue = getStatisticalAdMicroUsd(country, 'banner');
     }
   }
-  const ecBp = format === 'video_5s' ? 0 : ecProgressBpFor(format, parityValue, country, video30Ref);
-  await logAdImpression(c.env.DB, { userId: user.userId, provider, country, format, purpose, microUsd: value.microUsd, source: value.source, ecBp });
-  const ec = ecBp > 0 ? await creditEcProgress(c.env, user.userId, ecBp, `${provider}:${format}`) : null;
+  const ecBpEach = format === 'video_5s' ? 0 : ecProgressBpFor(format, parityValue, country, video30Ref);
+  await logAdImpression(c.env.DB, { userId: user.userId, provider, country, format, purpose, microUsd: value.microUsd, source: value.source, ecBp: ecBpEach }, count);
+  const ecBp = ecBpEach * count;
+  const ec = ecBp > 0 ? await creditEcProgress(c.env, user.userId, ecBp, `${provider}:${format}${count > 1 ? `x${count}` : ''}`) : null;
   return c.json({
     success: true,
     simulation: true,
@@ -249,6 +257,7 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
     format,
     adValueMicroUsd: value.microUsd,
     valueSource: value.source,
+    impressions: count,
     ecProgressAddedPct: ecBp / (EC_PROGRESS_BP_PER_TICKET / 100),
     energy_tickets: ec?.energyTickets,
     max_energy_tickets: ec?.maxEnergyTickets,

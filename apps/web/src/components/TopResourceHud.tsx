@@ -13,6 +13,7 @@ import {
 } from './icons';
 import { getCurrentUser, getDailyMlmSummary, updateProfile } from '../lib/api';
 import type { DailyMlmSummary } from '@mwar/shared';
+import { useVisibleInterval } from '../lib/useVisibleInterval';
 
 const AVATAR_PRESETS = [
   '/images/avatar_1.svg',
@@ -58,9 +59,9 @@ export function TopResourceHud() {
 
   useEffect(() => {
     loadHudData();
-    const interval = setInterval(loadHudData, 15000);
-    return () => clearInterval(interval);
   }, []);
+  // Wallet / EC / MLM summary: every 60 s, only while the tab is visible
+  useVisibleInterval(loadHudData, 60_000);
 
   const handleAvatarFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

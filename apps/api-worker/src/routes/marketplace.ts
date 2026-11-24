@@ -7,46 +7,55 @@ import {
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { edgeCachedJson, edgeCachePurge } from '../utils/edge-cache';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { buildNetworkTree } from '../utils/mlm-tree';
 
 export const marketplaceRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
 marketplaceRouter.use('*', authMiddleware);
+// Any successful write (list / buy / cancel) drops the cached public listing
+marketplaceRouter.use('*', async (c, next) => {
+  await next();
+  if (c.req.method !== 'GET' && c.res.ok) await edgeCachePurge(c, 'marketplace-listings');
+});
 
 // 1. List Active Listings
 marketplaceRouter.get('/listings', async (c) => {
-  const rows = await c.env.DB
-    .prepare(
-      `SELECT m.id, m.seller_id, m.target_user_id, m.price_micro_usd, m.status, m.created_at,
-              u_target.username as target_username, u_target.created_at as target_joined_at,
-              w_target.total_earned_micro_usd as target_total_earned,
-              u_seller.username as seller_username
-       FROM marketplace_listings m
-       JOIN users u_target ON u_target.id = m.target_user_id
-       LEFT JOIN wallets w_target ON w_target.user_id = m.target_user_id
-       JOIN users u_seller ON u_seller.id = m.seller_id
-       WHERE m.status = 'active'
-       ORDER BY m.created_at DESC`
-    )
-    .all<any>();
+  // Same list for every player: served from the edge cache for 20 s (purged on list / buy)
+  return edgeCachedJson(c, 'marketplace-listings', 20, async () => {
+    const rows = await c.env.DB
+      .prepare(
+        `SELECT m.id, m.seller_id, m.target_user_id, m.price_micro_usd, m.status, m.created_at,
+                u_target.username as target_username, u_target.created_at as target_joined_at,
+                w_target.total_earned_micro_usd as target_total_earned,
+                u_seller.username as seller_username
+         FROM marketplace_listings m
+         JOIN users u_target ON u_target.id = m.target_user_id
+         LEFT JOIN wallets w_target ON w_target.user_id = m.target_user_id
+         JOIN users u_seller ON u_seller.id = m.seller_id
+         WHERE m.status = 'active'
+         ORDER BY m.created_at DESC`
+      )
+      .all<any>();
 
-  const listings = (rows.results || []).map((l: any) => ({
-    id: l.id,
-    sellerId: l.seller_id,
-    sellerUsername: l.seller_username,
-    targetUserId: l.target_user_id,
-    targetUsername: l.target_username,
-    targetJoinedAt: l.target_joined_at,
-    targetTotalEarnedMicroUsd: l.target_total_earned || 0,
-    formattedTargetEarned: formatMicroUsd(l.target_total_earned || 0),
-    priceMicroUsd: l.price_micro_usd,
-    formattedPrice: formatMicroUsd(l.price_micro_usd),
-    escrowWarrantyDays: MARKETPLACE_ESCROW_DAYS,
-    createdAt: l.created_at,
-  }));
+    const listings = (rows.results || []).map((l: any) => ({
+      id: l.id,
+      sellerId: l.seller_id,
+      sellerUsername: l.seller_username,
+      targetUserId: l.target_user_id,
+      targetUsername: l.target_username,
+      targetJoinedAt: l.target_joined_at,
+      targetTotalEarnedMicroUsd: l.target_total_earned || 0,
+      formattedTargetEarned: formatMicroUsd(l.target_total_earned || 0),
+      priceMicroUsd: l.price_micro_usd,
+      formattedPrice: formatMicroUsd(l.price_micro_usd),
+      escrowWarrantyDays: MARKETPLACE_ESCROW_DAYS,
+      createdAt: l.created_at,
+    }));
 
-  return c.json({ listings });
+    return { listings };
+  });
 });
 
 // 2. Create Listing

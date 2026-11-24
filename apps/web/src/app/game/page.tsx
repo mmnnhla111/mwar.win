@@ -46,7 +46,7 @@ import {
 import { BrowserGuard, keyboardLockSupported } from '../../game/input/browserGuard';
 import RadialPropMenu, { propIndexAt, RADIAL } from '../../game/ui/RadialPropMenu';
 import LoadoutScreen from '../../game/ui/LoadoutScreen';
-import { RechargeVideoButtons, RewardedVideoModal, SimulatedAdBanner, type AdEcResult } from '../../game/ui/AdEngine';
+import { flushBannerImpressions, RechargeVideoButtons, RewardedVideoModal, SimulatedAdBanner, usePendingBanners, type AdEcResult } from '../../game/ui/AdEngine';
 import { BLIP_LIFETIME_MS, drawMinimap, RadarBlip } from '../../game/ui/minimap';
 import {
   BulletIcon,
@@ -241,6 +241,7 @@ export default function GamePage() {
   const [loadingWorld, setLoadingWorld] = useState(true);
   const [damageFlash, setDamageFlash] = useState(0);
   const [ecToast, setEcToast] = useState<string | null>(null);
+  const pendingBanners = usePendingBanners();
   const ecToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [damageIndicators, setDamageIndicators] = useState<DamageIndicator[]>([]);
   const [hitMarker, setHitMarker] = useState<{ at: number; kill: boolean; head: boolean } | null>(null);
@@ -466,6 +467,7 @@ export default function GamePage() {
     deployedRef.current = true;
     setDeployed(true);
     setRespawnLoadout(false);
+    flushBannerImpressions();
     deployRef.current(loadoutPrimary, loadoutCharacter);
     if (isMobileRef.current) {
       setIsOverlayDismissed(true);
@@ -561,6 +563,7 @@ export default function GamePage() {
     const isSpectatorMode = mode === 'spectator';
     if (!isSpectatorMode) return;
     const timer = setInterval(() => {
+      if (document.hidden) return; // hidden tab: the spectate clock (and its quest pings) pause
       setSpectatorSeconds((prev) => {
         const next = prev + 1;
         if (next % 15 === 0 && next <= 90) progressQuest('Q_SPECTATE', 15).catch(() => {});
@@ -1195,7 +1198,7 @@ export default function GamePage() {
     async function initColyseus() {
       const colyseusUrl =
         process.env.NEXT_PUBLIC_GAME_SERVER_URL ||
-        (window.location.hostname === 'mwar.win' || window.location.hostname.endsWith('.mwar.win') ? 'wss://game.mwar.win' : 'ws://localhost:2567');
+        (/(^|\.)mwar\.win$|(^|\.)mwar-web\.pages\.dev$/.test(window.location.hostname) ? 'wss://game.mwar.win' : 'ws://localhost:2567');
       const colyseusClient = new ColyseusClient(colyseusUrl);
       try {
         let meData: any = null;
@@ -2647,7 +2650,8 @@ export default function GamePage() {
   ];
   const applyEcResult = (r: AdEcResult) => {
     if (r.format === 'banner' && typeof r.ecProgressAddedPct === 'number' && r.ecProgressAddedPct > 0) {
-      setEcToast(`Banner impression credited (+${r.ecProgressAddedPct.toFixed(1)}% EC)`);
+      const n = r.impressions ?? 1;
+      setEcToast(`${n > 1 ? `${n} banner impressions` : 'Banner impression'} credited (+${r.ecProgressAddedPct.toFixed(1)}% EC)`);
       if (ecToastTimer.current) clearTimeout(ecToastTimer.current);
       ecToastTimer.current = setTimeout(() => setEcToast(null), 4000);
     }
@@ -2663,6 +2667,7 @@ export default function GamePage() {
     }
   };
   const openVideoAd = (f: 'video_15s' | 'video_30s') => {
+    flushBannerImpressions();
     if (document.pointerLockElement) document.exitPointerLock?.();
     firingRef.current = false;
     setVideoAd(f);
@@ -2906,7 +2911,7 @@ export default function GamePage() {
           )}
           <span className="w-px h-3 bg-white/15" />
           <span className="text-yellow-300">
-            ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%
+            ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
           </span>
           {ecToast && <span className="text-[10px] font-semibold text-yellow-200/70">{ecToast}</span>}
           {hudStats.isGhost && <span className="text-purple-300 animate-pulse">👻 GHOST</span>}
@@ -3340,7 +3345,7 @@ export default function GamePage() {
         <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 ${showLoadout ? 'z-[45]' : 'z-[15]'} pointer-events-auto flex flex-col items-center`}>
           {showLoadout && (
             <div className="mb-1 text-[11px] font-black text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] whitespace-nowrap">
-              ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%
+              ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
               {ecToast && <span className="ml-2 font-semibold text-yellow-200/70">{ecToast}</span>}
             </div>
           )}

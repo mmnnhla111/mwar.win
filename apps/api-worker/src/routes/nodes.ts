@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { edgeCachedJson } from '../utils/edge-cache';
 import type { Env } from '../types';
 
 export const nodesRouter = new Hono<{ Bindings: Env }>();
@@ -265,7 +266,7 @@ while true; do
       \\"tunnelHostname\\": \\"game.mwar.win\\"
     }" >/dev/null 2>&1 || true
 
-  sleep 30
+  sleep 180
 done
 HEARTEOF
 chmod +x /opt/mwar-node/heartbeat.sh
@@ -498,25 +499,28 @@ nodesRouter.post('/heartbeat', async (c) => {
 nodesRouter.get('/', async (c) => {
   const masterKey = c.env.NODE_PROVISION_KEY || DEFAULT_PROVISION_KEY;
 
-  const { results } = await c.env.DB
-    .prepare(`
-      SELECT 
-        id, node_name, role, ip_address, region, cpu_usage, ram_usage,
-        active_rooms, player_count, room_capacity_mini, room_capacity_fast,
-        tunnel_hostname, last_heartbeat, created_at,
-        CASE 
-          WHEN last_heartbeat IS NOT NULL AND (unixepoch() - last_heartbeat) < 90 THEN 'online'
-          ELSE 'offline'
-        END AS status
-      FROM game_nodes
-      ORDER BY created_at ASC
-    `)
-    .all();
+  // Read-heavy (admin dashboard + lobby): 15 s edge cache; heartbeats arrive every 180 s anyway
+  return edgeCachedJson(c, 'nodes-list', 15, async () => {
+    const { results } = await c.env.DB
+      .prepare(`
+        SELECT 
+          id, node_name, role, ip_address, region, cpu_usage, ram_usage,
+          active_rooms, player_count, room_capacity_mini, room_capacity_fast,
+          tunnel_hostname, last_heartbeat, created_at,
+          CASE 
+            WHEN last_heartbeat IS NOT NULL AND (unixepoch() - last_heartbeat) < 420 THEN 'online'
+            ELSE 'offline'
+          END AS status
+        FROM game_nodes
+        ORDER BY created_at ASC
+      `)
+      .all();
 
-  return c.json({
-    nodes: results || [],
-    provisionKey: masterKey,
-    timestamp: Date.now(),
+    return {
+      nodes: results || [],
+      provisionKey: masterKey,
+      timestamp: Date.now(),
+    };
   });
 });
 

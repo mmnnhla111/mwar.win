@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { apiFetch } from '../../lib/api';
 import { QuestChatIcon } from '../../components/icons';
+import { useVisibleInterval } from '../../lib/useVisibleInterval';
 
 export default function ChatPage() {
   const [targetUserId, setTargetUserId] = useState('');
@@ -61,12 +62,10 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    if (targetUserId) {
-      loadMessages(targetUserId);
-      const interval = setInterval(() => loadMessages(targetUserId), 3000);
-      return () => clearInterval(interval);
-    }
+    if (targetUserId) loadMessages(targetUserId);
   }, [targetUserId]);
+  // New messages: every 30 s while the tab is visible (sending refreshes immediately)
+  useVisibleInterval(() => targetUserId && loadMessages(targetUserId), 30_000, !!targetUserId, [targetUserId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

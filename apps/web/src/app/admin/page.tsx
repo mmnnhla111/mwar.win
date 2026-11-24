@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
 import { formatMicroUsd } from '@mwar/shared';
+import { useVisibleInterval } from '../../lib/useVisibleInterval';
 
 export default function AdminAuditPage() {
   const [pendingList, setPendingList] = useState<any[]>([]);
@@ -49,14 +50,9 @@ export default function AdminAuditPage() {
   useEffect(() => {
     loadPending();
     loadNodes();
-
-    // Auto-refresh node telemetry every 15s
-    const timer = setInterval(() => {
-      loadNodes();
-    }, 15000);
-
-    return () => clearInterval(timer);
   }, []);
+  // Node telemetry: every 60 s while visible (nodes heartbeat every 180 s anyway)
+  useVisibleInterval(() => loadNodes(), 60_000);
 
   const handleReview = async (withdrawalId: string, action: 'approve' | 'reject') => {
     setActionMsg('');

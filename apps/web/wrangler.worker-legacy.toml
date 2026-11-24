@@ -1,3 +1,7 @@
+# LEGACY: mwar.win used to be served by this Worker. Static hosting moved to Cloudflare Pages
+# (project "mwar-web", see docs/CLOUDFLARE_PAGES_MIGRATION.md). Renamed so a habitual
+# `npx wrangler deploy` in apps/web cannot re-claim the mwar.win custom domains from Pages.
+
 name = "mwar-web"
 main = "worker.js"
 compatibility_date = "2024-11-01"
