@@ -9,3 +9,4 @@ nudenet>=3.4,<4
 # CPU-only index by the installer so no CUDA wheels are ever downloaded.
 open-clip-torch>=2.24
 onnx>=1.15
+onnxscript

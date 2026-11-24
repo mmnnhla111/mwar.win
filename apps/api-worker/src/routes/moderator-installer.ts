@@ -73,7 +73,7 @@ PIP="\${MOD}/.venv/bin/pip"
 \${PIP} install --upgrade pip wheel
 # torch / torchvision only from the CPU index (used once to export CLIP to ONNX)
 \${PIP} install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-\${PIP} install --extra-index-url https://download.pytorch.org/whl/cpu -r "\${MOD}/requirements.txt"
+\${PIP} install --extra-index-url https://download.pytorch.org/whl/cpu -r "\${MOD}/requirements.txt" onnxscript
 
 echo "[5/7] Writing \${ENV_FILE} (existing keys of other roles are kept)..."
 touch "\${ENV_FILE}"
