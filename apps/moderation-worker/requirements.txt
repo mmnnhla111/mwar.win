@@ -1,0 +1,11 @@
+# Runtime (no torch needed at runtime: CLIP runs as ONNX via OpenVINO or ONNX Runtime)
+numpy>=1.26,<3
+pillow>=10.0
+requests>=2.31
+onnxruntime>=1.17
+openvino>=2024.0
+nudenet>=3.4,<4
+# One-time model preparation (prepare_models.py). torch / torchvision are installed first from the
+# CPU-only index by the installer so no CUDA wheels are ever downloaded.
+open-clip-torch>=2.24
+onnx>=1.15

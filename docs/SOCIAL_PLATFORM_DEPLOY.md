@@ -44,3 +44,47 @@ pnpm run deploy:pages
 - `https://mwar.win/` while signed out → redirects to `/login`
 - `https://api.mwar.win/api/games` → JSON with `totalPlayers` / `onlineNow`
 - `https://game.mwar.win/rooms` → JSON with `modes`
+
+---
+
+# Content policy + moderation round (2026-11-24, migration 0009)
+
+Run in this order from `D:\Website\mwar-win` after `git pull`.
+
+```bash
+cd apps/api-worker
+npx wrangler r2 bucket create mwar-media                 # new private bucket for post photos/videos
+npx wrangler d1 migrations apply core_db --remote        # applies 0009_content_moderation.sql
+npx wrangler deploy                                      # API: uploads, 18+ filter, reports, /api/moderation/*
+
+cd ../web
+pnpm run deploy:pages                                    # /settings, /report, admin takedown tab
+```
+
+`0009_content_moderation.sql` adds `users.show_nsfw`, the post columns `media_type`, `media_key`,
+`content_rating`, `moderation_status`, `moderation_reason`, `nsfw_score`, `author_marked_nsfw`,
+the tables `moderation_jobs` and `content_reports`, composite indexes, and rebuilds
+`social_notifications` so it accepts the new `moderation` type (rows are copied, nothing is lost).
+Existing posts stay `approved` / `safe`.
+
+## Moderation node (Ubuntu 24.04 mini PC, as root)
+
+```bash
+curl -sSL "https://api.mwar.win/api/nodes/install.sh?token=<NODE_PROVISION_KEY>&role=moderator&node_name=mwar-mod-1" | sudo bash
+curl -s http://127.0.0.1:3100/health
+```
+
+Needs the `INTERNAL_API_SECRET` secret on the API worker (already used by the game server).
+Until a moderator node runs, new photo/video posts stay pending (visible only to their author).
+
+## Security follow-up
+
+The old hard-coded fallback provision key was removed from the code but is still in git history.
+Rotate it: `npx wrangler secret put NODE_PROVISION_KEY` (new random value), then re-copy install
+commands from Admin.
+
+## Quick check
+
+- Post a photo → it shows "กำลังตรวจสอบภาพ/วิดีโอ..." only for you; after the worker runs it becomes public, 18+ or rejected.
+- `/settings` → 18+ toggle asks for age confirmation.
+- Post "..." → แจ้งขอให้ลบ / Report → appears in Admin → คำขอแจ้งลบ (Takedown Requests).

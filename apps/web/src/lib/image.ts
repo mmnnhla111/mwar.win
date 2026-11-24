@@ -2,9 +2,10 @@ import { SOCIAL_IMAGE_MAX_BYTES, SOCIAL_IMAGE_MAX_WIDTH, SOCIAL_IMAGE_WEBP_QUALI
 
 /**
  * Resize + compress a picked photo 100 % on the client with <canvas>:
- * max width 720 px, WebP quality 0.72, and a strict 120 KB ceiling (quality, then size, step down).
+ * max 720 px on the longest edge, WebP quality 0.72, and a strict byte ceiling (120 KB avatars,
+ * 150 KB post photos; quality, then size, step down).
  */
-export async function compressImageToWebp(file: File, maxWidth = SOCIAL_IMAGE_MAX_WIDTH): Promise<Blob> {
+export async function compressImageToWebp(file: File, maxEdge = SOCIAL_IMAGE_MAX_WIDTH, maxBytes = SOCIAL_IMAGE_MAX_BYTES): Promise<Blob> {
   if (!file.type.startsWith('image/')) throw new Error('Please pick an image file');
   const url = URL.createObjectURL(file);
   try {
@@ -14,7 +15,10 @@ export async function compressImageToWebp(file: File, maxWidth = SOCIAL_IMAGE_MA
       el.onerror = () => reject(new Error('Could not read this image'));
       el.src = url;
     });
-    let width = Math.min(maxWidth, img.naturalWidth || maxWidth);
+    const nw = img.naturalWidth || maxEdge;
+    const nh = img.naturalHeight || maxEdge;
+    // Longest edge <= maxEdge (portrait photos are limited by height)
+    let width = Math.min(nw, Math.round((nw * maxEdge) / Math.max(nw, nh)));
     let quality = SOCIAL_IMAGE_WEBP_QUALITY;
     for (let attempt = 0; attempt < 8; attempt++) {
       const scale = width / (img.naturalWidth || width);
@@ -26,7 +30,7 @@ export async function compressImageToWebp(file: File, maxWidth = SOCIAL_IMAGE_MA
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
       if (!blob || blob.type !== 'image/webp') throw new Error('This browser cannot create WebP images');
-      if (blob.size <= SOCIAL_IMAGE_MAX_BYTES) return blob;
+      if (blob.size <= maxBytes) return blob;
       if (quality > 0.5) quality -= 0.1;
       else width = Math.round(width * 0.8);
     }

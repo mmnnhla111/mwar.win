@@ -3,8 +3,10 @@
 import React, { useEffect, useState } from 'react';
 import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
 import { formatMicroUsd } from '@mwar/shared';
+import { TakedownQueue } from '../../components/admin/TakedownQueue';
 
 export default function AdminAuditPage() {
+  const [tab, setTab] = useState<'fleet' | 'takedown'>('fleet');
   const [pendingList, setPendingList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
@@ -13,7 +15,7 @@ export default function AdminAuditPage() {
   const [nodes, setNodes] = useState<GameNode[]>([]);
   const [nodesLoading, setNodesLoading] = useState(true);
   const [provisionKey, setProvisionKey] = useState('');
-  const [selectedRole, setSelectedRole] = useState<'all' | 'game' | 'logs'>('all');
+  const [selectedRole, setSelectedRole] = useState<'all' | 'game' | 'logs' | 'moderator'>('all');
   const [nodeNameInput, setNodeNameInput] = useState('mwar-game-server-1');
   const [tunnelTokenInput, setTunnelTokenInput] = useState('');
   const [copied, setCopied] = useState(false);
@@ -143,6 +145,30 @@ export default function AdminAuditPage() {
         </div>
       )}
 
+      <div className="flex gap-2 overflow-x-auto" role="tablist">
+        {([
+          ['fleet', '🖥️ Server Fleet & Cashouts'],
+          ['takedown', '🚩 คำขอแจ้งลบ (Takedown Requests)'],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            data-admin-tab={id}
+            onClick={() => setTab(id)}
+            className={`shrink-0 px-4 py-2 rounded-2xl text-sm font-bold border transition ${
+              tab === id ? 'bg-[#FFE135] border-yellow-300 text-stone-900' : 'bg-white border-stone-200/80 text-stone-500 hover:text-stone-900'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'takedown' && <TakedownQueue />}
+
+      {tab === 'fleet' && (
+      <>
       {/* 2. SERVER NODES & 1-CLICK INSTALLER SECTION */}
       <div className="bg-white border border-stone-200/80 rounded-3xl p-5 sm:p-6 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-200/80 pb-4">
@@ -335,6 +361,7 @@ export default function AdminAuditPage() {
                   { id: 'all', label: '🎮 All-in-One' },
                   { id: 'game', label: '⚔️ Game Only' },
                   { id: 'logs', label: '📜 Logs Only' },
+                  { id: 'moderator', label: '🛡️ NSFW Moderator' },
                 ].map((r) => (
                   <button
                     key={r.id}
@@ -529,6 +556,8 @@ export default function AdminAuditPage() {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

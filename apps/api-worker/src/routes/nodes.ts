@@ -2,7 +2,10 @@ import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { isLocalDev } from '../utils/guards';
+import { isLocalDev, safeEqual } from '../utils/guards';
+import { moderatorInstallScript } from './moderator-installer';
+
+const NODE_ROLES = ['all', 'game', 'logs', 'moderator'];
 
 export const nodesRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -31,7 +34,7 @@ async function validateProvisionKey(c: any): Promise<boolean> {
   if (!token) return false;
 
   const validMasterKey = c.env.NODE_PROVISION_KEY;
-  if ((validMasterKey && token === validMasterKey) || (c.env.INTERNAL_API_SECRET && token === c.env.INTERNAL_API_SECRET)) {
+  if ((validMasterKey && safeEqual(token, validMasterKey)) || (c.env.INTERNAL_API_SECRET && safeEqual(token, c.env.INTERNAL_API_SECRET))) {
     return true;
   }
 
@@ -53,13 +56,22 @@ nodesRouter.get('/install.sh', async (c) => {
     return c.text('❌ 401 Unauthorized: Invalid or missing Provisioning Key. Access Denied.\n', 401);
   }
 
+  // Whitelisted values only: everything below is interpolated into a script that runs as root
   const role = (c.req.query('role') || 'all').toLowerCase();
-  const rawNodeName = c.req.query('node_name') || 'mwar-game-server-1';
-  const nodeName = rawNodeName.replace(/[^a-zA-Z0-9_-]/g, '');
-  const tunnelToken = (c.req.query('tunnel_token') || '').trim();
-  const internalSecret = c.env.INTERNAL_API_SECRET || 'local_internal_secret_2026';
+  if (!NODE_ROLES.includes(role)) return c.text(`❌ 400: role must be one of ${NODE_ROLES.join(', ')}\n`, 400);
+  const rawNodeName = c.req.query('node_name') || (role === 'moderator' ? 'mwar-mod-1' : 'mwar-game-server-1');
+  const nodeName = rawNodeName.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'mwar-node';
+  const tunnelToken = (c.req.query('tunnel_token') || '').trim().replace(/[^A-Za-z0-9=_.-]/g, '');
+  // No hardcoded fallback: refuse to generate an installer without the real secret
+  const internalSecret = c.env.INTERNAL_API_SECRET || '';
+  if (!internalSecret) return c.text('❌ 503: INTERNAL_API_SECRET is not configured on the API worker.\n', 503);
   const logReceiverSecret = c.env.LOG_RECEIVER_SECRET || c.env.LOG_INGEST_SECRET || internalSecret;
   const apiBaseUrl = 'https://api.mwar.win';
+
+  if (role === 'moderator') {
+    const threads = Math.max(1, Math.min(3, Math.floor(Number(c.req.query('threads') || 2)) || 2));
+    return c.text(moderatorInstallScript({ nodeName, internalSecret, apiBaseUrl, threads }), 200, { 'Cache-Control': 'no-store' });
+  }
 
   const script = `#!/usr/bin/env bash
 # ==============================================================================
@@ -456,10 +468,11 @@ nodesRouter.post('/heartbeat', async (c) => {
   const authHeader = c.req.header('Authorization') || '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  const validSecret = c.env.INTERNAL_API_SECRET || 'local_internal_secret_2026';
-  const masterKey = c.env.NODE_PROVISION_KEY;
+  const validSecret = c.env.INTERNAL_API_SECRET || '';
+  const masterKey = c.env.NODE_PROVISION_KEY || '';
 
-  if (token !== validSecret && (!masterKey || token !== masterKey)) {
+  // No hardcoded fallback secret: an unset secret rejects every heartbeat
+  if (!token || ((!validSecret || !safeEqual(token, validSecret)) && (!masterKey || !safeEqual(token, masterKey)))) {
     return c.json({ error: 'Unauthorized node heartbeat' }, 401);
   }
 
@@ -508,7 +521,8 @@ nodesRouter.post('/heartbeat', async (c) => {
 // 3. List All Nodes (GET /api/nodes) - Protected: Admin / Auditor Only
 // ----------------------------------------------------------------------------
 nodesRouter.get('/', requireAdminOrAuditor, async (c) => {
-  const masterKey = c.env.NODE_PROVISION_KEY || '';
+  // The provisioning key is admin-only (auditors see node telemetry, never the key)
+  const masterKey = c.get('user')?.role === 'admin' || isLocalDev(c) ? c.env.NODE_PROVISION_KEY || '' : '';
 
   const { results } = await c.env.DB
     .prepare(`
@@ -538,10 +552,12 @@ nodesRouter.get('/', requireAdminOrAuditor, async (c) => {
 // 4. Generate 1-Click Provision Command (POST /api/nodes/provision-command) - Protected
 // ----------------------------------------------------------------------------
 nodesRouter.post('/provision-command', requireAdminOrAuditor, async (c) => {
+  if (!isLocalDev(c) && c.get('user')?.role !== 'admin') return c.json({ error: 'Forbidden: admin only' }, 403);
   const body = await c.req.json().catch(() => ({}));
-  const role = (body.role || 'all').toLowerCase();
-  const nodeName = (body.nodeName || 'mwar-game-server-1').replace(/[^a-zA-Z0-9_-]/g, '');
-  const tunnelToken = (body.tunnelToken || '').trim();
+  const role = String(body.role || 'all').toLowerCase();
+  if (!NODE_ROLES.includes(role)) return c.json({ error: `role must be one of ${NODE_ROLES.join(', ')}` }, 400);
+  const nodeName = String(body.nodeName || (role === 'moderator' ? 'mwar-mod-1' : 'mwar-game-server-1')).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  const tunnelToken = String(body.tunnelToken || '').trim().replace(/[^A-Za-z0-9=_.-]/g, '');
 
   const masterKey = c.env.NODE_PROVISION_KEY || '';
 

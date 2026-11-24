@@ -13,6 +13,7 @@ const VERB: Record<SocialNotification['type'], string> = {
   like: 'liked your post',
   comment: 'commented on your post',
   follow: 'started following you',
+  moderation: '— your photo/video was removed (content policy)',
 };
 
 // Kept for the session so re-opening the bell costs no request unless there is something new
@@ -97,7 +98,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
           >
             <Avatar src={n.actor.avatarUrl} name={displayName(n.actor)} size={38} />
             <span className="text-sm text-stone-700 leading-snug">
-              <b className="text-stone-900">{displayName(n.actor)}</b> {VERB[n.type]}
+              <b className="text-stone-900">{n.type === 'moderation' ? 'Moderation' : displayName(n.actor)}</b> {VERB[n.type]}{n.type === 'moderation' && n.reason ? `: ${n.reason}` : ''}
               <span className="block text-xs text-stone-400 mt-0.5">{timeAgo(n.createdAt)}</span>
             </span>
           </Link>

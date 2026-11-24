@@ -17,7 +17,8 @@ import { stringifyLog, logReceiverHeaders } from './utils/audit-logger';
 import { nodesRouter } from './routes/nodes';
 import { practiceRouter } from './routes/practice';
 import { isLocalDev, hasInternalSecret } from './utils/guards';
-import { socialRouter, serveMedia } from './routes/social';
+import { socialRouter, serveMedia, serveSocialMedia } from './routes/social';
+import { moderationRouter, pruneModerationData } from './routes/moderation';
 import { gamesRouter } from './routes/games';
 import { bootstrapHandler } from './routes/bootstrap';
 import { authMiddleware } from './middleware/auth';
@@ -65,10 +66,14 @@ app.route('/api/nodes', nodesRouter);
 app.route('/api/practice', practiceRouter);
 app.route('/api/social', socialRouter);
 app.route('/api/games', gamesRouter);
+// Self-hosted moderation workers (X-Internal-Secret): claim jobs, fetch media, submit batched results
+app.route('/api/moderation', moderationRouter);
 
 // One request for the whole app shell (user, wallet, quest/notification/chat badges)
 app.get('/api/bootstrap', authMiddleware, bootstrapHandler);
-// Public, immutable WebP media (post photos, avatars) from R2
+// Post photos / videos (approved or 18+ only; pending + rejected media are never served)
+app.get('/api/media/social/:y/:m/:file', serveSocialMedia);
+// Public, immutable WebP media (avatars + legacy post photos) from R2
 app.get('/api/media/:uid/:file', serveMedia);
 
 // Cron endpoints (Direct trigger or Cloudflare Scheduled Event)
@@ -146,5 +151,7 @@ export default {
       .bind(Math.floor(Date.now() / 1000) - CHAT_RETENTION_MONTHS * 30 * 86_400)
       .run()
       .catch((e: unknown) => console.warn('[Cron] chat retention failed', e));
+    // Zero-bloat: finished moderation jobs (7 d), expired reset tokens, rejected posts + their R2 media
+    await pruneModerationData(env).catch((e: unknown) => console.warn('[Cron] moderation prune failed', e));
   },
 };

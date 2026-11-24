@@ -1,0 +1,11 @@
+{
+  "_comment": "Stage 1 zero-shot prompts. Edit, then re-run prepare_models.py (text embeddings are pre-computed once). kind=prohibited categories are rejected and purged; kind=safe prompts are contrast classes that keep game screenshots, normal photos and (age-gated) nudity from being mistaken for violence.",
+  "prompts": [
+    { "category": "weapons", "kind": "prohibited", "text": "a real-life photograph of a gun, firearm, pistol, rifle, or knife weapon" },
+    { "category": "blood_gore", "kind": "prohibited", "text": "a real-life photograph of blood, gore, severe injury, or open wound" },
+    { "category": "violence", "kind": "prohibited", "text": "real people physically fighting, punching, assaulting, or violent attack" },
+    { "category": "safe_everyday", "kind": "safe", "text": "a normal safe everyday photograph of people, food, pets, or scenery" },
+    { "category": "safe_game", "kind": "safe", "text": "a 3D video game screenshot, cartoon, or digital game interface" },
+    { "category": "safe_adult_art", "kind": "safe", "text": "an artistic portrait, swimsuit, or adult nudity without violence or weapons" }
+  ]
+}

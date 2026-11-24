@@ -137,6 +137,9 @@ export function TopNav() {
                   <Link href="/profile" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
                     <Icon name="user" size={18} /> My profile
                   </Link>
+                  <Link href="/settings" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
+                    <Icon name="edit" size={18} /> ตั้งค่า / Settings
+                  </Link>
                   {(user.role === 'admin' || user.role === 'auditor') && (
                     <Link href="/admin" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
                       <Icon name="shield" size={18} /> Admin

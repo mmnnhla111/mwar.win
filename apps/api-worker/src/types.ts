@@ -6,8 +6,10 @@ export interface Env {
   DB: D1Database;
   CHAT_DB: D1Database;
 
-  // Cloudflare R2 Bucket
+  // Cloudflare R2 Buckets
   ASSETS_BUCKET: R2Bucket;
+  /** Social post media (social/YYYY/MM/<uuid>.webp|.mp4|.webm). Rejected / taken-down files are deleted at once. */
+  MEDIA_BUCKET: R2Bucket;
 
   // Cloudflare Queues
   LOG_QUEUE: Queue<FinancialLog>;

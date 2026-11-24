@@ -39,7 +39,9 @@ function HomeFeed() {
       try {
         const pg = await getFeed({ cursor: opts.cursor, tag });
         setPosts((prev) => {
-          const merged = opts.cursor ? [...prev, ...pg.items] : pg.items;
+          // First page: my posts still under review / removed sit on top (author-only)
+          const mine = !opts.cursor ? (pg.mine || []).filter((m) => !pg.items.some((x) => x.id === m.id)) : [];
+          const merged = opts.cursor ? [...prev, ...pg.items] : [...mine, ...pg.items];
           memoSet<FeedState>(key, { posts: merged, next: pg.nextCursor });
           return merged;
         });

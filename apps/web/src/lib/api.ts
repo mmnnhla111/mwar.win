@@ -12,6 +12,8 @@ import type {
   SocialAuthor,
   SocialNotification,
   SocialPostTag,
+  ReportReason,
+  ContentReportItem,
   ProfileCoverColor,
   GamesResponse,
   FpsRoomsResponse,
@@ -301,12 +303,48 @@ const qs = (o: Record<string, string | undefined | null>) => {
   return s ? `?${s}` : '';
 };
 
+/** Feed page; the first home page also carries `mine` = my posts still under review or removed. */
 export function getFeed(opts: { cursor?: string | null; tag?: string | null; author?: string | null } = {}) {
-  return apiFetch<CursorPage<SocialPost>>(`/api/social/feed${qs({ cursor: opts.cursor, tag: opts.tag, author: opts.author })}`);
+  return apiFetch<CursorPage<SocialPost> & { mine?: SocialPost[] }>(`/api/social/feed${qs({ cursor: opts.cursor, tag: opts.tag, author: opts.author })}`);
 }
 
-export function createPost(data: { body: string; tag: SocialPostTag; imageUrl?: string | null }) {
-  return apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', { method: 'POST', body: JSON.stringify(data) });
+/**
+ * Create a post. Text-only posts are JSON; a photo (compressed WebP <= 150 KB) or video
+ * (MP4 / WebM <= 30 s, <= 5 MB) is sent in the same multipart request and starts "pending".
+ */
+export function createPost(data: { body: string; tag: SocialPostTag; nsfw?: boolean; media?: Blob | null; mediaName?: string }) {
+  if (data.media) {
+    const fd = new FormData();
+    fd.set('body', data.body);
+    fd.set('tag', data.tag);
+    fd.set('nsfw', data.nsfw ? 'true' : 'false');
+    fd.set('media', data.media, data.mediaName || 'media');
+    return apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', { method: 'POST', body: fd });
+  }
+  return apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', {
+    method: 'POST',
+    body: JSON.stringify({ body: data.body, tag: data.tag, nsfw: !!data.nsfw }),
+  });
+}
+
+// Content policy: 18+ setting, reports, admin takedown queue
+export function updateSocialSettings(data: { showNsfw: boolean; confirmAdult?: boolean }) {
+  return apiFetch<{ success: boolean; showNsfw: boolean }>('/api/social/settings', { method: 'PATCH', body: JSON.stringify(data) });
+}
+
+export function reportPost(data: { postId: string; reasonCategory: ReportReason; details?: string; contact?: string }) {
+  return apiFetch<{ success: boolean; message: string; duplicate?: boolean }>('/api/social/reports', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function getTakedownReports(cursor?: string | null) {
+  return apiFetch<CursorPage<ContentReportItem>>(`/api/social/admin/reports${qs({ cursor })}`);
+}
+
+export function actOnReport(id: string, action: 'delete' | 'reclassify_18' | 'dismiss') {
+  return apiFetch<{ success: boolean; action: string }>(`/api/social/admin/reports/${encodeURIComponent(id)}/action`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  });
 }
 
 export function deletePost(id: string) {
@@ -332,7 +370,7 @@ export function addComment(postId: string, body: string) {
 }
 
 export function getProfile(username?: string | null) {
-  return apiFetch<{ profile: SocialProfile; posts: CursorPage<SocialPost> }>(`/api/social/profile${qs({ u: username })}`);
+  return apiFetch<{ profile: SocialProfile; posts: CursorPage<SocialPost> & { mine?: SocialPost[] } }>(`/api/social/profile${qs({ u: username })}`);
 }
 
 export function updateSocialProfile(data: { displayName?: string; bio?: string; avatarUrl?: string; coverColor?: ProfileCoverColor }) {
@@ -366,7 +404,7 @@ export function markNotificationsRead() {
   return apiFetch<{ success: boolean }>('/api/social/notifications/read', { method: 'POST' });
 }
 
-/** Upload an already-compressed WebP blob (<= 120 KB) to R2; returns its immutable URL. */
+/** Upload an already-compressed WebP avatar (<= 120 KB) to R2; returns its immutable URL. */
 export async function uploadMedia(blob: Blob): Promise<string> {
   const res = await apiFetch<{ success: boolean; url: string }>('/api/social/media', {
     method: 'POST',

@@ -13,8 +13,15 @@ export const SOCIAL_POST_MAX_CHARS = 1000;
 export const SOCIAL_COMMENT_MAX_CHARS = 300;
 export const SOCIAL_BIO_MAX_CHARS = 160;
 export const SOCIAL_DISPLAY_NAME_MAX_CHARS = 40;
-/** Client-compressed WebP upload ceiling (bytes). */
+/** Client-compressed WebP avatar ceiling (bytes). */
 export const SOCIAL_IMAGE_MAX_BYTES = 120 * 1024;
+/** Post photos: client resizes to 720 px / WebP 0.72; the server hard-caps the upload at 150 KB. */
+export const SOCIAL_POST_IMAGE_MAX_BYTES = 150 * 1024;
+/** Post videos: MP4 / WebM, at most 30 s and 5 MB. */
+export const SOCIAL_VIDEO_MAX_BYTES = 5 * 1024 * 1024;
+export const SOCIAL_VIDEO_MAX_SECONDS = 30;
+export const SOCIAL_REPORT_DETAILS_MAX_CHARS = 500;
+export const SOCIAL_REPORT_CONTACT_MAX_CHARS = 120;
 export const SOCIAL_IMAGE_MAX_WIDTH = 720;
 export const SOCIAL_IMAGE_WEBP_QUALITY = 0.72;
 export const PASSWORD_RESET_TTL_SECONDS = 15 * 60;
@@ -52,11 +59,81 @@ const mediaUrl = z
   .max(300)
   .refine((v) => /^\/images\/[a-z0-9_./-]+$/i.test(v) || /^https?:\/\/[^\s/]+\/api\/media\/[a-z0-9-]{8,64}\/[a-z0-9-]{8,64}\.webp$/i.test(v), 'Invalid image URL');
 
+/**
+ * Post fields. Media is never passed by URL: photos / videos travel in the same multipart request
+ * (field `media`) so every upload is tied to a post and queued for moderation (no orphan R2 files).
+ */
 export const SocialPostCreateSchema = z.object({
   body: z.string().trim().max(SOCIAL_POST_MAX_CHARS).default(''),
   tag: z.enum(SOCIAL_POST_TAGS).default('General'),
-  imageUrl: mediaUrl.optional().nullable(),
-}).refine((v) => v.body.length > 0 || !!v.imageUrl, { message: 'Write something or attach a photo' });
+  /** Author self-tags the post as 18+ (always hidden from viewers with 18+ off). */
+  nsfw: z.boolean().default(false),
+});
+
+// ---------------------------------------------------------------------------
+// Content policy: moderation + reports + settings
+// ---------------------------------------------------------------------------
+export type SocialMediaType = 'none' | 'image' | 'video';
+export type SocialContentRating = 'safe' | 'nsfw_18';
+export type SocialModerationStatus = 'pending' | 'approved' | 'nsfw_18' | 'rejected';
+export type ModerationAction = 'approve_safe' | 'mark_nsfw_18' | 'reject_prohibited';
+
+export const REPORT_REASONS = ['violence', 'privacy', 'copyright', 'unlabeled_18', 'other'] as const;
+export type ReportReason = (typeof REPORT_REASONS)[number];
+export const REPORT_REASON_LABELS: Record<ReportReason, string> = {
+  violence: 'อาวุธ / เลือด / ความรุนแรง (Weapons / Blood / Violence)',
+  privacy: 'ละเมิดความเป็นส่วนตัว / ภาพส่วนตัวของฉัน (Privacy / Non-Consensual Content)',
+  copyright: 'ละเมิดลิขสิทธิ์ (Copyright / DMCA)',
+  unlabeled_18: 'เนื้อหา 18+ ที่ไม่ติดป้าย (Unlabeled 18+ Content)',
+  other: 'อื่นๆ / ขอให้ลบเนื้อหา (Other Takedown Request)',
+};
+
+export const ContentReportSchema = z.object({
+  postId: z.string().trim().regex(/^[a-z0-9]{8,40}$/i, 'Invalid post'),
+  reasonCategory: z.enum(REPORT_REASONS),
+  details: z.string().trim().max(SOCIAL_REPORT_DETAILS_MAX_CHARS).optional().default(''),
+  contact: z.string().trim().max(SOCIAL_REPORT_CONTACT_MAX_CHARS).optional().default(''),
+});
+
+export const ReportActionSchema = z.object({
+  action: z.enum(['delete', 'reclassify_18', 'dismiss']),
+});
+
+export const SocialSettingsSchema = z.object({
+  showNsfw: z.boolean(),
+  /** Must be true when turning 18+ on (the viewer confirmed they are 18 or older). */
+  confirmAdult: z.boolean().optional(),
+});
+
+export const ModerationResultSchema = z.object({
+  node_name: z.string().trim().min(1).max(64),
+  results: z
+    .array(
+      z.object({
+        job_id: z.string().min(4).max(64),
+        post_id: z.string().min(4).max(64),
+        action: z.enum(['approve_safe', 'mark_nsfw_18', 'reject_prohibited']),
+        reason: z.string().max(200).optional(),
+        score: z.number().min(0).max(1).default(0),
+        stage_stopped: z.number().int().min(0).max(2).default(2),
+      })
+    )
+    .min(1)
+    .max(20),
+});
+
+export interface ContentReportItem {
+  id: string;
+  postId: string;
+  reasonCategory: ReportReason;
+  details: string | null;
+  reporterUsername: string | null;
+  reporterContact: string | null;
+  createdAt: number;
+  /** Number of pending reports on the same post. */
+  reportCount: number;
+  post: SocialPost | null;
+}
 
 export const SocialCommentCreateSchema = z.object({
   body: z.string().trim().min(1, 'Comment is empty').max(SOCIAL_COMMENT_MAX_CHARS),
@@ -87,11 +164,21 @@ export interface SocialPost {
   author: SocialAuthor;
   body: string;
   tag: SocialPostTag;
+  /** Approved photo URL (legacy name kept for photos). */
   imageUrl: string | null;
+  mediaType: SocialMediaType;
+  /** Public media URL (photo or video); null while the media is pending or after removal. */
+  mediaUrl: string | null;
+  contentRating: SocialContentRating;
+  moderationStatus: SocialModerationStatus;
+  /** Only sent to the author for rejected posts. */
+  moderationReason?: string | null;
   likeCount: number;
   commentCount: number;
   createdAt: number;
   likedByMe?: boolean;
+  /** Client-only: object URL of the just-uploaded file, shown to the author while pending. */
+  localPreviewUrl?: string;
 }
 
 export interface SocialComment {
@@ -127,11 +214,13 @@ export interface SocialProfile {
 
 export interface SocialNotification {
   id: string;
-  type: 'like' | 'comment' | 'follow';
+  type: 'like' | 'comment' | 'follow' | 'moderation';
   actor: SocialAuthor;
   postId: string | null;
   isRead: boolean;
   createdAt: number;
+  /** moderation notices: why the media was removed. */
+  reason?: string | null;
 }
 
 export interface BootstrapUser {
@@ -147,6 +236,8 @@ export interface BootstrapUser {
   energyProgressPct: number;
   secondsToNextRecharge: number;
   createdAt: number;
+  /** 18+ content preference (default false). */
+  showNsfw: boolean;
 }
 
 export interface BootstrapWalletSummary {

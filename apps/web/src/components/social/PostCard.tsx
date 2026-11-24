@@ -8,6 +8,7 @@ import { Avatar } from '../ui/Avatar';
 import { Card, Spinner } from '../ui/Card';
 import { Icon } from '../ui/Icon';
 import { TAG_STYLE } from './PostComposer';
+import { ReportModal } from './ReportModal';
 import { addComment, deletePost, getComments, setPostLike } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { displayName, formatCount, timeAgo } from '../../lib/format';
@@ -25,6 +26,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [reporting, setReporting] = useState(false);
 
   const toggleLike = async () => {
     if (likeBusy) return;
@@ -99,7 +101,12 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
     }
   };
 
-  const canDelete = me && (me.id === post.author.id || me.role === 'admin');
+  const isMine = !!me && me.id === post.author.id;
+  const canDelete = me && (isMine || me.role === 'admin');
+  const pending = post.moderationStatus === 'pending';
+  const rejected = post.moderationStatus === 'rejected';
+  const is18 = post.contentRating === 'nsfw_18';
+  const mediaSrc = post.mediaUrl || post.imageUrl || (pending ? post.localPreviewUrl : undefined) || null;
 
   return (
     <Card as="article" className="overflow-hidden">
@@ -116,9 +123,15 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
             <span>·</span>
             <time dateTime={new Date(post.createdAt * 1000).toISOString()}>{timeAgo(post.createdAt)}</time>
             <span className={`ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${TAG_STYLE[post.tag]}`}>#{post.tag}</span>
+            {is18 && <span className="rounded-full px-2 py-0.5 text-[10px] font-black bg-rose-100 text-rose-600" title="18+ content">18+</span>}
+            {pending && (
+              <span data-badge="pending" className="rounded-full px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 animate-pulse">
+                กำลังตรวจสอบภาพ/วิดีโอ...
+              </span>
+            )}
           </div>
         </div>
-        {canDelete && (
+        {me && (
           <div className="relative">
             <button onClick={() => setMenu((v) => !v)} className="w-8 h-8 rounded-full hover:bg-stone-100 text-stone-400 flex items-center justify-center" aria-label="Post options">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -128,10 +141,23 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
               </svg>
             </button>
             {menu && (
-              <div className="absolute right-0 mt-1 w-40 bg-white rounded-2xl border border-stone-200 shadow-lg p-1 z-10">
-                <button onClick={remove} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-50 text-sm font-semibold text-rose-500">
-                  <Icon name="trash" size={16} /> Delete post
-                </button>
+              <div className="absolute right-0 mt-1 w-52 bg-white rounded-2xl border border-stone-200 shadow-lg p-1 z-10">
+                {!isMine && (
+                  <button
+                    onClick={() => {
+                      setMenu(false);
+                      setReporting(true);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-700"
+                  >
+                    <Icon name="shield" size={16} /> แจ้งขอให้ลบ / Report
+                  </button>
+                )}
+                {canDelete && (
+                  <button onClick={remove} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-50 text-sm font-semibold text-rose-500">
+                    <Icon name="trash" size={16} /> Delete post
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -139,12 +165,28 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
       </div>
 
       {post.body && <p className="px-4 pb-3 text-[15px] leading-relaxed text-stone-800 whitespace-pre-wrap break-words">{post.body}</p>}
-      {post.imageUrl && (
-        <div className="px-4 pb-3">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={post.imageUrl} alt="" loading="lazy" decoding="async" className="w-full max-h-[520px] object-cover rounded-2xl border border-stone-100 bg-stone-50" />
+      {rejected && (
+        <div className="mx-4 mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700" data-badge="rejected">
+          <b>รูป/วิดีโอนี้ถูกลบออกแล้ว</b> — {post.moderationReason || 'ขัดกับนโยบายเนื้อหา (อาวุธ / เลือด / ความรุนแรง)'}
+          <div className="text-xs text-rose-500 mt-0.5">Your media was removed under our content policy. Only you can see this notice.</div>
         </div>
       )}
+      {mediaSrc && !rejected && (
+        <div className={`px-4 pb-3 relative ${pending ? 'opacity-70' : ''}`}>
+          {post.mediaType === 'video' ? (
+            <video src={mediaSrc} controls playsInline preload="metadata" className="w-full max-h-[520px] rounded-2xl border border-stone-100 bg-stone-900" />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={mediaSrc} alt="" loading="lazy" decoding="async" className="w-full max-h-[520px] object-cover rounded-2xl border border-stone-100 bg-stone-50" />
+          )}
+        </div>
+      )}
+      {pending && !mediaSrc && (
+        <div className="mx-4 mb-3 h-40 rounded-2xl border border-dashed border-amber-300 bg-amber-50 flex items-center justify-center text-sm font-semibold text-amber-700">
+          กำลังตรวจสอบภาพ/วิดีโอ... (visible only to you)
+        </div>
+      )}
+      <ReportModal postId={post.id} open={reporting} onClose={() => setReporting(false)} />
 
       {(post.likeCount > 0 || post.commentCount > 0) && (
         <div className="px-4 pb-2 flex items-center justify-between text-xs text-stone-400">

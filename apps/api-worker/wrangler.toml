@@ -55,3 +55,9 @@ crons = ["0 0 * * *"]
 [[r2_buckets]]
 binding = "ASSETS_BUCKET"
 bucket_name = "mwar-audit-archive"
+
+# 7. R2: social post media (photos <= 150 KB WebP, videos <= 30 s / 5 MB). Create once:
+#    npx wrangler r2 bucket create mwar-media
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "mwar-media"
