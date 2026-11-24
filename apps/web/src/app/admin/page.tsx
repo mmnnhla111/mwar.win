@@ -13,7 +13,7 @@ export default function AdminAuditPage() {
   // Server Nodes State
   const [nodes, setNodes] = useState<GameNode[]>([]);
   const [nodesLoading, setNodesLoading] = useState(true);
-  const [provisionKey, setProvisionKey] = useState('mwar_pvkey_237a3e447ee673a37f79cf2ab01524a1999b0098fd1e063b');
+  const [provisionKey, setProvisionKey] = useState('');
   const [selectedRole, setSelectedRole] = useState<'all' | 'game' | 'logs'>('all');
   const [nodeNameInput, setNodeNameInput] = useState('mwar-game-server-1');
   const [tunnelTokenInput, setTunnelTokenInput] = useState('');
@@ -90,7 +90,7 @@ export default function AdminAuditPage() {
 
   // Build the live 1-Click install bash command
   const buildInstallCommand = () => {
-    const key = provisionKey || 'mwar_pvkey_237a3e447ee673a37f79cf2ab01524a1999b0098fd1e063b';
+    const key = provisionKey.trim() || 'PASTE_PROVISION_KEY_HERE';
     let url = `https://api.mwar.win/api/nodes/install.sh?token=${key}&role=${selectedRole}&node_name=${encodeURIComponent(nodeNameInput.trim() || 'mwar-game-server-1')}`;
     if (tunnelTokenInput.trim()) {
       url += `&tunnel_token=${encodeURIComponent(tunnelTokenInput.trim())}`;
@@ -329,14 +329,14 @@ export default function AdminAuditPage() {
           </p>
 
           {/* Form options */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
               <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Node Role</label>
               <div className="flex flex-col space-y-1.5">
                 {[
-                  { id: 'all', label: '🎮 All-in-One (Game + Logs + DBs)' },
-                  { id: 'game', label: '⚔️ Game Server Node Only' },
-                  { id: 'logs', label: '📜 PostgreSQL Log Receiver Only' },
+                  { id: 'all', label: '🎮 All-in-One' },
+                  { id: 'game', label: '⚔️ Game Only' },
+                  { id: 'logs', label: '📜 Logs Only' },
                 ].map((r) => (
                   <button
                     key={r.id}
@@ -363,6 +363,20 @@ export default function AdminAuditPage() {
                 className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
               />
               <span className="text-[10px] text-slate-500 mt-1 block">Used for telemetry identification.</span>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">
+                Provisioning Key {provisionKey ? <span className="text-emerald-400 font-normal">● Loaded</span> : <span className="text-amber-400 font-normal">● Optional</span>}
+              </label>
+              <input
+                type="password"
+                value={provisionKey}
+                onChange={(e) => setProvisionKey(e.target.value)}
+                placeholder="mwar_pvkey_..."
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+              />
+              <span className="text-[10px] text-slate-500 mt-1 block">Loaded via Admin JWT or paste token.</span>
             </div>
 
             <div>

@@ -1,10 +1,18 @@
 import { Hono } from 'hono';
-import { edgeCachedJson } from '../utils/edge-cache';
-import type { Env } from '../types';
+import type { Context, Next } from 'hono';
+import type { Env, AuthUserPayload } from '../types';
+import { authMiddleware, requireRole } from '../middleware/auth';
+import { isLocalDev } from '../utils/guards';
 
-export const nodesRouter = new Hono<{ Bindings: Env }>();
+export const nodesRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
-const DEFAULT_PROVISION_KEY = 'mwar_pvkey_237a3e447ee673a37f79cf2ab01524a1999b0098fd1e063b';
+/** Admin / auditor only (local `wrangler dev` keeps the Dev Mock Panel working without a role). */
+async function requireAdminOrAuditor(c: Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>, next: Next) {
+  if (isLocalDev(c)) return next();
+  return authMiddleware(c, async () => {
+    await requireRole(['admin', 'auditor'])(c, next);
+  });
+}
 
 /**
  * Validate incoming provisioning or node secret
@@ -19,8 +27,8 @@ async function validateProvisionKey(c: any): Promise<boolean> {
 
   if (!token) return false;
 
-  const validMasterKey = c.env.NODE_PROVISION_KEY || DEFAULT_PROVISION_KEY;
-  if (token === validMasterKey || token === c.env.INTERNAL_API_SECRET) {
+  const validMasterKey = c.env.NODE_PROVISION_KEY;
+  if ((validMasterKey && token === validMasterKey) || (c.env.INTERNAL_API_SECRET && token === c.env.INTERNAL_API_SECRET)) {
     return true;
   }
 
@@ -446,9 +454,9 @@ nodesRouter.post('/heartbeat', async (c) => {
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
   const validSecret = c.env.INTERNAL_API_SECRET || 'local_internal_secret_2026';
-  const masterKey = c.env.NODE_PROVISION_KEY || DEFAULT_PROVISION_KEY;
+  const masterKey = c.env.NODE_PROVISION_KEY;
 
-  if (token !== validSecret && token !== masterKey) {
+  if (token !== validSecret && (!masterKey || token !== masterKey)) {
     return c.json({ error: 'Unauthorized node heartbeat' }, 401);
   }
 
@@ -494,46 +502,45 @@ nodesRouter.post('/heartbeat', async (c) => {
 });
 
 // ----------------------------------------------------------------------------
-// 3. List All Nodes (GET /api/nodes)
+// 3. List All Nodes (GET /api/nodes) - Protected: Admin / Auditor Only
 // ----------------------------------------------------------------------------
-nodesRouter.get('/', async (c) => {
-  const masterKey = c.env.NODE_PROVISION_KEY || DEFAULT_PROVISION_KEY;
+nodesRouter.get('/', requireAdminOrAuditor, async (c) => {
+  const masterKey = c.env.NODE_PROVISION_KEY || '';
 
-  // Read-heavy (admin dashboard + lobby): 15 s edge cache; heartbeats arrive every 180 s anyway
-  return edgeCachedJson(c, 'nodes-list', 15, async () => {
-    const { results } = await c.env.DB
-      .prepare(`
-        SELECT 
-          id, node_name, role, ip_address, region, cpu_usage, ram_usage,
-          active_rooms, player_count, room_capacity_mini, room_capacity_fast,
-          tunnel_hostname, last_heartbeat, created_at,
-          CASE 
-            WHEN last_heartbeat IS NOT NULL AND (unixepoch() - last_heartbeat) < 420 THEN 'online'
-            ELSE 'offline'
-          END AS status
-        FROM game_nodes
-        ORDER BY created_at ASC
-      `)
-      .all();
+  const { results } = await c.env.DB
+    .prepare(`
+      SELECT 
+        id, node_name, role, ip_address, region, cpu_usage, ram_usage,
+        active_rooms, player_count, room_capacity_mini, room_capacity_fast,
+        tunnel_hostname, last_heartbeat, created_at,
+        CASE 
+          WHEN last_heartbeat IS NOT NULL AND (unixepoch() - last_heartbeat) < 420 THEN 'online'
+          ELSE 'offline'
+        END AS status
+      FROM game_nodes
+      ORDER BY created_at ASC
+    `)
+    .all();
 
-    return {
-      nodes: results || [],
-      provisionKey: masterKey,
-      timestamp: Date.now(),
-    };
+  return c.json({
+    nodes: results || [],
+    provisionKey: masterKey,
+    timestamp: Date.now(),
+  }, 200, {
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
   });
 });
 
 // ----------------------------------------------------------------------------
-// 4. Generate 1-Click Provision Command (POST /api/nodes/provision-command)
+// 4. Generate 1-Click Provision Command (POST /api/nodes/provision-command) - Protected
 // ----------------------------------------------------------------------------
-nodesRouter.post('/provision-command', async (c) => {
+nodesRouter.post('/provision-command', requireAdminOrAuditor, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const role = (body.role || 'all').toLowerCase();
   const nodeName = (body.nodeName || 'mwar-game-server-1').replace(/[^a-zA-Z0-9_-]/g, '');
   const tunnelToken = (body.tunnelToken || '').trim();
 
-  const masterKey = c.env.NODE_PROVISION_KEY || DEFAULT_PROVISION_KEY;
+  const masterKey = c.env.NODE_PROVISION_KEY || '';
 
   let url = `https://api.mwar.win/api/nodes/install.sh?token=${masterKey}&role=${encodeURIComponent(role)}&node_name=${encodeURIComponent(nodeName)}`;
   if (tunnelToken) {
@@ -548,13 +555,15 @@ nodesRouter.post('/provision-command', async (c) => {
     nodeName,
     role,
     tunnelConfigured: !!tunnelToken,
+  }, 200, {
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
   });
 });
 
 // ----------------------------------------------------------------------------
-// 5. Update Node Room Capacities (POST /api/nodes/:id/capacity)
+// 5. Update Node Room Capacities (POST /api/nodes/:id/capacity) - Protected
 // ----------------------------------------------------------------------------
-nodesRouter.post('/:id/capacity', async (c) => {
+nodesRouter.post('/:id/capacity', requireAdminOrAuditor, async (c) => {
   const nodeId = c.req.param('id');
   const body = await c.req.json().catch(() => ({}));
 
