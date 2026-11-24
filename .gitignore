@@ -11,3 +11,4 @@ out
 *.log
 coverage
 docs/Cloudflare/
+.dev.vars

@@ -79,19 +79,19 @@ export default function MarketplacePage() {
   return (
     <div className="space-y-6 pb-12">
       {/* 1. Header Banner */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="bg-white border border-stone-200/80 rounded-3xl p-5 sm:p-6 shadow-[0_2px_12px_rgba(0,0,0,0.04)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="flex items-center space-x-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
+          <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
             <BountyChestIcon size={28} />
           </div>
           <div>
-            <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center space-x-2">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-stone-900 tracking-tight flex items-center space-x-2">
               <span>REFERRAL SQUAD MARKETPLACE</span>
-              <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black px-2 py-0.5 rounded-full">
+              <span className="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
                 30-DAY ESCROW
               </span>
             </h1>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-stone-500 mt-0.5">
               Trade active Level 1 downline earners. Funds held in automated 30-day escrow warranty.
             </p>
           </div>
@@ -99,28 +99,28 @@ export default function MarketplacePage() {
 
         <button
           onClick={() => setShowCreateModal(true)}
-          className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black px-4 py-2.5 rounded-2xl text-xs transition shadow-lg shadow-amber-500/20 active:scale-95 shrink-0"
+          className="bg-gradient-to-r from-[#FFE135] to-[#FACC15] hover:from-[#FACC15] hover:to-[#FACC15] text-stone-900 font-extrabold px-4 py-2.5 rounded-2xl text-xs transition shadow-[0_2px_12px_rgba(0,0,0,0.04)] active:scale-95 shrink-0"
         >
           + List Downline For Sale
         </button>
       </div>
 
       {actionMsg && (
-        <div className="bg-slate-900 border border-amber-500/60 text-amber-200 text-xs p-3.5 rounded-2xl shadow-md">
+        <div className="bg-white border border-amber-200 text-amber-700 text-xs p-3.5 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
           {actionMsg}
         </div>
       )}
 
       {/* 2. Listings Grid */}
       {loading ? (
-        <div className="p-16 text-center text-sm text-slate-400 animate-pulse">Loading marketplace listings...</div>
+        <div className="p-16 text-center text-sm text-stone-500 animate-pulse">Loading marketplace listings...</div>
       ) : listings.length === 0 ? (
-        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-12 text-center space-y-3 shadow-xl">
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-800 flex items-center justify-center text-2xl">
+        <div className="bg-white border border-stone-200/80 rounded-3xl p-12 text-center space-y-3 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-stone-100 flex items-center justify-center text-2xl">
             🛒
           </div>
-          <h3 className="text-base font-black text-white">No Downline Listings Active</h3>
-          <p className="text-xs text-slate-400 max-w-md mx-auto">
+          <h3 className="text-base font-extrabold text-stone-900">No Downline Listings Active</h3>
+          <p className="text-xs text-stone-500 max-w-md mx-auto">
             There are currently no downlines listed for sale. List one of your direct Level 1 referrals to monetize your squad!
           </p>
         </div>
@@ -129,46 +129,46 @@ export default function MarketplacePage() {
           {listings.map((l) => (
             <div
               key={l.id}
-              className="bg-slate-900/95 border border-slate-800 hover:border-slate-700 rounded-3xl p-5 shadow-xl space-y-4 transition flex flex-col justify-between"
+              className="bg-white border border-stone-200/80 hover:border-stone-200/80 rounded-3xl p-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-4 transition flex flex-col justify-between"
             >
               <div className="space-y-3">
                 <div className="flex justify-between items-start">
                   <div className="flex items-center space-x-2.5">
-                    <div className="w-10 h-10 rounded-2xl bg-slate-800 border-2 border-amber-400/60 flex items-center justify-center font-black text-amber-300 text-sm">
+                    <div className="w-10 h-10 rounded-2xl bg-stone-100 border-2 border-amber-200 flex items-center justify-center font-extrabold text-amber-700 text-sm">
                       {l.targetUsername?.substring(0, 2).toUpperCase() || 'SQ'}
                     </div>
                     <div>
-                      <h4 className="text-sm font-black text-white">{l.targetUsername}</h4>
-                      <span className="text-[10px] text-slate-400">Seller: {l.sellerUsername}</span>
+                      <h4 className="text-sm font-extrabold text-stone-900">{l.targetUsername}</h4>
+                      <span className="text-[10px] text-stone-500">Seller: {l.sellerUsername}</span>
                     </div>
                   </div>
-                  <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black px-2 py-0.5 rounded-full">
+                  <span className="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
                     30D WARRANTY
                   </span>
                 </div>
 
-                <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 grid grid-cols-2 gap-2 text-center">
+                <div className="bg-stone-50 p-3 rounded-2xl border border-stone-200/80 grid grid-cols-2 gap-2 text-center">
                   <div>
-                    <span className="text-[10px] text-slate-500 font-bold block uppercase">Lifetime Earned</span>
-                    <span className="text-xs font-black text-emerald-400 font-mono">
+                    <span className="text-[10px] text-stone-500 font-bold block uppercase">Lifetime Earned</span>
+                    <span className="text-xs font-extrabold text-emerald-600 font-mono">
                       {formatMicroUsd(l.targetTotalEarnedMicroUsd || 0)}
                     </span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-slate-500 font-bold block uppercase">Squad Depth</span>
-                    <span className="text-xs font-black text-amber-400">Direct (L1)</span>
+                    <span className="text-[10px] text-stone-500 font-bold block uppercase">Squad Depth</span>
+                    <span className="text-xs font-extrabold text-amber-700">Direct (L1)</span>
                   </div>
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+              <div className="pt-2 border-t border-stone-200/80 flex items-center justify-between">
                 <div>
-                  <span className="text-[10px] text-slate-400 block font-bold">Asking Price:</span>
+                  <span className="text-[10px] text-stone-500 block font-bold">Asking Price:</span>
                   <div className="flex items-center space-x-1">
-                    <span className="text-base font-black text-white font-mono">
+                    <span className="text-base font-extrabold text-stone-900 font-mono">
                       {formatMicroUsd(l.priceMicroUsd)}
                     </span>
-                    <span className="text-[11px] text-amber-400 font-mono font-bold">
+                    <span className="text-[11px] text-amber-700 font-mono font-bold">
                       ({formatCoins(l.priceMicroUsd)})
                     </span>
                   </div>
@@ -176,7 +176,7 @@ export default function MarketplacePage() {
 
                 <button
                   onClick={() => handleBuy(l.id, formatMicroUsd(l.priceMicroUsd))}
-                  className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-black text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-rose-600/30 active:scale-95 transition"
+                  className="bg-gradient-to-r from-[#FFE135] to-[#FACC15] hover:from-[#FACC15] hover:to-[#FACC15] text-stone-900 font-extrabold text-xs px-4 py-2.5 rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.04)] active:scale-95 transition"
                 >
                   BUY MEMBER
                 </button>
@@ -188,13 +188,13 @@ export default function MarketplacePage() {
 
       {/* 3. Create Listing Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-              <h3 className="text-base font-black text-white">LIST DOWNLINE REFERRAL FOR SALE</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/30 backdrop-blur-md p-4">
+          <div className="bg-white border border-stone-200/80 rounded-3xl max-w-md w-full p-6 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-5 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center border-b border-stone-200/80 pb-3">
+              <h3 className="text-base font-extrabold text-stone-900">LIST DOWNLINE REFERRAL FOR SALE</h3>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="text-slate-400 hover:text-white text-xl font-bold p-1"
+                className="text-stone-500 hover:text-stone-900 text-xl font-bold p-1"
               >
                 ✕
               </button>
@@ -202,11 +202,11 @@ export default function MarketplacePage() {
 
             <form onSubmit={handleCreateListing} className="space-y-4">
               <div>
-                <label className="text-xs font-bold text-slate-300 block mb-1">
+                <label className="text-xs font-bold text-stone-600 block mb-1">
                   Select Direct Level 1 Downline:
                 </label>
                 {downlines.length === 0 ? (
-                  <p className="text-xs text-rose-400 bg-rose-950/40 p-2.5 rounded-xl border border-rose-900/40">
+                  <p className="text-xs text-rose-500 bg-rose-50 p-2.5 rounded-xl border border-rose-200">
                     You have no direct Level 1 downline members to sell. Enlist referrals first!
                   </p>
                 ) : (
@@ -214,7 +214,7 @@ export default function MarketplacePage() {
                     value={selectedTargetId}
                     onChange={(e) => setSelectedTargetId(e.target.value)}
                     required
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:border-amber-400 focus:outline-none"
+                    className="w-full bg-stone-50 border border-stone-200/80 rounded-xl px-3 py-2 text-xs text-stone-900 font-bold focus:border-yellow-400 focus:outline-none"
                   >
                     <option value="">-- Choose Member --</option>
                     {downlines.map((d) => (
@@ -227,11 +227,11 @@ export default function MarketplacePage() {
               </div>
 
               <div>
-                <label className="text-xs font-bold text-slate-300 block mb-1">
+                <label className="text-xs font-bold text-stone-600 block mb-1">
                   Listing Price (USD):
                 </label>
                 <div className="relative">
-                  <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">$</span>
+                  <span className="absolute left-3 top-2.5 text-xs text-stone-500 font-bold">$</span>
                   <input
                     type="number"
                     step="0.01"
@@ -239,16 +239,16 @@ export default function MarketplacePage() {
                     value={listingPriceUsd}
                     onChange={(e) => setListingPriceUsd(e.target.value)}
                     required
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-7 pr-3 py-2 text-xs text-white font-bold font-mono focus:border-amber-400 focus:outline-none"
+                    className="w-full bg-stone-50 border border-stone-200/80 rounded-xl pl-7 pr-3 py-2 text-xs text-stone-900 font-bold font-mono focus:border-yellow-400 focus:outline-none"
                   />
                 </div>
-                <p className="text-[10px] text-slate-500 mt-1">
+                <p className="text-[10px] text-stone-500 mt-1">
                   Equivalent to {(parseFloat(listingPriceUsd || '0') * 10000).toLocaleString()} Coins ($0.01 = 100 Coins).
                 </p>
               </div>
 
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
-                <span className="text-amber-400 font-bold block">30-Day Escrow Warranty:</span>
+              <div className="bg-stone-50 p-3 rounded-xl border border-stone-200/80 text-[11px] text-stone-500 space-y-1">
+                <span className="text-amber-700 font-bold block">30-Day Escrow Warranty:</span>
                 <p>
                   Upon purchase, the buyer receives this referral in their downline tree. Funds are released after 30 days of active member activity.
                 </p>
@@ -258,14 +258,14 @@ export default function MarketplacePage() {
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition"
+                  className="flex-1 bg-stone-100 hover:bg-stone-200 text-stone-600 font-bold py-2.5 rounded-xl text-xs transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={!selectedTargetId || isSubmitting}
-                  className="flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black py-2.5 rounded-xl text-xs transition shadow-lg shadow-amber-500/20 disabled:opacity-50"
+                  className="flex-1 bg-gradient-to-r from-[#FFE135] to-[#FACC15] hover:from-[#FACC15] hover:to-[#FACC15] text-stone-900 font-extrabold py-2.5 rounded-xl text-xs transition shadow-[0_2px_12px_rgba(0,0,0,0.04)] disabled:opacity-50"
                 >
                   {isSubmitting ? 'Listing...' : 'Confirm Listing'}
                 </button>

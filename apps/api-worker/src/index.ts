@@ -17,6 +17,10 @@ import { stringifyLog, logReceiverHeaders } from './utils/audit-logger';
 import { nodesRouter } from './routes/nodes';
 import { practiceRouter } from './routes/practice';
 import { isLocalDev, hasInternalSecret } from './utils/guards';
+import { socialRouter, serveMedia } from './routes/social';
+import { gamesRouter } from './routes/games';
+import { bootstrapHandler } from './routes/bootstrap';
+import { authMiddleware } from './middleware/auth';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -59,6 +63,13 @@ app.route('/api/audit', auditRouter);
 app.route('/api/quests', questsRouter);
 app.route('/api/nodes', nodesRouter);
 app.route('/api/practice', practiceRouter);
+app.route('/api/social', socialRouter);
+app.route('/api/games', gamesRouter);
+
+// One request for the whole app shell (user, wallet, quest/notification/chat badges)
+app.get('/api/bootstrap', authMiddleware, bootstrapHandler);
+// Public, immutable WebP media (post photos, avatars) from R2
+app.get('/api/media/:uid/:file', serveMedia);
 
 // Cron endpoints (Direct trigger or Cloudflare Scheduled Event)
 app.post('/api/cron/settle-daily-mlm', async (c) => {

@@ -3,30 +3,68 @@
 @tailwind utilities;
 
 :root {
-  --background: #0a0d14;
-  --foreground: #ededed;
+  --cream: #faf9f5;
+  --ink: #1c1917;
+  --lemon: #ffe135;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ink);
+  background: var(--cream);
   overflow-x: hidden;
-  user-select: none;
 }
 
-/* Custom Scrollbar */
+/* The 3D game stage keeps its original dark, non-selectable look */
+.game-root {
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #0a0d14;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #253248;
-  border-radius: 3px;
+  background: #e7e5e4;
+  border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3b4d6b;
+  background: #d6d3d1;
+}
+.game-root ::-webkit-scrollbar-thumb {
+  background: #253248;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }

@@ -41,7 +41,8 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     .prepare(
       `UPDATE users
          SET last_energy_recharge = CASE WHEN energy_tickets >= MIN(max_energy_tickets, ?3) THEN ?2 ELSE last_energy_recharge END,
-             energy_tickets = energy_tickets - ?4
+             energy_tickets = energy_tickets - ?4,
+             total_matches = total_matches + 1
        WHERE id = ?1 AND energy_tickets >= ?4`
     )
     .bind(user.userId, now, MAX_ENERGY_TICKETS, EC_COST_PER_PAID_MATCH)
@@ -110,6 +111,8 @@ gameRouter.post('/batch-payout', async (c) => {
   const logItems: Parameters<typeof logFinancialTransaction>[1][] = [];
   let earnerCredited = 0;
   let bountyClaimed = 0;
+  // Public profile stat: kills per player in this batch, written as one UPDATE per player
+  const killsByUser = new Map<string, number>();
 
   for (const item of payouts) {
     if (item.actionType === 'AFK_FORFEIT') {
@@ -137,6 +140,8 @@ gameRouter.post('/batch-payout', async (c) => {
       continue;
     }
 
+    if (item.actionType === 'GAME_KILL') killsByUser.set(item.userId, (killsByUser.get(item.userId) || 0) + 1);
+
     // Track daily quests for player: match played
     await trackQuestAction(c.env.DB, item.userId, 'finish_game_match', 1, dateKey);
 
@@ -149,6 +154,10 @@ gameRouter.post('/batch-payout', async (c) => {
       dateKey,
     });
     earnerCredited += Number(split.earnerMicroUsd);
+  }
+
+  for (const [uid, kills] of killsByUser) {
+    statements.push(c.env.DB.prepare('UPDATE users SET total_kills = total_kills + ?1 WHERE id = ?2').bind(kills, uid));
   }
 
   // Atomic batch commit in Cloudflare D1

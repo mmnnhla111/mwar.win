@@ -12,6 +12,11 @@ routes = [
 [vars]
 DEV_MOCK_MODE = "true"
 LOG_RECEIVER_URL = "https://logs.mwar.win/api/logs"
+# Game server HTTP origin: the room lobby reads its read-only GET /rooms snapshot (edge-cached 15 s)
+GAME_SERVER_HTTP_URL = "https://game.mwar.win"
+# Password-reset links point here; mail is sent with the RESEND_API_KEY secret (optional)
+WEB_APP_URL = "https://mwar.win"
+MAIL_FROM = "MWAR <no-reply@mwar.win>"
 
 # 1. Core D1 Database (Users, Wallets, MLM Trees, Market, Withdrawals, Daily Quests)
 [[d1_databases]]

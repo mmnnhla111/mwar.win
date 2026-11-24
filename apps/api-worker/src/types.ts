@@ -28,6 +28,14 @@ export interface Env {
   LOG_INGEST_SECRET?: string;
   /** Telegram bot token used to verify Login Widget signatures (production). */
   TELEGRAM_BOT_TOKEN?: string;
+  /** Public HTTP origin of the Colyseus game server (serves the read-only GET /rooms snapshot). */
+  GAME_SERVER_HTTP_URL?: string;
+  /** Web app origin used in password-reset links (default https://mwar.win). */
+  WEB_APP_URL?: string;
+  /** Resend API key for password-reset emails (secret). Without it, reset codes are only logged. */
+  RESEND_API_KEY?: string;
+  /** Sender for transactional mail, e.g. "MWAR <no-reply@mwar.win>". */
+  MAIL_FROM?: string;
 }
 
 export interface AuthUserPayload {

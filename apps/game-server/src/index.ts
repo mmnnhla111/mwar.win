@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
-import { Server } from 'colyseus';
+import { Server, matchMaker } from 'colyseus';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import path from 'path';
 import fs from 'fs';
@@ -39,6 +39,46 @@ app.get('/health', (_req, res) => {
     roomsAvailable: ['mini_30', 'standard_100', 'fast_mini'],
     timestamp: new Date().toISOString(),
   });
+});
+
+/**
+ * Read-only live room snapshot for the web Room Lobby (proxied + edge-cached 15 s by the API worker).
+ * RAM only: player / spectator counts and a capped roster per mode, summed across room instances.
+ */
+const ROSTER_CAP = 120;
+app.get('/rooms', async (_req, res) => {
+  const modes: Record<string, { players: number; spectators: number; roster: Array<{ username: string; userId: string; kills: number; deaths: number; status: string }> }> = {};
+  for (const mode of ['standard_100', 'mini_30', 'fast_mini']) modes[mode] = { players: 0, spectators: 0, roster: [] };
+  try {
+    const listings = await matchMaker.query({});
+    for (const listing of listings) {
+      const bucket = modes[listing.name];
+      if (!bucket) continue;
+      const room = matchMaker.getRoomById(listing.roomId) as any;
+      const players: any[] = room?.state?.players ? Array.from(room.state.players.values()) : [];
+      if (players.length === 0) {
+        bucket.players += listing.clients || 0;
+        continue;
+      }
+      for (const p of players) {
+        if (p.isSpectator) bucket.spectators += 1;
+        else bucket.players += 1;
+        if (bucket.roster.length < ROSTER_CAP) {
+          bucket.roster.push({
+            username: String(p.username || 'Player'),
+            userId: String(p.id || ''),
+            kills: Number(p.kills) || 0,
+            deaths: Number(p.deaths) || 0,
+            status: p.isSpectator ? 'spectating' : p.isGhost ? 'dead' : 'alive',
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Game Server] /rooms snapshot failed', err);
+  }
+  res.set('Cache-Control', 'public, max-age=10');
+  res.json({ modes, timestamp: Date.now() });
 });
 
 const httpServer = createServer(app);

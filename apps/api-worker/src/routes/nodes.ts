@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import type { Env, AuthUserPayload } from '../types';
-import { authMiddleware, requireRole } from '../middleware/auth';
+import { authMiddleware } from '../middleware/auth';
 import { isLocalDev } from '../utils/guards';
 
 export const nodesRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
@@ -9,9 +9,12 @@ export const nodesRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUser
 /** Admin / auditor only (local `wrangler dev` keeps the Dev Mock Panel working without a role). */
 async function requireAdminOrAuditor(c: Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>, next: Next) {
   if (isLocalDev(c)) return next();
-  return authMiddleware(c, async () => {
-    await requireRole(['admin', 'auditor'])(c, next);
-  });
+  // authMiddleware returns a 401 response when the token is missing/invalid; otherwise it sets c.get('user')
+  const denied = await authMiddleware(c, async () => {});
+  if (denied) return denied;
+  const role = c.get('user')?.role;
+  if (role !== 'admin' && role !== 'auditor') return c.json({ error: 'Forbidden: insufficient role privileges' }, 403);
+  return next();
 }
 
 /**

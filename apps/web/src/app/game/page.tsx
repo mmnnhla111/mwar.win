@@ -111,9 +111,19 @@ type ArenaMode = 'mini_30' | 'standard_100' | 'fast_mini' | 'practice' | 'specta
 
 function readMode(): ArenaMode {
   if (typeof window === 'undefined') return 'mini_30';
-  const m = new URLSearchParams(window.location.search).get('mode');
+  const q = new URLSearchParams(window.location.search);
+  // Room Lobby links: /game?mode=<room mode>&room=<id>&spectate=1 opens that room as a Ghost Spectator
+  if (q.get('spectate') === '1') return 'spectator';
+  const m = q.get('mode');
   if (m === 'standard_100' || m === 'fast_mini' || m === 'practice' || m === 'spectator') return m;
   return 'mini_30';
+}
+
+/** Which multiplayer room a spectator watches (from ?mode=… with spectate=1; legacy ?mode=spectator → mini_30). */
+function readSpectateRoom(): 'standard_100' | 'mini_30' | 'fast_mini' {
+  if (typeof window === 'undefined') return 'mini_30';
+  const m = new URLSearchParams(window.location.search).get('mode');
+  return m === 'standard_100' || m === 'fast_mini' ? m : 'mini_30';
 }
 
 const MODE_LABEL: Record<ArenaMode, string> = {
@@ -641,7 +651,7 @@ export default function GamePage() {
     scene.add(camera);
 
     // Map per mode: Warzone / 30P Skirmish / Spectator → 960 m large map; Fast & Mini / Solo Bot → 240 m small map
-    const largeMap = mapKindForMode(arenaMode) === 'large';
+    const largeMap = mapKindForMode(arenaMode === 'spectator' ? readSpectateRoom() : arenaMode) === 'large';
     const playHalf = largeMap ? LARGE_PLAY_HALF : PLAY_HALF;
     const world = new CollisionWorld(
       largeMap
@@ -1208,7 +1218,8 @@ export default function GamePage() {
           // Guest mode
         }
         // Room per mode: standard_100 / mini_30 (large map), fast_mini (small map); spectators watch mini_30
-        const roomName = arenaMode === 'standard_100' ? 'standard_100' : arenaMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
+        const roomName =
+          arenaMode === 'spectator' ? readSpectateRoom() : arenaMode === 'standard_100' ? 'standard_100' : arenaMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
         // Paid arena: spend 1 EC for a signed entry ticket. Without one you still play, unpaid.
         let entryToken: string | undefined;
         // Spectators never spend EC and never enter a paid seat

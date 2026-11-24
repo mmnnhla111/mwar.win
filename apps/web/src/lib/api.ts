@@ -3,6 +3,20 @@
  */
 
 import type { TodayQuestsResponse, DailyMlmSummary } from '@mwar/shared';
+import type {
+  BootstrapResponse,
+  CursorPage,
+  SocialPost,
+  SocialComment,
+  SocialProfile,
+  SocialAuthor,
+  SocialNotification,
+  SocialPostTag,
+  ProfileCoverColor,
+  GamesResponse,
+  FpsRoomsResponse,
+  FpsRoomRosterResponse,
+} from '@mwar/shared';
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -18,20 +32,40 @@ let inMemoryToken: string | null = null;
 
 export function getAuthToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return inMemoryToken || localStorage.getItem('mwar_auth_token');
+  try {
+    return inMemoryToken || localStorage.getItem('mwar_auth_token') || sessionStorage.getItem('mwar_auth_token');
+  } catch {
+    return inMemoryToken;
+  }
 }
 
-export function setAuthToken(token: string) {
+/** remember=false keeps the session only until the browser tab is closed ("Remember me" unchecked). */
+export function setAuthToken(token: string, remember = true) {
   inMemoryToken = token;
   if (typeof window !== 'undefined') {
-    localStorage.setItem('mwar_auth_token', token);
+    try {
+      if (remember) {
+        localStorage.setItem('mwar_auth_token', token);
+        sessionStorage.removeItem('mwar_auth_token');
+      } else {
+        sessionStorage.setItem('mwar_auth_token', token);
+        localStorage.removeItem('mwar_auth_token');
+      }
+    } catch {
+      /* storage blocked: memory only */
+    }
   }
 }
 
 export function clearAuthToken() {
   inMemoryToken = null;
   if (typeof window !== 'undefined') {
-    localStorage.removeItem('mwar_auth_token');
+    try {
+      localStorage.removeItem('mwar_auth_token');
+      sessionStorage.removeItem('mwar_auth_token');
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -56,7 +90,9 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit =
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+    const err = new Error(data.error || data.message || `Request failed with status ${response.status}`) as Error & { status?: number };
+    err.status = response.status;
+    throw err;
   }
 
   return data as T;
@@ -164,4 +200,193 @@ export async function updateNodeCapacity(nodeId: string, data: { room_capacity_m
     method: 'POST',
     body: JSON.stringify(data),
   });
+}
+
+// ---------------------------------------------------------------------------
+// App bootstrap: ONE request for the whole shell, kept 60 s in memory + sessionStorage
+// ---------------------------------------------------------------------------
+
+export const BOOTSTRAP_FRESH_MS = 60_000;
+const BOOT_STORAGE_KEY = 'mwar_bootstrap_v1';
+type BootEntry = { at: number; data: BootstrapResponse };
+let bootMem: BootEntry | null = null;
+let bootInflight: Promise<BootstrapResponse> | null = null;
+
+export function readBootstrapCache(): BootEntry | null {
+  if (bootMem) return bootMem;
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(BOOT_STORAGE_KEY);
+    if (raw) bootMem = JSON.parse(raw) as BootEntry;
+  } catch {
+    /* storage blocked */
+  }
+  return bootMem;
+}
+
+function writeBootstrapCache(entry: BootEntry | null) {
+  bootMem = entry;
+  if (typeof window === 'undefined') return;
+  try {
+    if (entry) sessionStorage.setItem(BOOT_STORAGE_KEY, JSON.stringify(entry));
+    else sessionStorage.removeItem(BOOT_STORAGE_KEY);
+  } catch {
+    /* storage blocked */
+  }
+}
+
+export function isBootstrapFresh(): boolean {
+  const e = readBootstrapCache();
+  return !!e && Date.now() - e.at < BOOTSTRAP_FRESH_MS;
+}
+
+/** Returns the cached bootstrap while fresh (0 requests), otherwise fetches once (deduped). */
+export async function getBootstrap(force = false): Promise<BootstrapResponse> {
+  const cached = readBootstrapCache();
+  if (!force && cached && Date.now() - cached.at < BOOTSTRAP_FRESH_MS) return cached.data;
+  if (bootInflight) return bootInflight;
+  bootInflight = apiFetch<BootstrapResponse>('/api/bootstrap')
+    .then((data) => {
+      writeBootstrapCache({ at: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      bootInflight = null;
+    });
+  return bootInflight;
+}
+
+/** Local optimistic update (e.g. a quest claimed) without another request; keeps the original timestamp. */
+export function patchBootstrapCache(fn: (b: BootstrapResponse) => BootstrapResponse): BootstrapResponse | null {
+  const cached = readBootstrapCache();
+  if (!cached) return null;
+  const next = { at: cached.at, data: fn(cached.data) };
+  writeBootstrapCache(next);
+  return next.data;
+}
+
+export function clearBootstrapCache() {
+  writeBootstrapCache(null);
+}
+
+export function logout() {
+  clearAuthToken();
+  clearBootstrapCache();
+}
+
+// ---------------------------------------------------------------------------
+// Auth (password reset)
+// ---------------------------------------------------------------------------
+export function requestPasswordReset(email: string) {
+  return apiFetch<{ success: boolean; message: string; devResetLink?: string; devResetToken?: string }>('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetPassword(token: string, newPassword: string) {
+  return apiFetch<{ success: boolean; message: string }>('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, newPassword }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Social
+// ---------------------------------------------------------------------------
+const qs = (o: Record<string, string | undefined | null>) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(o)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? `?${s}` : '';
+};
+
+export function getFeed(opts: { cursor?: string | null; tag?: string | null; author?: string | null } = {}) {
+  return apiFetch<CursorPage<SocialPost>>(`/api/social/feed${qs({ cursor: opts.cursor, tag: opts.tag, author: opts.author })}`);
+}
+
+export function createPost(data: { body: string; tag: SocialPostTag; imageUrl?: string | null }) {
+  return apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function deletePost(id: string) {
+  return apiFetch<{ success: boolean }>(`/api/social/posts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function setPostLike(id: string, like: boolean) {
+  return apiFetch<{ success: boolean; liked: boolean; likeCount: number }>(`/api/social/posts/${encodeURIComponent(id)}/like`, {
+    method: 'POST',
+    body: JSON.stringify({ like }),
+  });
+}
+
+export function getComments(postId: string, cursor?: string | null) {
+  return apiFetch<CursorPage<SocialComment>>(`/api/social/posts/${encodeURIComponent(postId)}/comments${qs({ cursor })}`);
+}
+
+export function addComment(postId: string, body: string) {
+  return apiFetch<{ success: boolean; comment: SocialComment; commentCount: number }>(`/api/social/posts/${encodeURIComponent(postId)}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  });
+}
+
+export function getProfile(username?: string | null) {
+  return apiFetch<{ profile: SocialProfile; posts: CursorPage<SocialPost> }>(`/api/social/profile${qs({ u: username })}`);
+}
+
+export function updateSocialProfile(data: { displayName?: string; bio?: string; avatarUrl?: string; coverColor?: ProfileCoverColor }) {
+  return apiFetch<{ success: boolean }>('/api/social/profile', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function setFollow(userId: string, follow: boolean) {
+  return apiFetch<{ success: boolean; following: boolean; followersCount: number }>('/api/social/follow', {
+    method: 'POST',
+    body: JSON.stringify({ userId, follow }),
+  });
+}
+
+export function getFollows(username: string, type: 'followers' | 'following', cursor?: string | null) {
+  return apiFetch<CursorPage<SocialAuthor>>(`/api/social/follows${qs({ u: username, type, cursor })}`);
+}
+
+export function searchUsers(q: string) {
+  return apiFetch<{ users: SocialAuthor[] }>(`/api/social/search${qs({ q })}`);
+}
+
+export function getSuggestions() {
+  return apiFetch<{ online: { username: string; userId: string | null; roomId: string }[]; newest: SocialAuthor[] }>('/api/social/suggestions');
+}
+
+export function getNotifications(cursor?: string | null) {
+  return apiFetch<CursorPage<SocialNotification>>(`/api/social/notifications${qs({ cursor })}`);
+}
+
+export function markNotificationsRead() {
+  return apiFetch<{ success: boolean }>('/api/social/notifications/read', { method: 'POST' });
+}
+
+/** Upload an already-compressed WebP blob (<= 120 KB) to R2; returns its immutable URL. */
+export async function uploadMedia(blob: Blob): Promise<string> {
+  const res = await apiFetch<{ success: boolean; url: string }>('/api/social/media', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/webp' },
+    body: blob,
+  });
+  return res.url;
+}
+
+// ---------------------------------------------------------------------------
+// Game hub
+// ---------------------------------------------------------------------------
+export function getGames() {
+  return apiFetch<GamesResponse>('/api/games');
+}
+
+export function getFpsRooms() {
+  return apiFetch<FpsRoomsResponse>('/api/games/fps/rooms');
+}
+
+export function getFpsRoster(roomId: string, cursor?: string | null) {
+  return apiFetch<FpsRoomRosterResponse>(`/api/games/fps/rooms${qs({ room: roomId, cursor })}`);
 }

@@ -48,3 +48,32 @@ export async function edgeCachePurge(c: Context<any>, key: string) {
     /* ignore */
   }
 }
+
+/**
+ * Like edgeCachedJson, but returns the cached *value* so a route can merge small per-viewer fields
+ * (e.g. "liked by me") into a shared, edge-cached public payload in a single Worker request.
+ */
+export async function edgeCachedValue<T>(c: Context<any>, key: string, ttlSeconds: number, produce: () => Promise<T>): Promise<T> {
+  const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
+  const req = new Request(`${CACHE_ORIGIN}/${key}`);
+  if (cache) {
+    try {
+      const hit = await cache.match(req);
+      if (hit) return (await hit.json()) as T;
+    } catch {
+      /* cache unavailable: fall through */
+    }
+  }
+  const value = await produce();
+  if (cache) {
+    try {
+      const stored = new Response(JSON.stringify(value), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${ttlSeconds}` },
+      });
+      c.executionCtx.waitUntil(cache.put(req, stored));
+    } catch {
+      /* no execution context (tests): skip */
+    }
+  }
+  return value;
+}

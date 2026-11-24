@@ -9,7 +9,16 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['"Plus Jakarta Sans"', 'Prompt', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+      },
       colors: {
+        cream: '#FAF9F5',
+        ink: '#1C1917',
+        lemon: { DEFAULT: '#FFE135', 400: '#FACC15', 100: '#FFF6C2', 50: '#FFFBEA' },
+        mint: { DEFAULT: '#34D399', 100: '#D1FAE5' },
+        coral: { DEFAULT: '#FF6B6B', 100: '#FFE4E6' },
+        skyp: '#E0F2FE',
         background: '#0a0d14',
         surface: '#111726',
         surfaceLight: '#1b2438',

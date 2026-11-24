@@ -183,17 +183,20 @@ questsRouter.get('/today', authMiddleware, async (c) => {
     userProgressMap.set(r.quest_id, r);
   }
 
-  // Populate any missing rows
+  // Populate any missing rows (one D1 batch instead of one round trip per quest)
+  const missingInserts = [];
   for (const q of questList) {
     if (!userProgressMap.has(q.quest_id)) {
-      const newId = `uq_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      await c.env.DB
-        .prepare('INSERT OR IGNORE INTO user_daily_quests (id, user_id, date_key, quest_id, current_count, is_completed, is_claimed) VALUES (?1, ?2, ?3, ?4, 0, 0, 0)')
-        .bind(newId, authUser.userId, dateKey, q.quest_id)
-        .run();
+      const newId = `uq_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      missingInserts.push(
+        c.env.DB
+          .prepare('INSERT OR IGNORE INTO user_daily_quests (id, user_id, date_key, quest_id, current_count, is_completed, is_claimed) VALUES (?1, ?2, ?3, ?4, 0, 0, 0)')
+          .bind(newId, authUser.userId, dateKey, q.quest_id)
+      );
       userProgressMap.set(q.quest_id, { current_count: 0, is_completed: 0, is_claimed: 0 });
     }
   }
+  if (missingInserts.length > 0) await c.env.DB.batch(missingInserts);
 
   let completedQuests = 0;
   const quests = questList.map((q) => {

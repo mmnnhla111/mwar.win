@@ -11,11 +11,16 @@ import {
   MAX_ENERGY_TICKETS,
   ENERGY_RECHARGE_SECONDS,
   MAX_AVATAR_UPLOAD_BYTES,
+  ForgotPasswordSchema,
+  ResetPasswordSchema,
+  PASSWORD_RESET_TTL_SECONDS,
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { hashPassword, verifyPassword, signJwt } from '../utils/crypto';
 import { buildNetworkTree } from '../utils/mlm-tree';
 import { authMiddleware } from '../middleware/auth';
+import { sendMail } from '../utils/mailer';
+import { isLocalDev } from '../utils/guards';
 
 const sha256Hex = async (v: string) =>
   [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -72,15 +77,17 @@ authRouter.post('/register', async (c) => {
     return c.json({ error: 'Username or email already in use' }, 409);
   }
 
-  // Verify referrer if provided
+  // Verify referrer if provided: the upline code is the sponsor's user id or username
+  let referrerUserId: string | null = null;
   if (referrer_id) {
     const referrer = await c.env.DB
-      .prepare('SELECT id FROM users WHERE id = ?1')
+      .prepare('SELECT id FROM users WHERE id = ?1 UNION ALL SELECT id FROM users WHERE username = ?1 LIMIT 1')
       .bind(referrer_id)
-      .first();
+      .first<{ id: string }>();
     if (!referrer) {
-      return c.json({ error: 'Referrer ID not found' }, 400);
+      return c.json({ error: 'Referral code not found' }, 400);
     }
+    referrerUserId = referrer.id;
   }
 
   const userId = crypto.randomUUID();
@@ -91,15 +98,15 @@ authRouter.post('/register', async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(
       'INSERT INTO users (id, username, email, password_hash, referrer_id, role, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)'
-    ).bind(userId, username, email, passwordHash, referrer_id || null, 'player', 'active', now),
+    ).bind(userId, username, email, passwordHash, referrerUserId, 'player', 'active', now),
     c.env.DB.prepare(
       'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
     ).bind(userId, now),
   ]);
 
   // Build MLM 5-level hierarchy
-  if (referrer_id) {
-    await buildNetworkTree(c.env.DB, userId, referrer_id);
+  if (referrerUserId) {
+    await buildNetworkTree(c.env.DB, userId, referrerUserId);
   }
 
   const token = await signJwt({ userId, username, role: 'player' }, c.env.JWT_SECRET);
@@ -112,7 +119,7 @@ authRouter.post('/register', async (c) => {
       username,
       email,
       role: 'player',
-      referrer_id: referrer_id || null,
+      referrer_id: referrerUserId,
     },
   }, 201);
 });
@@ -521,4 +528,94 @@ authRouter.post('/telegram', async (c) => {
     user,
     isNewUser,
   });
+});
+
+// 7. Forgot password: email a single-use reset link (15-minute expiry). Always answers the same way so
+//    the endpoint cannot be used to discover which emails are registered.
+authRouter.post('/forgot-password', async (c) => {
+  const parsed = ForgotPasswordSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Please enter a valid email address' }, 400);
+  const typed = parsed.data.email;
+  const email = typed.toLowerCase();
+  const generic = {
+    success: true,
+    message: 'If an account uses this email, a reset link is on its way. It expires in 15 minutes.',
+  } as Record<string, unknown>;
+
+  const user = await c.env.DB
+    // Two UNIQUE(email) index lookups (as typed + lower-case) instead of a NOCASE table scan
+    .prepare("SELECT id, username, email FROM users WHERE (email = ?1 OR email = ?2) AND status != 'banned' LIMIT 1")
+    .bind(typed, email)
+    .first<{ id: string; username: string; email: string }>();
+  if (!user) return c.json(generic);
+
+  const now = Math.floor(Date.now() / 1000);
+  // Resend limiter: one link per account per 60 s (indexed newest-token lookup)
+  const recent = await c.env.DB
+    .prepare('SELECT created_at FROM password_reset_tokens WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 1')
+    .bind(user.id)
+    .first<{ created_at: number }>();
+  if (recent && now - recent.created_at < 60) return c.json(generic);
+
+  const raw = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await c.env.DB.batch([
+    // Older unused links stop working as soon as a new one is issued
+    c.env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?1').bind(user.id),
+    c.env.DB.prepare('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)').bind(
+      await sha256Hex(raw),
+      user.id,
+      now + PASSWORD_RESET_TTL_SECONDS,
+      now
+    ),
+  ]);
+  const webOrigin = (c.env.WEB_APP_URL || 'https://mwar.win').replace(/\/+$/, '');
+  const link = `${webOrigin}/forgot-password?token=${raw}`;
+  const sent = await sendMail(
+    c.env,
+    user.email,
+    'Reset your MWAR password',
+    `<p>Hi ${user.username},</p><p>Tap the link below to choose a new password. It expires in 15 minutes and works once.</p>
+     <p><a href="${link}">${link}</a></p><p>If you did not ask for this, you can ignore this email.</p>`
+  );
+  // Local wrangler dev only (never production, even while DEV_MOCK_MODE is on there): hand the link back
+  // so the flow can be tested without a mail service. Anywhere else this would allow account takeover.
+  if (!sent && isLocalDev(c)) {
+    generic.devResetToken = raw;
+    generic.devResetLink = link;
+  }
+  return c.json(generic);
+});
+
+// 8. Reset password with the emailed token
+authRouter.post('/reset-password', async (c) => {
+  const parsed = ResetPasswordSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || 'Invalid request' }, 400);
+  const now = Math.floor(Date.now() / 1000);
+  const hash = await sha256Hex(parsed.data.token);
+  const row = await c.env.DB
+    .prepare('SELECT user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?1')
+    .bind(hash)
+    .first<{ user_id: string; expires_at: number; used_at: number | null }>();
+  if (!row || row.used_at || row.expires_at < now) {
+    return c.json({ error: 'This reset link is invalid or has expired. Please request a new one.' }, 400);
+  }
+  const passwordHash = await hashPassword(parsed.data.newPassword);
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE password_reset_tokens SET used_at = ?1 WHERE token_hash = ?2 AND used_at IS NULL').bind(now, hash),
+    c.env.DB.prepare('UPDATE users SET password_hash = ?1 WHERE id = ?2 AND changes() = 1').bind(passwordHash, row.user_id),
+    c.env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?1 AND token_hash != ?2').bind(row.user_id, hash),
+  ]);
+  if ((res[1].meta?.changes ?? 0) !== 1) {
+    return c.json({ error: 'This reset link was already used. Please request a new one.' }, 400);
+  }
+  const user = await c.env.DB.prepare('SELECT username, email FROM users WHERE id = ?1').bind(row.user_id).first<{ username: string; email: string }>();
+  // A successful reset also clears the login brute-force counters for this account
+  if (user) {
+    await c.env.DB
+      .prepare('DELETE FROM login_failures WHERE login_key IN (?1, ?2)')
+      .bind(user.username.toLowerCase(), user.email.toLowerCase())
+      .run()
+      .catch(() => {});
+  }
+  return c.json({ success: true, message: 'Password updated. You can sign in now.' });
 });

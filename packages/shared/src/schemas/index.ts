@@ -9,7 +9,8 @@ export const RegisterSchema = z.object({
     .regex(/^[a-zA-Z0-9_]+$/, 'Username can only contain alphanumeric characters and underscores'),
   email: z.string().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  referrer_id: z.string().uuid('Invalid referrer ID').optional().nullable(),
+  // Upline code: the sponsor's user id (UUID) or username
+  referrer_id: z.string().trim().min(3).max(64).optional().nullable(),
 });
 
 export const LoginSchema = z.object({
