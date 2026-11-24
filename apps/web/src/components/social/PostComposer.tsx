@@ -17,6 +17,7 @@ import { useSession } from '../../lib/session';
 import { createPost } from '../../lib/api';
 import { compressImageToWebp } from '../../lib/image';
 import { displayName } from '../../lib/format';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export const TAG_STYLE: Record<SocialPostTag, string> = {
   General: 'bg-stone-100 text-stone-700',
@@ -37,7 +38,7 @@ function videoDuration(file: File): Promise<number> {
     };
     v.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error('Could not read this video'));
+      reject(new Error('video-unreadable'));
     };
     v.src = url;
   });
@@ -52,6 +53,7 @@ type Media = { blob: Blob; url: string; kind: 'image' | 'video'; name: string };
  */
 export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }) {
   const { boot } = useSession();
+  const { t: tr } = useTranslation();
   const user = boot?.user;
   const [body, setBody] = useState('');
   const [tag, setTag] = useState<SocialPostTag>('General');
@@ -76,7 +78,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
       setPhoto({ blob, url: URL.createObjectURL(blob), kind: 'image', name: 'photo.webp' });
       setExpanded(true);
     } catch (err: any) {
-      setError(err?.message || 'Could not use this photo');
+      setError(err?.message || tr('composer.photoFailed'));
     } finally {
       setCompressing(false);
     }
@@ -88,15 +90,17 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
     if (!f) return;
     setError('');
     try {
-      if (!/^video\/(mp4|webm)$/.test(f.type)) throw new Error('Only MP4 or WebM videos');
-      if (f.size > SOCIAL_VIDEO_MAX_BYTES) throw new Error(`Video must be ${SOCIAL_VIDEO_MAX_BYTES / 1024 / 1024} MB or smaller (this one is ${(f.size / 1024 / 1024).toFixed(1)} MB)`);
-      const secs = await videoDuration(f);
-      if (secs > SOCIAL_VIDEO_MAX_SECONDS + 0.5) throw new Error(`Video must be ${SOCIAL_VIDEO_MAX_SECONDS} seconds or shorter`);
+      if (!/^video\/(mp4|webm)$/.test(f.type)) throw new Error(tr('composer.videoType'));
+      if (f.size > SOCIAL_VIDEO_MAX_BYTES) throw new Error(tr('composer.videoSize', { max: SOCIAL_VIDEO_MAX_BYTES / 1024 / 1024, size: (f.size / 1024 / 1024).toFixed(1) }));
+      const secs = await videoDuration(f).catch(() => {
+        throw new Error(tr('composer.videoUnreadable'));
+      });
+      if (secs > SOCIAL_VIDEO_MAX_SECONDS + 0.5) throw new Error(tr('composer.videoLength', { max: SOCIAL_VIDEO_MAX_SECONDS }));
       if (photo) URL.revokeObjectURL(photo.url);
       setPhoto({ blob: f, url: URL.createObjectURL(f), kind: 'video', name: f.type === 'video/webm' ? 'clip.webm' : 'clip.mp4' });
       setExpanded(true);
     } catch (err: any) {
-      setError(err?.message || 'Could not use this photo');
+      setError(err?.message || tr('composer.videoUnreadable'));
     } finally {
       setCompressing(false);
     }
@@ -116,7 +120,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
       setPhoto(null);
       setExpanded(false);
     } catch (err: any) {
-      setError(err?.message || 'Could not post');
+      setError(err?.message || tr('composer.postFailed'));
     } finally {
       setBusy(false);
     }
@@ -132,7 +136,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
             onChange={(e) => setBody(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS))}
             onFocus={() => setExpanded(true)}
             rows={expanded ? 3 : 1}
-            placeholder="คุณคิดอะไรอยู่... (What's on your mind?)"
+            placeholder={tr('composer.placeholder')}
             className="w-full resize-none rounded-2xl bg-stone-100 hover:bg-stone-200/60 focus:bg-white focus:ring-2 focus:ring-yellow-300 outline-none px-4 py-2.5 text-[15px] text-stone-800 placeholder:text-stone-500 transition"
           />
           {photo && (
@@ -141,7 +145,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
                 <video src={photo.url} className="max-h-56 rounded-2xl border border-stone-200" muted playsInline controls />
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={photo.url} alt="Selected photo" className="max-h-56 rounded-2xl border border-stone-200 object-cover" />
+                <img src={photo.url} alt={tr('composer.selected')} className="max-h-56 rounded-2xl border border-stone-200 object-cover" />
               )}
               <button
                 onClick={() => {
@@ -149,12 +153,12 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
                   setPhoto(null);
                 }}
                 className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 text-stone-700 flex items-center justify-center shadow"
-                aria-label="Remove photo"
+                aria-label={tr('composer.remove')}
               >
                 <Icon name="close" size={16} />
               </button>
               <span className="absolute bottom-2 left-2 text-[10px] font-bold bg-white/90 rounded-full px-2 py-0.5 text-stone-600">
-                {photo.kind === 'video' ? `${(photo.blob.size / 1024 / 1024).toFixed(1)} MB video` : `${Math.round(photo.blob.size / 1024)} KB WebP`}
+                {photo.kind === 'video' ? tr('composer.videoBadge', { size: (photo.blob.size / 1024 / 1024).toFixed(1) }) : `${Math.round(photo.blob.size / 1024)} KB WebP`}
               </span>
             </div>
           )}
@@ -169,18 +173,18 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
               onClick={() => setTag(t)}
               className={`rounded-full px-3 py-1 text-xs font-bold transition ${tag === t ? `${TAG_STYLE[t]} ring-2 ring-offset-1 ring-[#FACC15]` : 'bg-white border border-stone-200 text-stone-500 hover:bg-stone-50'}`}
             >
-              #{t}
+              #{tr(`tag.${t}`)}
             </button>
           ))}
           <button
             onClick={() => setNsfw((v) => !v)}
             aria-pressed={nsfw}
-            title="Mark as 18+ (hidden from people who have 18+ turned off)"
+            title={tr('composer.nsfwTitle')}
             className={`rounded-full px-3 py-1 text-xs font-bold transition ${nsfw ? 'bg-rose-100 text-rose-600 ring-2 ring-offset-1 ring-rose-300' : 'bg-white border border-stone-200 text-stone-500 hover:bg-stone-50'}`}
           >
             18+
           </button>
-          {photo && <span className="w-full text-[11px] text-stone-400">Photos and videos are checked before they appear in the feed. Weapons, blood and violence are not allowed.</span>}
+          {photo && <span className="w-full text-[11px] text-stone-400">{tr('composer.policyNote')}</span>}
         </div>
       )}
 
@@ -190,17 +194,17 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
         <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pickPhoto} />
         <input ref={videoRef} type="file" accept="video/mp4,video/webm" className="hidden" onChange={pickVideo} />
         <button onClick={() => fileRef.current?.click()} disabled={compressing} className={`${btn.ghost} text-emerald-600`}>
-          <Icon name="image" size={20} /> {compressing ? 'Compressing…' : 'Photo'}
+          <Icon name="image" size={20} /> {compressing ? tr('composer.compressing') : tr('composer.photo')}
         </button>
         <button onClick={() => videoRef.current?.click()} className={`${btn.ghost} text-sky-600`}>
-          <Icon name="eye" size={20} /> Video
+          <Icon name="eye" size={20} /> {tr('composer.video')}
         </button>
         <button onClick={() => setExpanded(true)} className={`${btn.ghost} text-[#B08600] hidden sm:inline-flex`}>
-          <Icon name="sparkle" size={20} /> Tag
+          <Icon name="sparkle" size={20} /> {tr('composer.tag')}
         </button>
         <span className="ml-auto text-[11px] text-stone-400 tabular-nums">{body.length ? `${body.length}/${SOCIAL_POST_MAX_CHARS}` : ''}</span>
         <button onClick={submit} disabled={busy || (!body.trim() && !photo)} className={btn.primary}>
-          {busy ? 'Posting…' : 'Post'}
+          {busy ? tr('composer.posting') : tr('composer.post')}
         </button>
       </div>
     </Card>

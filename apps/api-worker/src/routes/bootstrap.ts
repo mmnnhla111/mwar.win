@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { ENERGY_RECHARGE_SECONDS, PROFILE_COVER_IDS, formatMicroUsd } from '@mwar/shared';
+import { ENERGY_RECHARGE_SECONDS, PROFILE_COVER_IDS, UI_LANG_CODES, formatMicroUsd } from '@mwar/shared';
 import type { BootstrapResponse, ProfileCoverColor } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { getUtcDateKey } from './quests';
@@ -18,7 +18,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       c.env.DB.prepare(
         `SELECT id, username, display_name, CASE WHEN avatar_url LIKE 'data:%' THEN NULL ELSE avatar_url END AS avatar_url,
                 cover_color, role, status, rank_badge, energy_tickets, max_energy_tickets, last_energy_recharge,
-                energy_progress_pct, created_at, show_nsfw
+                energy_progress_pct, created_at, show_nsfw, preferred_lang
          FROM users WHERE id = ?1`
       ).bind(me.userId),
       c.env.DB.prepare('SELECT balance_micro_usd, bounty_micro_usd, total_earned_micro_usd FROM wallets WHERE user_id = ?1').bind(me.userId),
@@ -69,6 +69,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       secondsToNextRecharge: tickets < maxTickets ? Math.max(0, ENERGY_RECHARGE_SECONDS - (now - last)) : 0,
       createdAt: u.created_at,
       showNsfw: u.show_nsfw === 1,
+      preferredLang: (UI_LANG_CODES as readonly string[]).includes(u.preferred_lang) ? u.preferred_lang : 'en',
     },
     walletSummary: {
       balanceMicroUsd: Number(w.balance_micro_usd || 0),

@@ -328,8 +328,8 @@ export function createPost(data: { body: string; tag: SocialPostTag; nsfw?: bool
 }
 
 // Content policy: 18+ setting, reports, admin takedown queue
-export function updateSocialSettings(data: { showNsfw: boolean; confirmAdult?: boolean }) {
-  return apiFetch<{ success: boolean; showNsfw: boolean }>('/api/social/settings', { method: 'PATCH', body: JSON.stringify(data) });
+export function updateSocialSettings(data: { showNsfw?: boolean; confirmAdult?: boolean; preferredLang?: string }) {
+  return apiFetch<{ success: boolean; showNsfw?: boolean; preferredLang?: string }>('/api/social/settings', { method: 'PATCH', body: JSON.stringify(data) });
 }
 
 export function reportPost(data: { postId: string; reasonCategory: ReportReason; details?: string; contact?: string }) {

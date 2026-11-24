@@ -9,10 +9,12 @@ import { Icon } from '../ui/Icon';
 import { Avatar } from '../ui/Avatar';
 import { searchUsers } from '../../lib/api';
 import { displayName } from '../../lib/format';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 /** Player search (username prefix, debounced, results cached per query) + #tag shortcuts. */
 export function SearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
   const router = useRouter();
+  const { t: tr } = useTranslation();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [users, setUsers] = useState<SocialAuthor[]>([]);
@@ -82,9 +84,9 @@ export function SearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
               else if (users[0]) go(`/profile?u=${users[0].username}`);
             }
           }}
-          placeholder="Search players…"
+          placeholder={tr('search.placeholder')}
           className="bg-transparent outline-none text-sm text-stone-800 placeholder:text-stone-400 w-full"
-          aria-label="Search players or tags"
+          aria-label={tr('search.aria')}
         />
       </label>
       {open && term.length > 0 && (
@@ -98,14 +100,14 @@ export function SearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
                 </button>
               ))
             ) : (
-              <p className="px-3 py-2.5 text-sm text-stone-400">Tags: {SOCIAL_POST_TAGS.map((t) => `#${t}`).join(' ')}</p>
+              <p className="px-3 py-2.5 text-sm text-stone-400">{tr('search.tags')}: {SOCIAL_POST_TAGS.map((t) => `#${t}`).join(' ')}</p>
             )
           ) : term.replace(/^@/, '').length < 2 ? (
-            <p className="px-3 py-2.5 text-sm text-stone-400">Type 2+ letters of a username</p>
+            <p className="px-3 py-2.5 text-sm text-stone-400">{tr('search.typeMore')}</p>
           ) : loading && users.length === 0 ? (
-            <p className="px-3 py-2.5 text-sm text-stone-400">Searching…</p>
+            <p className="px-3 py-2.5 text-sm text-stone-400">{tr('search.searching')}</p>
           ) : users.length === 0 ? (
-            <p className="px-3 py-2.5 text-sm text-stone-400">No players found</p>
+            <p className="px-3 py-2.5 text-sm text-stone-400">{tr('search.noPlayers')}</p>
           ) : (
             users.map((u) => (
               <Link

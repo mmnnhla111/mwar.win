@@ -3,8 +3,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { apiFetch } from '../../lib/api';
 import { QuestChatIcon } from '../../components/icons';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function ChatPage() {
+  const { t, lang } = useTranslation();
   const [targetUserId, setTargetUserId] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
   const [inputText, setInputText] = useState('');
@@ -31,16 +33,16 @@ export default function ChatPage() {
 
         const contacts: any[] = [];
         if (uplineRes.upline) {
-          contacts.push({ ...uplineRes.upline, roleLabel: 'Direct Sponsor', isSponsor: true });
+          contacts.push({ ...uplineRes.upline, roleLabel: 'chat.role.sponsor', isSponsor: true });
         }
         for (const m of downlineRes.members || []) {
-          contacts.push({ id: m.userId, username: m.username, roleLabel: `Level ${m.depth} Downline`, isSponsor: false });
+          contacts.push({ id: m.userId, username: m.username, roleLabel: `level:${m.depth}`, isSponsor: false });
         }
         // Opened from a player's profile ("Message"): add them even if they are not in your network
         const params = new URLSearchParams(window.location.search);
         const directId = params.get('userId');
         if (directId && !contacts.some((c) => c.id === directId)) {
-          contacts.unshift({ id: directId, username: params.get('name') || 'Player', roleLabel: 'Player', isSponsor: false });
+          contacts.unshift({ id: directId, username: params.get('name') || 'Player', roleLabel: 'chat.role.player', isSponsor: false });
         }
         setTeamMembers(contacts);
 
@@ -100,6 +102,8 @@ export default function ChatPage() {
   };
 
   const activeContact = teamMembers.find((m) => m.id === targetUserId);
+  const roleOf = (m: { roleLabel: string }) =>
+    m.roleLabel.startsWith('level:') ? t('chat.role.level', { n: m.roleLabel.slice(6) }) : t(m.roleLabel);
 
   return (
     <div className="space-y-4 pb-12">
@@ -111,12 +115,12 @@ export default function ChatPage() {
           </div>
           <div>
             <h1 className="text-lg sm:text-xl font-extrabold text-stone-900 tracking-tight flex items-center space-x-2">
-              <span>SQUAD COMMS & NETWORK CHAT</span>
+              <span>{t('chat.title')}</span>
               <span className="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                ENCRYPTED
+                {t('chat.badge')}
               </span>
             </h1>
-            <p className="text-xs text-stone-500">Direct 1-on-1 squad communications with your sponsors and downlines.</p>
+            <p className="text-xs text-stone-500">{t('chat.subtitle')}</p>
           </div>
         </div>
       </div>
@@ -126,12 +130,12 @@ export default function ChatPage() {
         {/* Left: Contacts Sidebar (Desktop: 4 cols) */}
         <div className="md:col-span-4 border-b md:border-b-0 md:border-r border-stone-200/80 p-3 sm:p-4 space-y-3 bg-stone-50">
           <span className="text-xs font-extrabold text-stone-500 block uppercase tracking-wider px-2">
-            Squad Contacts ({teamMembers.length})
+            {t('chat.contacts', { n: teamMembers.length })}
           </span>
 
           {teamMembers.length === 0 ? (
             <div className="p-6 text-center text-xs text-stone-500">
-              No contacts yet. Enlist downline members in your team to activate squad chat!
+              {t('chat.noContacts')}
             </div>
           ) : (
             <div className="space-y-1.5 max-h-[160px] md:max-h-[500px] overflow-y-auto no-scrollbar">
@@ -153,12 +157,12 @@ export default function ChatPage() {
                       </div>
                       <div>
                         <span className="text-xs font-extrabold text-stone-900 block">{m.username}</span>
-                        <span className="text-[10px] text-stone-500">{m.roleLabel}</span>
+                        <span className="text-[10px] text-stone-500">{roleOf(m)}</span>
                       </div>
                     </div>
                     {m.isSponsor && (
                       <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full">
-                        SPONSOR
+                        {t('chat.sponsorBadge')}
                       </span>
                     )}
                   </button>
@@ -179,11 +183,11 @@ export default function ChatPage() {
                 </div>
                 <div>
                   <h3 className="text-xs font-extrabold text-stone-900">{activeContact.username}</h3>
-                  <span className="text-[10px] text-stone-500 font-semibold">{activeContact.roleLabel}</span>
+                  <span className="text-[10px] text-stone-500 font-semibold">{roleOf(activeContact)}</span>
                 </div>
               </div>
             ) : (
-              <span className="text-xs text-stone-500">Select a squad member to start comms</span>
+              <span className="text-xs text-stone-500">{t('chat.selectMember')}</span>
             )}
 
             <button
@@ -191,10 +195,10 @@ export default function ChatPage() {
               onClick={() => targetUserId && loadMessages(targetUserId)}
               disabled={!targetUserId}
               className="flex items-center gap-1.5 rounded-full bg-white border border-stone-200 px-3 py-1.5 text-[11px] font-bold text-stone-600 hover:text-stone-900 disabled:opacity-40"
-              aria-label="Refresh messages"
+              aria-label={t('chat.refresh')}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4" /></svg>
-              Refresh
+              {t('common.refresh')}
             </button>
           </div>
 
@@ -203,7 +207,7 @@ export default function ChatPage() {
             {messages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center space-y-2 text-stone-500">
                 <QuestChatIcon size={32} className="opacity-40" />
-                <p className="text-xs">No comms logged yet. Send a message to coordinate tactics!</p>
+                <p className="text-xs">{t('chat.empty')}</p>
               </div>
             ) : (
               messages.map((msg) => {
@@ -219,7 +223,7 @@ export default function ChatPage() {
                     >
                       <p className="leading-relaxed">{msg.message_text}</p>
                       <div className="flex justify-end items-center space-x-1 mt-1 text-[9px] text-stone-600">
-                        <span>{new Date(msg.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span>{new Date(msg.created_at * 1000).toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit' })}</span>
                         {isMe && <span>{msg.is_read ? '✓✓' : '✓'}</span>}
                       </div>
                     </div>
@@ -234,7 +238,7 @@ export default function ChatPage() {
           <form onSubmit={handleSendMessage} className="p-3 border-t border-stone-200/80 bg-stone-50 flex items-center space-x-2">
             <input
               type="text"
-              placeholder={activeContact ? `Message ${activeContact.username}...` : 'Select a member first'}
+              placeholder={activeContact ? t('chat.messageTo', { name: activeContact.username }) : t('chat.selectFirst')}
               disabled={!targetUserId}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
@@ -245,7 +249,7 @@ export default function ChatPage() {
               disabled={!inputText.trim() || !targetUserId || isSending}
               className="bg-gradient-to-r from-[#FFE135] to-[#FACC15] hover:from-[#FACC15] hover:to-[#FACC15] text-stone-900 font-extrabold text-xs px-5 py-2.5 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)] active:scale-95 transition disabled:opacity-50"
             >
-              SEND
+              {t('chat.send')}
             </button>
           </form>
         </div>

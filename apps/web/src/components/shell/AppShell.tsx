@@ -13,6 +13,7 @@ import { LemonLogo } from '../ui/Icon';
 import { Spinner } from '../ui/Card';
 import { FloatingQuestWidget } from '../FloatingQuestWidget';
 import { DevMockPanel } from '../DevMockPanel';
+import { I18nProvider, useTranslation } from '../../i18n/I18nProvider';
 
 /** Pages whose main stage wants the full centre + right width (no right sidebar on lg). */
 const WIDE_PATHS = ['/games/fps', '/admin', '/chat', '/marketplace', '/network', '/wallet'];
@@ -28,6 +29,7 @@ function Splash() {
 
 /** The 3D game keeps its own dark full-bleed stage: only a slim "back to Games" bar sits above it. */
 function GameFrame({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
   return (
     <div className="game-root min-h-[100dvh] bg-slate-950 text-slate-100">
       <div className="h-12 px-3 sm:px-4 flex items-center gap-3 border-b border-slate-800/80 bg-slate-950">
@@ -35,7 +37,7 @@ function GameFrame({ children }: { children: React.ReactNode }) {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M15 5l-7 7 7 7" />
           </svg>
-          Rooms
+          {t('nav.rooms')}
         </Link>
         <span className="flex items-center gap-1.5 ml-auto">
           <LemonLogo size={24} />
@@ -139,7 +141,9 @@ function ShellSwitch({ children }: { children: React.ReactNode }) {
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <SessionProvider>
-      <ShellSwitch>{children}</ShellSwitch>
+      <I18nProvider>
+        <ShellSwitch>{children}</ShellSwitch>
+      </I18nProvider>
     </SessionProvider>
   );
 }

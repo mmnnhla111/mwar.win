@@ -8,6 +8,7 @@ import { claimQuest, getTodayQuests } from '../lib/api';
 import { Icon, type IconName } from './ui/Icon';
 import { Modal, Spinner } from './ui/Card';
 import { isAuthPath, isGamePath } from './shell/nav';
+import { useTranslation } from '../i18n/I18nProvider';
 
 const SIZE = 52;
 const EDGE = 12;
@@ -59,6 +60,7 @@ const utcToday = () => new Date().toISOString().slice(0, 10);
 export function FloatingQuestWidget() {
   const pathname = usePathname() || '/';
   const { boot, patch, refresh } = useSession();
+  const { t } = useTranslation();
   const [mounted, setMounted] = useState(false);
   const [pos, setPos] = useState<SavedPos>({ side: 'right', yPercent: 0.72 });
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
@@ -150,8 +152,8 @@ export function FloatingQuestWidget() {
     <>
       <button
         type="button"
-        aria-label={`Daily quests: ${remaining} left`}
-        title="Daily quests"
+        aria-label={t('quest.fabAria', { count: remaining })}
+        title={t('quest.title')}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={(e) => finish(e)}
@@ -193,6 +195,7 @@ function QuestModal({
   onAllDone: () => void;
   patch: ReturnType<typeof useSession>['patch'];
 }) {
+  const { t, tx: tq } = useTranslation();
   const [data, setData] = useState<TodayQuestsResponse | null>(questCache);
   const [loading, setLoading] = useState(false);
   const [claiming, setClaiming] = useState<string | null>(null);
@@ -212,7 +215,7 @@ function QuestModal({
       setData(d);
       syncBadge(d);
     } catch (err: any) {
-      setToast(err?.message || 'Could not load quests');
+      setToast(err?.message || t('quest.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -229,13 +232,13 @@ function QuestModal({
     setToast(null);
     try {
       const r = await claimQuest(q.questId);
-      setToast(`+${r.rewardCoins} coins added to your wallet`);
+      setToast(t('quest.claimedToast', { n: r.rewardCoins }));
       const d = await getTodayQuests();
       questCache = d;
       setData(d);
       if (syncBadge(d) === 0) setTimeout(onAllDone, 700);
     } catch (err: any) {
-      setToast(err?.message || 'Claim failed');
+      setToast(err?.message || t('quest.claimFailed'));
     } finally {
       setClaiming(null);
     }
@@ -252,7 +255,7 @@ function QuestModal({
           <span className="w-8 h-8 rounded-full bg-[#FFE135] flex items-center justify-center">
             <Icon name="quest" size={18} />
           </span>
-          Daily Quests
+          {t('quest.modalTitle')}
         </span>
       }
     >
@@ -261,10 +264,10 @@ function QuestModal({
           <Icon name={data?.isMlmUnlocked ? 'check' : 'lock'} size={22} className={data?.isMlmUnlocked ? 'text-emerald-600' : 'text-[#B08600]'} />
           <div className="text-sm leading-snug">
             <div className="font-bold text-stone-900">
-              {data?.isMlmUnlocked ? 'Upline earnings unlocked today' : `Finish ${Math.max(0, need - done)} more to unlock upline earnings`}
+              {data?.isMlmUnlocked ? t('quest.unlocked') : t('quest.finishMore', { count: Math.max(0, need - done) })}
             </div>
             <div className="text-stone-500 text-xs">
-              {done}/{need} quests done · resets 07:00 (Bangkok)
+              {t('quest.progress', { done, need })}
             </div>
           </div>
         </div>
@@ -287,10 +290,10 @@ function QuestModal({
                   </span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="font-bold text-sm text-stone-900 truncate">{q.title}</div>
-                      <div className="text-xs font-bold text-[#B08600] shrink-0">+{q.rewardCoins} coins</div>
+                      <div className="font-bold text-sm text-stone-900 truncate">{tq(`quest.${q.questId}.title`, q.title)}</div>
+                      <div className="text-xs font-bold text-[#B08600] shrink-0">{t('quest.coins', { n: q.rewardCoins })}</div>
                     </div>
-                    <div className="text-xs text-stone-500 mt-0.5">{q.description}</div>
+                    <div className="text-xs text-stone-500 mt-0.5">{tq(`quest.${q.questId}.desc`, q.description)}</div>
                     <div className="mt-2 flex items-center gap-2">
                       <div className="flex-1 h-2 rounded-full bg-stone-100 overflow-hidden">
                         <div className={`h-full rounded-full ${q.isCompleted ? 'bg-[#34D399]' : 'bg-[#FACC15]'}`} style={{ width: `${pct}%` }} />
@@ -303,17 +306,17 @@ function QuestModal({
                 </div>
                 <div className="mt-2.5 flex justify-end">
                   {q.isClaimed ? (
-                    <span className="text-xs font-bold text-emerald-700 bg-[#D1FAE5] rounded-full px-3 py-1.5">Claimed</span>
+                    <span className="text-xs font-bold text-emerald-700 bg-[#D1FAE5] rounded-full px-3 py-1.5">{t('quest.claimed')}</span>
                   ) : canClaim ? (
                     <button
                       onClick={() => claim(q)}
                       disabled={claiming === q.questId}
                       className="rounded-full bg-[#FFE135] hover:bg-[#FACC15] text-stone-900 text-xs font-extrabold px-4 py-1.5 disabled:opacity-60"
                     >
-                      {claiming === q.questId ? 'Claiming…' : 'Claim'}
+                      {claiming === q.questId ? t('quest.claiming') : t('quest.claim')}
                     </button>
                   ) : (
-                    <span className="text-xs font-semibold text-stone-400 bg-stone-100 rounded-full px-3 py-1.5">In progress</span>
+                    <span className="text-xs font-semibold text-stone-400 bg-stone-100 rounded-full px-3 py-1.5">{t('quest.inProgress')}</span>
                   )}
                 </div>
               </li>
@@ -323,7 +326,7 @@ function QuestModal({
 
         {toast && <p className="text-center text-sm font-semibold text-stone-700 bg-stone-50 rounded-2xl py-2">{toast}</p>}
         <button onClick={load} disabled={loading} className="w-full text-sm font-semibold text-stone-500 hover:text-stone-800 py-1 flex items-center justify-center gap-1.5">
-          <Icon name="refresh" size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+          <Icon name="refresh" size={15} className={loading ? 'animate-spin' : ''} /> {t('common.refresh')}
         </button>
       </div>
     </Modal>

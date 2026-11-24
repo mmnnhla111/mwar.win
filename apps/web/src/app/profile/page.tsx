@@ -3,10 +3,9 @@
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { PROFILE_COVER_COLORS, PROFILE_COVER_IDS, SOCIAL_BIO_MAX_CHARS, SOCIAL_DISPLAY_NAME_MAX_CHARS } from '@mwar/shared';
-import type { ProfileCoverColor, SocialPost, SocialProfile } from '@mwar/shared';
+import type { SocialPost, SocialProfile } from '@mwar/shared';
 import { Avatar } from '../../components/ui/Avatar';
-import { Card, Modal, Spinner, btn, inputCls } from '../../components/ui/Card';
+import { Card, Spinner, btn } from '../../components/ui/Card';
 import { Icon, type IconName } from '../../components/ui/Icon';
 import { FeedList } from '../../components/social/FeedList';
 import { getFeed, getProfile, setFollow } from '../../lib/api';
@@ -14,6 +13,7 @@ import { EditProfileModal, coverStyle } from '../../components/social/EditProfil
 import { useSession } from '../../lib/session';
 import { displayName, formatCount, formatUsd } from '../../lib/format';
 import { memoDrop, memoGet, memoSet } from '../../lib/memo';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 type ProfileState = { profile: SocialProfile; posts: SocialPost[]; next: string | null };
 
@@ -35,6 +35,7 @@ function Stat({ icon, label, value, tint }: { icon: IconName; label: string; val
 function ProfileView() {
   const params = useSearchParams();
   const { boot, patch } = useSession();
+  const { t, lang } = useTranslation();
   const username = params.get('u') || boot?.user.username || '';
   const key = `profile:${username}`;
   const [state, setState] = useState<ProfileState | null>(() => memoGet<ProfileState>(key));
@@ -62,12 +63,13 @@ function ProfileView() {
         memoSet(key, s);
         setState(s);
       } catch (err: any) {
-        setError(err?.message || 'Could not load this profile');
+        setError(err?.message || t('profile.loadFailed'));
         setState(null);
       } finally {
         setLoading(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [key, username]
   );
 
@@ -131,7 +133,7 @@ function ProfileView() {
             <div className="text-4xl">🔍</div>
             <div className="mt-2 font-extrabold text-stone-900">{error}</div>
             <Link href="/" className={`${btn.soft} mt-4`}>
-              Back to feed
+              {t('report.backToFeed')}
             </Link>
           </>
         )}
@@ -153,22 +155,22 @@ function ProfileView() {
               {p.isMe ? (
                 <>
                   <button onClick={() => setEditOpen(true)} className={btn.soft}>
-                    <Icon name="edit" size={16} /> Edit profile
+                    <Icon name="edit" size={16} /> {t('profile.edit')}
                   </button>
                   <Link href="/settings" className={btn.soft} data-settings-link>
-                    ตั้งค่า
+                    {t('nav.settings')}
                   </Link>
                   <button onClick={copyRef} className={btn.primary}>
-                    <Icon name="link" size={16} /> {copied ? 'Copied!' : 'Copy referral link'}
+                    <Icon name="link" size={16} /> {copied ? t('common.copied') : t('profile.copyRef')}
                   </button>
                 </>
               ) : (
                 <>
                   <button onClick={toggleFollow} disabled={followBusy} className={p.isFollowing ? btn.soft : btn.primary}>
-                    <Icon name={p.isFollowing ? 'check' : 'plus'} size={16} /> {p.isFollowing ? 'Following' : 'Follow'}
+                    <Icon name={p.isFollowing ? 'check' : 'plus'} size={16} /> {p.isFollowing ? t('profile.followingBtn') : t('profile.follow')}
                   </button>
                   <Link href={`/chat?userId=${p.id}&name=${encodeURIComponent(p.username)}`} className={btn.soft}>
-                    <Icon name="chat" size={16} /> Message
+                    <Icon name="chat" size={16} /> {t('profile.message')}
                   </Link>
                 </>
               )}
@@ -179,13 +181,13 @@ function ProfileView() {
           {p.bio && <p className="mt-2 text-[15px] text-stone-700 whitespace-pre-wrap">{p.bio}</p>}
           <div className="mt-3 flex gap-4 text-sm">
             <Link href={`/friends?u=${p.username}&tab=followers`} className="hover:underline">
-              <b className="text-stone-900">{formatCount(p.followersCount)}</b> <span className="text-stone-500">Followers</span>
+              <b className="text-stone-900">{formatCount(p.followersCount)}</b> <span className="text-stone-500">{t('profile.followers')}</span>
             </Link>
             <Link href={`/friends?u=${p.username}&tab=following`} className="hover:underline">
-              <b className="text-stone-900">{formatCount(p.followingCount)}</b> <span className="text-stone-500">Following</span>
+              <b className="text-stone-900">{formatCount(p.followingCount)}</b> <span className="text-stone-500">{t('profile.following')}</span>
             </Link>
             <span>
-              <b className="text-stone-900">{formatCount(p.postsCount)}</b> <span className="text-stone-500">Posts</span>
+              <b className="text-stone-900">{formatCount(p.postsCount)}</b> <span className="text-stone-500">{t('profile.posts')}</span>
             </span>
           </div>
         </div>
@@ -193,25 +195,25 @@ function ProfileView() {
 
       <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
-          <div className="font-extrabold text-stone-900">Player stats</div>
+          <div className="font-extrabold text-stone-900">{t('profile.stats')}</div>
           <span className="text-[11px] font-bold rounded-full bg-stone-900 text-[#FFE135] px-2.5 py-1">MWAR Tactical FPS</span>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <Stat icon="games" label="Matches" value={formatCount(p.totalMatches)} tint="bg-[#E0F2FE] text-sky-700" />
-          <Stat icon="target" label="Kills" value={formatCount(p.totalKills)} tint="bg-[#FFE4E6] text-rose-600" />
-          <Stat icon="trophy" label="Head bounty" value={formatUsd(p.headBountyMicroUsd)} tint="bg-[#FFF6C2] text-[#8A6A00]" />
+          <Stat icon="games" label={t('profile.matches')} value={formatCount(p.totalMatches)} tint="bg-[#E0F2FE] text-sky-700" />
+          <Stat icon="target" label={t('profile.kills')} value={formatCount(p.totalKills)} tint="bg-[#FFE4E6] text-rose-600" />
+          <Stat icon="trophy" label={t('side.headBounty')} value={formatUsd(p.headBountyMicroUsd)} tint="bg-[#FFF6C2] text-[#8A6A00]" />
           <Stat
             icon="calendar"
-            label="Member since"
-            value={new Date(p.memberSince * 1000).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+            label={t('profile.memberSince')}
+            value={new Date(p.memberSince * 1000).toLocaleDateString(lang, { month: 'short', year: 'numeric' })}
             tint="bg-[#D1FAE5] text-emerald-700"
           />
         </div>
       </Card>
 
       <div className="flex items-center justify-between px-1 pt-1">
-        <div className="font-extrabold text-stone-900">Posts</div>
-        <button onClick={() => load(true)} className="text-stone-400 hover:text-stone-800" aria-label="Refresh profile">
+        <div className="font-extrabold text-stone-900">{t('profile.posts')}</div>
+        <button onClick={() => load(true)} className="text-stone-400 hover:text-stone-800" aria-label={t('profile.refresh')}>
           <Icon name="refresh" size={17} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
@@ -221,7 +223,7 @@ function ProfileView() {
         nextCursor={state.next}
         loading={moreLoading}
         onLoadMore={loadMore}
-        empty={<Card className="p-8 text-center text-sm text-stone-500">No posts yet.</Card>}
+        empty={<Card className="p-8 text-center text-sm text-stone-500">{t('profile.noPosts')}</Card>}
       />
 
       {p.isMe && (

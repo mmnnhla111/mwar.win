@@ -10,7 +10,25 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Plus Jakarta Sans"', 'Prompt', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        // Latin + Vietnamese: Plus Jakarta Sans; Thai: Prompt / Noto Sans Thai (Google Fonts only downloads the
+        // Thai subset when Thai text is on screen); CJK + Devanagari fall back to the device's own fonts.
+        sans: [
+          '"Plus Jakarta Sans"',
+          'Prompt',
+          '"Noto Sans Thai"',
+          '"Noto Sans SC"',
+          '"PingFang SC"',
+          '"Microsoft YaHei"',
+          '"Hiragino Sans"',
+          '"Noto Sans JP"',
+          '"Apple SD Gothic Neo"',
+          '"Malgun Gothic"',
+          '"Noto Sans KR"',
+          '"Noto Sans Devanagari"',
+          'ui-sans-serif',
+          'system-ui',
+          'sans-serif',
+        ],
       },
       colors: {
         cream: '#FAF9F5',

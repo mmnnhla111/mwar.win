@@ -4,6 +4,7 @@ import React from 'react';
 import type { SocialPost } from '@mwar/shared';
 import { PostCard } from './PostCard';
 import { Card, Spinner, btn } from '../ui/Card';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export function FeedList({
   posts,
@@ -20,6 +21,7 @@ export function FeedList({
   onLoadMore: () => void;
   empty?: React.ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
       {posts.map((p) => (
@@ -51,11 +53,11 @@ export function FeedList({
       {nextCursor && (
         <div className="flex justify-center pt-1">
           <button onClick={onLoadMore} disabled={loading} className={`${btn.soft} bg-white border border-stone-200`}>
-            {loading ? <Spinner size={16} /> : null} Load more posts
+            {loading ? <Spinner size={16} /> : null} {t('feed.loadMore')}
           </button>
         </div>
       )}
-      {!nextCursor && posts.length > 0 && <p className="text-center text-xs text-stone-400 py-3">You&apos;re all caught up 🍋</p>}
+      {!nextCursor && posts.length > 0 && <p className="text-center text-xs text-stone-400 py-3">{t('feed.caughtUp')}</p>}
     </div>
   );
 }

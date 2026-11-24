@@ -88,3 +88,26 @@ commands from Admin.
 - Post a photo → it shows "กำลังตรวจสอบภาพ/วิดีโอ..." only for you; after the worker runs it becomes public, 18+ or rejected.
 - `/settings` → 18+ toggle asks for age confirmation.
 - Post "..." → แจ้งขอให้ลบ / Report → appears in Admin → คำขอแจ้งลบ (Takedown Requests).
+
+---
+
+# Multi-language round (2026-11-24, migration 0010)
+
+```bash
+cd apps/api-worker
+npx wrangler d1 migrations apply core_db --remote        # applies 0010_preferred_lang.sql (and 0009 if not yet applied)
+npx wrangler deploy                                      # bootstrap returns preferredLang; PATCH /api/social/settings saves it
+
+cd ../web
+pnpm run deploy:pages                                    # build runs the i18n key-parity check first
+```
+
+`0010_preferred_lang.sql` adds `users.preferred_lang TEXT NOT NULL DEFAULT 'en'`. Nothing else changes.
+
+- Active languages: English, Thai, Indonesian, Vietnamese, Spanish. Chinese, Korean, Japanese, Hindi and
+  Portuguese are reserved: add `apps/web/src/i18n/locales/<code>.json` and set `enabled: true` in
+  `apps/web/src/i18n/config.ts`, then run `pnpm --filter @mwar/web i18n:check`.
+- Language choice order: the user's pick on this device → the account's saved language → a supported browser
+  language → the country from the device time zone (Thailand → Thai, Indonesia → Indonesian, Vietnam →
+  Vietnamese, Spain / Latin America → Spanish) → English. No extra request is made.
+- The in-game 3D HUD (`apps/web/src/game/**`) is not translated in this round.

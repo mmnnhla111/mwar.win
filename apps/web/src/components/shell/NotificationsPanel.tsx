@@ -8,12 +8,13 @@ import { Spinner } from '../ui/Card';
 import { getNotifications, markNotificationsRead } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { displayName, timeAgo } from '../../lib/format';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 const VERB: Record<SocialNotification['type'], string> = {
-  like: 'liked your post',
-  comment: 'commented on your post',
-  follow: 'started following you',
-  moderation: '— your photo/video was removed (content policy)',
+  like: 'notif.like',
+  comment: 'notif.comment',
+  follow: 'notif.follow',
+  moderation: 'notif.moderation',
 };
 
 // Kept for the session so re-opening the bell costs no request unless there is something new
@@ -22,6 +23,7 @@ let cached: { items: SocialNotification[]; nextCursor: string | null } | null = 
 /** Bell dropdown: fetched only when opened (and only again when the unread badge says there is news). */
 export function NotificationsPanel({ onClose }: { onClose: () => void }) {
   const { boot, patch } = useSession();
+  const { t, lang } = useTranslation();
   const unread = boot?.unreadNotifCount || 0;
   const [items, setItems] = useState<SocialNotification[]>(cached?.items || []);
   const [next, setNext] = useState<string | null>(cached?.nextCursor || null);
@@ -56,7 +58,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node) && !(e.target as HTMLElement).closest('[aria-label="Notifications"]')) onClose();
+      if (ref.current && !ref.current.contains(e.target as Node) && !(e.target as HTMLElement).closest('[data-notif-bell]')) onClose();
     };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
@@ -81,14 +83,14 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
       ref={ref}
       className="fixed md:absolute left-3 right-3 md:left-auto md:right-0 top-[60px] md:top-auto md:mt-2 md:w-[360px] bg-white rounded-3xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.12)] p-2 z-50 animate-[popIn_160ms_ease-out]"
     >
-      <div className="px-3 pt-2 pb-1 font-extrabold text-stone-900">Notifications</div>
+      <div className="px-3 pt-2 pb-1 font-extrabold text-stone-900">{t('nav.notifications')}</div>
       <div className="max-h-[60dvh] overflow-y-auto">
         {items.length === 0 && loading && (
           <div className="py-8 flex justify-center">
             <Spinner />
           </div>
         )}
-        {items.length === 0 && !loading && <p className="px-3 py-8 text-center text-sm text-stone-400">No notifications yet. Post something cute!</p>}
+        {items.length === 0 && !loading && <p className="px-3 py-8 text-center text-sm text-stone-400">{t('notif.empty')}</p>}
         {items.map((n) => (
           <Link
             key={n.id}
@@ -98,14 +100,14 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
           >
             <Avatar src={n.actor.avatarUrl} name={displayName(n.actor)} size={38} />
             <span className="text-sm text-stone-700 leading-snug">
-              <b className="text-stone-900">{n.type === 'moderation' ? 'Moderation' : displayName(n.actor)}</b> {VERB[n.type]}{n.type === 'moderation' && n.reason ? `: ${n.reason}` : ''}
-              <span className="block text-xs text-stone-400 mt-0.5">{timeAgo(n.createdAt)}</span>
+              <b className="text-stone-900">{n.type === 'moderation' ? t('notif.moderationTitle') : displayName(n.actor)}</b> {t(VERB[n.type])}{n.type === 'moderation' && n.reason ? `: ${n.reason}` : ''}
+              <span className="block text-xs text-stone-400 mt-0.5">{timeAgo(n.createdAt, t, lang)}</span>
             </span>
           </Link>
         ))}
         {next && (
           <button onClick={loadMore} disabled={loading} className="w-full py-2.5 text-sm font-semibold text-stone-500 hover:text-stone-800">
-            {loading ? 'Loading…' : 'See older'}
+            {loading ? t('common.loading') : t('notif.seeOlder')}
           </button>
         )}
       </div>

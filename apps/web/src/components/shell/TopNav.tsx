@@ -10,6 +10,8 @@ import { MAIN_TABS, isTabActive } from './nav';
 import { SearchBox } from './SearchBox';
 import { NotificationsPanel } from './NotificationsPanel';
 import { displayName } from '../../lib/format';
+import { LanguageMenu } from '../i18n/LanguagePicker';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 function Badge({ n }: { n: number }) {
   if (!n) return null;
@@ -40,6 +42,7 @@ export function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
   const { boot, signOut } = useSession();
+  const { t: tr } = useTranslation();
   const [notifOpen, setNotifOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [mobileSearch, setMobileSearch] = useState(false);
@@ -71,7 +74,7 @@ export function TopNav() {
       <div className="max-w-[1320px] mx-auto h-14 md:h-16 px-3 md:px-4 flex items-center gap-3">
         {/* Left: logo + search */}
         <div className="flex items-center gap-2.5 md:w-[300px] shrink-0 min-w-0">
-          <Link href="/" className="flex items-center gap-2 shrink-0" aria-label="mwar.win home">
+          <Link href="/" className="flex items-center gap-2 shrink-0" aria-label={tr('nav.homeAria')}>
             <LemonLogo size={34} />
             <span className="font-extrabold text-[17px] tracking-tight text-stone-900">
               mwar<span className="text-[#E5B800]">.win</span>
@@ -83,19 +86,19 @@ export function TopNav() {
         </div>
 
         {/* Center: 5 tabs (md+) */}
-        <nav className="hidden md:flex flex-1 items-stretch justify-center h-full" aria-label="Main">
+        <nav className="hidden md:flex flex-1 items-stretch justify-center h-full" aria-label={tr('nav.main')}>
           {MAIN_TABS.map((t) => {
             const active = isTabActive(t, pathname);
             return (
               <Link
                 key={t.href}
                 href={t.href}
-                title={t.label}
+                title={tr(t.labelKey)}
                 aria-current={active ? 'page' : undefined}
                 className={`relative flex items-center justify-center px-4 lg:px-6 mx-0.5 my-1.5 rounded-2xl transition ${active ? 'text-stone-900' : 'text-stone-400 hover:text-stone-700 hover:bg-stone-100'}`}
               >
                 <Icon name={t.icon} size={24} strokeWidth={active ? 2.2 : 1.9} />
-                <span className="sr-only">{t.label}</span>
+                <span className="sr-only">{tr(t.labelKey)}</span>
                 {active && <span className="absolute -bottom-1.5 left-2 right-2 h-[3px] rounded-full bg-[#FACC15]" />}
               </Link>
             );
@@ -105,16 +108,16 @@ export function TopNav() {
         {/* Right */}
         <div className="flex items-center gap-2 ml-auto md:ml-0 md:w-[300px] justify-end">
           <span className="lg:hidden">
-            <IconButton label="Search" onClick={() => setMobileSearch((v) => !v)} active={mobileSearch}>
+            <IconButton label={tr('nav.search')} onClick={() => setMobileSearch((v) => !v)} active={mobileSearch}>
               <Icon name="search" size={20} />
             </IconButton>
           </span>
-          <IconButton label="Chat" href="/chat" active={pathname.startsWith('/chat')}>
+          <IconButton label={tr('nav.chat')} href="/chat" active={pathname.startsWith('/chat')}>
             <Icon name="chat" size={20} />
             <Badge n={boot?.unreadChatCount || 0} />
           </IconButton>
-          <div className="relative">
-            <IconButton label="Notifications" onClick={() => setNotifOpen((v) => !v)} active={notifOpen}>
+          <div className="relative" data-notif-bell>
+            <IconButton label={tr('nav.notifications')} onClick={() => setNotifOpen((v) => !v)} active={notifOpen}>
               <Icon name="bell" size={20} />
               <Badge n={boot?.unreadNotifCount || 0} />
             </IconButton>
@@ -135,18 +138,19 @@ export function TopNav() {
               {menuOpen && (
                 <div role="menu" className="absolute right-0 mt-2 w-56 bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5 animate-[popIn_160ms_ease-out]">
                   <Link href="/profile" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
-                    <Icon name="user" size={18} /> My profile
+                    <Icon name="user" size={18} /> {tr('nav.myProfile')}
                   </Link>
                   <Link href="/settings" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
-                    <Icon name="edit" size={18} /> ตั้งค่า / Settings
+                    <Icon name="edit" size={18} /> {tr('nav.settings')}
                   </Link>
                   {(user.role === 'admin' || user.role === 'auditor') && (
                     <Link href="/admin" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
-                      <Icon name="shield" size={18} /> Admin
+                      <Icon name="shield" size={18} /> {tr('nav.admin')}
                     </Link>
                   )}
+                  <LanguageMenu />
                   <button onClick={handleLogout} className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-rose-50 text-sm font-semibold text-rose-500">
-                    <Icon name="logout" size={18} /> Log out
+                    <Icon name="logout" size={18} /> {tr('nav.logout')}
                   </button>
                 </div>
               )}

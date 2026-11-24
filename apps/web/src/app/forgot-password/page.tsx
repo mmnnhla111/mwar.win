@@ -5,12 +5,14 @@ import Link from 'next/link';
 import { requestPasswordReset, resetPassword } from '../../lib/api';
 import { AuthCard, FieldLabel, FormError, FormSuccess } from '../../components/auth/AuthCard';
 import { btn, inputCls } from '../../components/ui/Card';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 /**
  * Step 1: ask for a reset link by email. Step 2 (opened from the email, ?token=…): choose a new password.
  * The link expires after 15 minutes and works once.
  */
 export default function ForgotPasswordPage() {
+  const { t: tr } = useTranslation();
   const [token, setToken] = useState('');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
@@ -31,16 +33,16 @@ export default function ForgotPasswordPage() {
     setError('');
     setOk('');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
-      setError('Please enter a valid email address.');
+      setError(tr('forgot.invalidEmail'));
       return;
     }
     setBusy(true);
     try {
       const res = await requestPasswordReset(email.trim());
-      setOk(res.message);
+      setOk(tr('forgot.sent'));
       if (res.devResetLink) setDevLink(res.devResetLink);
     } catch (err: any) {
-      setError(err?.message || 'Could not send the reset link');
+      setError(err?.message || tr('forgot.sendFailed'));
     } finally {
       setBusy(false);
     }
@@ -49,15 +51,15 @@ export default function ForgotPasswordPage() {
   const reset = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (pw.length < 8) return setError('Password must be at least 8 characters.');
-    if (pw !== pw2) return setError('The two passwords do not match.');
+    if (pw.length < 8) return setError(tr('forgot.pwShort'));
+    if (pw !== pw2) return setError(tr('forgot.pwMismatch'));
     setBusy(true);
     try {
       const res = await resetPassword(token, pw);
-      setOk(res.message);
+      setOk(tr('forgot.resetDone'));
       setDone(true);
     } catch (err: any) {
-      setError(err?.message || 'Reset failed');
+      setError(err?.message || tr('forgot.resetFailed'));
     } finally {
       setBusy(false);
     }
@@ -65,33 +67,33 @@ export default function ForgotPasswordPage() {
 
   const footer = (
     <Link href="/login" className="font-extrabold text-stone-900 underline decoration-[#FACC15] decoration-[3px] underline-offset-4">
-      ← Back to sign in
+      ← {tr('forgot.back')}
     </Link>
   );
 
   if (token) {
     return (
-      <AuthCard title="ตั้งรหัสผ่านใหม่ 🔑" subtitle="Choose a new password for your account." footer={footer}>
+      <AuthCard title={tr('forgot.newTitle')} subtitle={tr('forgot.newSubtitle')} footer={footer}>
         {done ? (
           <div className="space-y-4">
             <FormSuccess msg={ok} />
             <Link href="/login" className={`${btn.primary} w-full py-3`}>
-              Sign in
+              {tr('login.signIn')}
             </Link>
           </div>
         ) : (
           <form onSubmit={reset} className="space-y-4" noValidate>
             <div>
-              <FieldLabel htmlFor="new-pw">New password</FieldLabel>
-              <input id="new-pw" type="password" autoComplete="new-password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 8 characters" />
+              <FieldLabel htmlFor="new-pw">{tr('forgot.newPw')}</FieldLabel>
+              <input id="new-pw" type="password" autoComplete="new-password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} placeholder={tr('register.passwordRule')} />
             </div>
             <div>
-              <FieldLabel htmlFor="new-pw2">Repeat new password</FieldLabel>
+              <FieldLabel htmlFor="new-pw2">{tr('forgot.repeatPw')}</FieldLabel>
               <input id="new-pw2" type="password" autoComplete="new-password" className={inputCls} value={pw2} onChange={(e) => setPw2(e.target.value)} />
             </div>
             <FormError msg={error} />
             <button type="submit" disabled={busy} className={`${btn.primary} w-full py-3`}>
-              {busy ? 'Saving…' : 'Save new password'}
+              {busy ? tr('common.saving') : tr('forgot.savePw')}
             </button>
           </form>
         )}
@@ -100,21 +102,21 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <AuthCard title="ลืมรหัสผ่าน? 🍋" subtitle="Enter your account email and we'll send you a reset link (valid 15 minutes)." footer={footer}>
+    <AuthCard title={tr('forgot.title')} subtitle={tr('forgot.subtitle')} footer={footer}>
       <form onSubmit={request} className="space-y-4" noValidate>
         <div>
-          <FieldLabel htmlFor="fp-email">Email</FieldLabel>
+          <FieldLabel htmlFor="fp-email">{tr('register.email')}</FieldLabel>
           <input id="fp-email" type="email" autoComplete="email" className={inputCls} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
         </div>
         <FormError msg={error} />
         <FormSuccess msg={ok} />
         {devLink && (
           <p className="rounded-2xl bg-[#E0F2FE] text-sky-800 text-xs px-4 py-2.5 break-all">
-            Dev mode (no mail service yet): <a className="underline font-semibold" href={devLink.replace(/^https?:\/\/[^/]+/, '')}>open reset link</a>
+            {tr('forgot.devMode')} <a className="underline font-semibold" href={devLink.replace(/^https?:\/\/[^/]+/, '')}>{tr('forgot.openLink')}</a>
           </p>
         )}
         <button type="submit" disabled={busy} className={`${btn.primary} w-full py-3`}>
-          {busy ? 'Sending…' : 'Send reset link'}
+          {busy ? tr('common.sending') : tr('forgot.send')}
         </button>
       </form>
     </AuthCard>

@@ -9,10 +9,12 @@ import { Card, Spinner, btn } from '../../components/ui/Card';
 import { getFollows } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { displayName } from '../../lib/format';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 function FriendsView() {
   const params = useSearchParams();
   const { boot } = useSession();
+  const { t: tr } = useTranslation();
   const username = params.get('u') || boot?.user.username || '';
   const tab = params.get('tab') === 'followers' ? 'followers' : 'following';
   const [items, setItems] = useState<SocialAuthor[]>([]);
@@ -46,7 +48,7 @@ function FriendsView() {
             href={`/friends?u=${username}&tab=${t}`}
             className={`flex-1 text-center rounded-2xl py-2.5 text-sm font-bold capitalize ${tab === t ? 'bg-[#FFF6C2] text-stone-900' : 'text-stone-500 hover:bg-stone-50'}`}
           >
-            {t}
+            {tr(t === 'following' ? 'profile.following' : 'profile.followers')}
           </Link>
         ))}
       </Card>
@@ -58,7 +60,7 @@ function FriendsView() {
               <span className="block font-bold text-stone-900 truncate">{displayName(u)}</span>
               <span className="block text-xs text-stone-400">@{u.username}</span>
             </span>
-            <span className="text-xs font-bold text-[#B08600]">View</span>
+            <span className="text-xs font-bold text-[#B08600]">{tr('common.view')}</span>
           </Link>
         ))}
         {loading && items.length === 0 && (
@@ -68,13 +70,13 @@ function FriendsView() {
         )}
         {!loading && items.length === 0 && (
           <p className="py-10 text-center text-sm text-stone-500">
-            {tab === 'following' ? 'Not following anyone yet. Find players from the sidebar or search!' : 'No followers yet.'}
+            {tab === 'following' ? tr('friends.noFollowing') : tr('friends.noFollowers')}
           </p>
         )}
         {next && (
           <div className="flex justify-center p-2">
             <button onClick={() => load(next)} disabled={loading} className={btn.soft}>
-              {loading ? 'Loading…' : 'Load more'}
+              {loading ? tr('common.loading') : tr('common.loadMore')}
             </button>
           </div>
         )}

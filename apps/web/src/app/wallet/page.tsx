@@ -4,8 +4,10 @@ import React, { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { formatMicroUsd, formatCoins } from '@mwar/shared';
 import { UsdDollarIcon, GoldCoinIcon } from '../../components/icons';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function WalletPage() {
+  const { t, tx, lang } = useTranslation();
   const [wallet, setWallet] = useState<any>(null);
   const [withdrawals, setWithdrawals] = useState<any[]>([]);
   const [amountUsd, setAmountUsd] = useState('10.00');
@@ -49,10 +51,10 @@ export default function WalletPage() {
           payout_address: payoutAddress,
         }),
       });
-      setStatusMsg(`Withdrawal requested! ID: ${res.withdrawalId.slice(0, 8)}. Submitted to AI Fraud Audit.`);
+      setStatusMsg(t('wallet.requested', { id: res.withdrawalId.slice(0, 8) }));
       await loadWallet();
     } catch (err: any) {
-      setStatusMsg(`Withdrawal Error: ${err.message}`);
+      setStatusMsg(t('wallet.error', { error: err.message }));
     } finally {
       setIsSubmitting(false);
     }
@@ -68,20 +70,20 @@ export default function WalletPage() {
           </div>
           <div>
             <h1 className="text-xl sm:text-2xl font-extrabold text-stone-900 tracking-tight flex items-center space-x-2">
-              <span>WALLET & CASHOUT VAULT</span>
+              <span>{t('wallet.title')}</span>
               <span className="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                MICRO-USD INTEGER ENGINE
+                {t('wallet.engineBadge')}
               </span>
             </h1>
             <p className="text-xs text-stone-500 mt-0.5">
-              Precision accounting ($1.00 = 1,000,000 Micro-USD, $0.01 = 100 Coins). Minimum cashout $10.00 USD.
+              {t('wallet.subtitle')}
             </p>
           </div>
         </div>
 
         <div className="flex items-center space-x-2 text-xs font-bold text-stone-500 bg-stone-50 px-3.5 py-1.5 rounded-2xl border border-stone-200/80">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span>NOWPayments Real-Time API</span>
+          <span>{t('wallet.nowpayments')}</span>
         </div>
       </div>
 
@@ -96,7 +98,7 @@ export default function WalletPage() {
         {/* Available Balance */}
         <div className="bg-white border border-stone-200/80 rounded-3xl p-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-2 relative overflow-hidden">
           <div className="flex justify-between items-center">
-            <span className="text-xs font-extrabold text-stone-500 uppercase tracking-wider">Available Balance</span>
+            <span className="text-xs font-extrabold text-stone-500 uppercase tracking-wider">{t('wallet.available')}</span>
             <UsdDollarIcon size={20} />
           </div>
           <div className="text-3xl font-extrabold text-emerald-600 font-mono">
@@ -104,32 +106,32 @@ export default function WalletPage() {
           </div>
           <div className="text-xs font-mono font-bold text-amber-700 flex items-center space-x-1">
             <GoldCoinIcon size={16} />
-            <span>{wallet?.formattedCoins || '0 Coins'}</span>
+            <span>{wallet?.formattedCoins || t('wallet.zeroCoins')}</span>
           </div>
         </div>
 
         {/* Total Earned */}
         <div className="bg-white border border-stone-200/80 rounded-3xl p-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-xs font-extrabold text-stone-500 uppercase tracking-wider">Lifetime Revenue</span>
-            <span className="text-xs text-amber-700 font-bold">Kills & MLM</span>
+            <span className="text-xs font-extrabold text-stone-500 uppercase tracking-wider">{t('wallet.lifetime')}</span>
+            <span className="text-xs text-amber-700 font-bold">{t('wallet.killsMlm')}</span>
           </div>
           <div className="text-3xl font-extrabold text-amber-700 font-mono">
             {wallet?.formattedTotalEarned || '$0.00'}
           </div>
-          <p className="text-[10px] text-stone-500 font-semibold">Total earned from matches, chests & MLM</p>
+          <p className="text-[10px] text-stone-500 font-semibold">{t('wallet.lifetimeHint')}</p>
         </div>
 
         {/* Total Withdrawn */}
         <div className="bg-white border border-stone-200/80 rounded-3xl p-5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-xs font-extrabold text-stone-500 uppercase tracking-wider">Total Cashouts</span>
-            <span className="text-xs text-sky-600 font-bold">Processed</span>
+            <span className="text-xs font-extrabold text-stone-500 uppercase tracking-wider">{t('wallet.cashouts')}</span>
+            <span className="text-xs text-sky-600 font-bold">{t('wallet.processed')}</span>
           </div>
           <div className="text-3xl font-extrabold text-sky-600 font-mono">
             {wallet?.formattedTotalWithdrawn || '$0.00'}
           </div>
-          <p className="text-[10px] text-stone-500 font-semibold">Verified through 3-tier fraud pipeline</p>
+          <p className="text-[10px] text-stone-500 font-semibold">{t('wallet.cashoutsHint')}</p>
         </div>
       </div>
 
@@ -137,18 +139,18 @@ export default function WalletPage() {
       <div className="bg-white border border-stone-200/80 rounded-3xl p-5 sm:p-6 shadow-[0_2px_12px_rgba(0,0,0,0.04)] space-y-4">
         <div className="flex justify-between items-center border-b border-stone-200/80 pb-3">
           <div>
-            <h3 className="text-sm sm:text-base font-extrabold text-stone-900">INSTANT CRYPTO CASHOUT REQUEST</h3>
-            <p className="text-[11px] text-stone-500">Withdrawals processed automatically via NOWPayments.</p>
+            <h3 className="text-sm sm:text-base font-extrabold text-stone-900">{t('wallet.formTitle')}</h3>
+            <p className="text-[11px] text-stone-500">{t('wallet.formHint')}</p>
           </div>
           <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-            MIN $10.00 USD
+            {t('wallet.min')}
           </span>
         </div>
 
         <form onSubmit={handleWithdrawSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="text-xs font-bold text-stone-600 block mb-1">Cashout Amount (USD):</label>
+              <label className="text-xs font-bold text-stone-600 block mb-1">{t('wallet.amount')}</label>
               <div className="relative">
                 <span className="absolute left-3 top-2.5 text-xs text-stone-500 font-bold">$</span>
                 <input
@@ -162,12 +164,12 @@ export default function WalletPage() {
                 />
               </div>
               <p className="text-[10px] text-stone-500 mt-1">
-                Cost in coins: {(parseFloat(amountUsd || '0') * 10000).toLocaleString()} Coins ($0.01 = 100 Coins).
+                {t('wallet.cost', { coins: (parseFloat(amountUsd || '0') * 10000).toLocaleString() })}
               </p>
             </div>
 
             <div>
-              <label className="text-xs font-bold text-stone-600 block mb-1">Cryptocurrency Network:</label>
+              <label className="text-xs font-bold text-stone-600 block mb-1">{t('wallet.network')}</label>
               <select
                 value={crypto}
                 onChange={(e) => setCrypto(e.target.value)}
@@ -182,7 +184,7 @@ export default function WalletPage() {
           </div>
 
           <div>
-            <label className="text-xs font-bold text-stone-600 block mb-1">Recipient Destination Wallet Address:</label>
+            <label className="text-xs font-bold text-stone-600 block mb-1">{t('wallet.address')}</label>
             <input
               type="text"
               value={payoutAddress}
@@ -197,7 +199,7 @@ export default function WalletPage() {
             disabled={isSubmitting}
             className="w-full bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-stone-900 font-extrabold py-3 rounded-2xl text-xs transition shadow-[0_2px_12px_rgba(0,0,0,0.04)] active:scale-95 disabled:opacity-50"
           >
-            {isSubmitting ? 'Submitting to AI Audit...' : 'SUBMIT WITHDRAWAL TO AI AUDIT'}
+            {isSubmitting ? t('wallet.submitting') : t('wallet.submit')}
           </button>
         </form>
       </div>
@@ -205,24 +207,24 @@ export default function WalletPage() {
       {/* 4. Cashout History Table */}
       <div className="bg-white border border-stone-200/80 rounded-3xl overflow-hidden shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="p-4 sm:p-5 border-b border-stone-200/80 flex justify-between items-center">
-          <span className="text-sm font-extrabold text-stone-900">Recent Cashout Requests ({withdrawals.length})</span>
-          <span className="text-xs text-stone-500 font-semibold">90-Day Audit Log</span>
+          <span className="text-sm font-extrabold text-stone-900">{t('wallet.recent', { n: withdrawals.length })}</span>
+          <span className="text-xs text-stone-500 font-semibold">{t('wallet.auditLog')}</span>
         </div>
 
         {withdrawals.length === 0 ? (
           <div className="p-12 text-center text-xs text-stone-500">
-            No withdrawal requests logged yet. Earn $10.00 USD to request your first cashout!
+            {t('wallet.empty')}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-stone-50 text-stone-500 font-bold border-b border-stone-200/80 uppercase text-[10px] tracking-wider">
                 <tr>
-                  <th className="p-3.5">Request ID</th>
-                  <th className="p-3.5">Amount</th>
-                  <th className="p-3.5">Network</th>
-                  <th className="p-3.5">Status</th>
-                  <th className="p-3.5 text-right">Date</th>
+                  <th className="p-3.5">{t('wallet.col.id')}</th>
+                  <th className="p-3.5">{t('wallet.col.amount')}</th>
+                  <th className="p-3.5">{t('wallet.col.network')}</th>
+                  <th className="p-3.5">{t('fps.col.status')}</th>
+                  <th className="p-3.5 text-right">{t('wallet.col.date')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100 text-stone-700">
@@ -247,11 +249,11 @@ export default function WalletPage() {
                             : 'bg-amber-50 text-amber-700 border border-amber-200'
                         }`}
                       >
-                        {w.status}
+                        {tx(`wallet.status.${w.status}`, w.status)}
                       </span>
                     </td>
                     <td className="p-3.5 text-right text-stone-500 font-mono text-[11px]">
-                      {new Date(w.created_at * 1000).toLocaleDateString()}
+                      {new Date(w.created_at * 1000).toLocaleDateString(lang)}
                     </td>
                   </tr>
                 ))}

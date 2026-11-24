@@ -757,11 +757,15 @@ socialRouter.patch('/settings', async (c) => {
   const me = c.get('user');
   const parsed = SocialSettingsSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid settings' }, 400);
-  if (parsed.data.showNsfw && parsed.data.confirmAdult !== true) {
+  const { showNsfw, confirmAdult, preferredLang } = parsed.data;
+  if (showNsfw && confirmAdult !== true) {
     return c.json({ error: 'Please confirm you are 18 or older to show 18+ content' }, 400);
   }
-  await c.env.DB.prepare('UPDATE users SET show_nsfw = ?1 WHERE id = ?2').bind(parsed.data.showNsfw ? 1 : 0, me.userId).run();
-  return c.json({ success: true, showNsfw: parsed.data.showNsfw });
+  // One UPDATE; a field left out keeps its value
+  await c.env.DB.prepare('UPDATE users SET show_nsfw = COALESCE(?1, show_nsfw), preferred_lang = COALESCE(?2, preferred_lang) WHERE id = ?3')
+    .bind(showNsfw === undefined ? null : showNsfw ? 1 : 0, preferredLang ?? null, me.userId)
+    .run();
+  return c.json({ success: true, showNsfw, preferredLang });
 });
 
 // ----------------------------------------------------------------------------

@@ -1,10 +1,16 @@
+'use client';
+
 import React from 'react';
 import Link from 'next/link';
 import { LemonLogo } from '../ui/Icon';
+import { LanguagePill } from '../i18n/LanguagePicker';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export function AuthCard({ title, subtitle, children, footer }: { title: string; subtitle?: string; children: React.ReactNode; footer?: React.ReactNode }) {
+  const { t } = useTranslation();
   return (
-    <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-10 relative overflow-hidden">
+    <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-14 relative overflow-hidden">
+      <LanguagePill />
       {/* soft pastel blobs */}
       <div className="pointer-events-none absolute -top-24 -left-24 w-72 h-72 rounded-full bg-[#FFF6C2] blur-3xl opacity-70" />
       <div className="pointer-events-none absolute -bottom-24 -right-16 w-72 h-72 rounded-full bg-[#D1FAE5] blur-3xl opacity-60" />
@@ -23,7 +29,7 @@ export function AuthCard({ title, subtitle, children, footer }: { title: string;
         <div className="mt-6">{children}</div>
       </div>
       {footer && <div className="relative mt-5 text-sm text-stone-600">{footer}</div>}
-      <p className="relative mt-8 text-[11px] text-stone-400">Play fair · Post kind · Have fun 🍋</p>
+      <p className="relative mt-8 text-[11px] text-stone-400">{t('auth.tagline')}</p>
     </div>
   );
 }

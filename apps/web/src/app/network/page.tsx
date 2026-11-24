@@ -5,8 +5,10 @@ import Link from 'next/link';
 import { apiFetch } from '../../lib/api';
 import { formatMicroUsd } from '@mwar/shared';
 import { NetworkTreeIcon, QuestChatIcon, GoldCoinIcon } from '../../components/icons';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function NetworkPage() {
+  const { t, lang } = useTranslation();
   const [members, setMembers] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [upline, setUpline] = useState<any>(null);
@@ -59,27 +61,27 @@ export default function NetworkPage() {
           </div>
           <div>
             <h1 className="text-xl sm:text-2xl font-extrabold text-stone-900 tracking-tight flex items-center space-x-2">
-              <span>5-LEVEL AFFILIATE COMMAND</span>
+              <span>{t('network.title')}</span>
               <span className="bg-sky-50 text-sky-600 border border-sky-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                CLOSURE TABLE
+                {t('network.badge')}
               </span>
             </h1>
             <p className="text-xs text-stone-500 mt-0.5">
-              5-level hierarchy tracking instant commissions from downline kills, bounty chests, and ad views.
+              {t('network.subtitle')}
             </p>
           </div>
         </div>
 
         {upline && (
           <div className="bg-stone-50 border border-stone-200/80 px-4 py-2 rounded-2xl text-xs flex items-center space-x-3 ">
-            <span className="text-stone-500">Direct Sponsor:</span>
+            <span className="text-stone-500">{t('network.sponsor')}</span>
             <span className="font-extrabold text-amber-700">{upline.username}</span>
             <Link
               href={`/chat?userId=${upline.id}`}
               className="bg-rose-600 hover:bg-rose-500 text-white font-bold px-2.5 py-1 rounded-xl text-[11px] transition active:scale-95 flex items-center space-x-1"
             >
               <QuestChatIcon size={14} />
-              <span>Squad Chat</span>
+              <span>{t('network.squadChat')}</span>
             </Link>
           </div>
         )}
@@ -103,13 +105,13 @@ export default function NetworkPage() {
               }`}
             >
               <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[11px] font-extrabold tracking-wide text-stone-600">LEVEL {depth}</span>
+                <span className="text-[11px] font-extrabold tracking-wide text-stone-600">{t('network.levelN', { n: depth })}</span>
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${tier.bg} ${tier.color} border ${tier.border}`}>
                   {tier.percent.split(' ')[0]}
                 </span>
               </div>
               <div className="text-2xl font-extrabold text-stone-900 font-mono">{count}</div>
-              <span className="text-[10px] text-stone-500 font-semibold">{tier.percent}</span>
+              <span className="text-[10px] text-stone-500 font-semibold">{t('network.ofV', { p: tier.percent.split(' ')[0] })}</span>
             </button>
           );
         })}
@@ -120,11 +122,11 @@ export default function NetworkPage() {
         <div className="p-4 sm:p-5 border-b border-stone-200/80 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center space-x-2">
             <span className="text-sm font-extrabold text-stone-900">
-              Downline Squad Members ({filteredMembers.length})
+              {t('network.members', { n: filteredMembers.length })}
             </span>
             {selectedDepth && (
               <span className="bg-rose-50 text-rose-500 border border-rose-200 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                Level {selectedDepth} Only
+                {t('network.levelOnly', { n: selectedDepth })}
               </span>
             )}
           </div>
@@ -132,7 +134,7 @@ export default function NetworkPage() {
           <div className="flex items-center space-x-2 w-full sm:w-auto">
             <input
               type="text"
-              placeholder="Search squad username..."
+              placeholder={t('network.search')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full sm:w-48 bg-stone-50 border border-stone-200/80 rounded-xl px-3 py-1.5 text-xs text-stone-900 placeholder-stone-400 focus:border-yellow-400 focus:outline-none"
@@ -142,22 +144,22 @@ export default function NetworkPage() {
                 onClick={() => setSelectedDepth(null)}
                 className="text-xs text-stone-500 hover:text-stone-900 bg-stone-100 px-3 py-1.5 rounded-xl border border-stone-200/80 shrink-0 font-bold"
               >
-                Clear Filter
+                {t('network.clear')}
               </button>
             )}
           </div>
         </div>
 
         {loading ? (
-          <div className="p-12 text-center text-sm text-stone-500 animate-pulse">Loading affiliate team members...</div>
+          <div className="p-12 text-center text-sm text-stone-500 animate-pulse">{t('network.loading')}</div>
         ) : filteredMembers.length === 0 ? (
           <div className="p-12 text-center space-y-3">
             <div className="w-12 h-12 mx-auto rounded-full bg-stone-100 flex items-center justify-center text-stone-500 text-xl">
               👥
             </div>
-            <p className="text-sm font-bold text-stone-600">No squad members found for this level.</p>
+            <p className="text-sm font-bold text-stone-600">{t('network.empty')}</p>
             <p className="text-xs text-stone-500 max-w-sm mx-auto">
-              Share your referral link in the Lobby to start growing your 5-level team and earning passive revenue.
+              {t('network.emptyHint')}
             </p>
           </div>
         ) : (
@@ -165,11 +167,11 @@ export default function NetworkPage() {
             <table className="w-full text-left text-xs">
               <thead className="bg-stone-50 text-stone-500 font-bold border-b border-stone-200/80 uppercase text-[10px] tracking-wider">
                 <tr>
-                  <th className="p-3.5">Warrior</th>
-                  <th className="p-3.5">MLM Tier</th>
-                  <th className="p-3.5">Lifetime Generated</th>
-                  <th className="p-3.5">Enlistment Date</th>
-                  <th className="p-3.5 text-right">Comms</th>
+                  <th className="p-3.5">{t('network.col.player')}</th>
+                  <th className="p-3.5">{t('network.col.tier')}</th>
+                  <th className="p-3.5">{t('network.col.generated')}</th>
+                  <th className="p-3.5">{t('network.col.joined')}</th>
+                  <th className="p-3.5 text-right">{t('nav.chat')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100 text-stone-700">
@@ -183,14 +185,14 @@ export default function NetworkPage() {
                     </td>
                     <td className="p-3.5">
                       <span className="bg-stone-50 border border-stone-200/80 text-amber-700 px-2.5 py-1 rounded-xl font-mono font-bold text-[11px]">
-                        Level {m.depth}
+                        {t('network.levelN', { n: m.depth })}
                       </span>
                     </td>
                     <td className="p-3.5 text-emerald-600 font-extrabold font-mono">
                       {formatMicroUsd(m.totalEarnedMicroUsd)}
                     </td>
                     <td className="p-3.5 text-stone-500 font-mono text-[11px]">
-                      {new Date(m.createdAt * 1000).toLocaleDateString()}
+                      {new Date(m.createdAt * 1000).toLocaleDateString(lang)}
                     </td>
                     <td className="p-3.5 text-right">
                       <Link
@@ -198,7 +200,7 @@ export default function NetworkPage() {
                         className="bg-stone-100 hover:bg-stone-200 text-stone-700 font-bold px-3 py-1.5 rounded-xl border border-stone-200/80 transition active:scale-95 inline-flex items-center space-x-1"
                       >
                         <QuestChatIcon size={14} />
-                        <span>Chat</span>
+                        <span>{t('nav.chat')}</span>
                       </Link>
                     </td>
                   </tr>

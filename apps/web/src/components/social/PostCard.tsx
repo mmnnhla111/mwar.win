@@ -12,10 +12,12 @@ import { ReportModal } from './ReportModal';
 import { addComment, deletePost, getComments, setPostLike } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { displayName, formatCount, timeAgo } from '../../lib/format';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 /** Lemon8-style post card. Comments are fetched only when the drawer is opened (saves D1 reads). */
 export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onChange: (p: SocialPost) => void; onDelete?: (id: string) => void }) {
   const { boot } = useSession();
+  const { t, lang } = useTranslation();
   const me = boot?.user;
   const [likeBusy, setLikeBusy] = useState(false);
   const [showComments, setShowComments] = useState(false);
@@ -121,19 +123,19 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
           <div className="text-xs text-stone-400 flex items-center gap-1.5 flex-wrap">
             <span>@{post.author.username}</span>
             <span>·</span>
-            <time dateTime={new Date(post.createdAt * 1000).toISOString()}>{timeAgo(post.createdAt)}</time>
-            <span className={`ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${TAG_STYLE[post.tag]}`}>#{post.tag}</span>
-            {is18 && <span className="rounded-full px-2 py-0.5 text-[10px] font-black bg-rose-100 text-rose-600" title="18+ content">18+</span>}
+            <time dateTime={new Date(post.createdAt * 1000).toISOString()}>{timeAgo(post.createdAt, t, lang)}</time>
+            <span className={`ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${TAG_STYLE[post.tag]}`}>#{t(`tag.${post.tag}`)}</span>
+            {is18 && <span className="rounded-full px-2 py-0.5 text-[10px] font-black bg-rose-100 text-rose-600" title={t('post.nsfwTitle')}>18+</span>}
             {pending && (
               <span data-badge="pending" className="rounded-full px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 animate-pulse">
-                กำลังตรวจสอบภาพ/วิดีโอ...
+                {t('post.reviewing')}
               </span>
             )}
           </div>
         </div>
         {me && (
           <div className="relative">
-            <button onClick={() => setMenu((v) => !v)} className="w-8 h-8 rounded-full hover:bg-stone-100 text-stone-400 flex items-center justify-center" aria-label="Post options">
+            <button onClick={() => setMenu((v) => !v)} className="w-8 h-8 rounded-full hover:bg-stone-100 text-stone-400 flex items-center justify-center" aria-label={t('post.options')}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                 <circle cx="5" cy="12" r="1.8" />
                 <circle cx="12" cy="12" r="1.8" />
@@ -150,12 +152,12 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-700"
                   >
-                    <Icon name="shield" size={16} /> แจ้งขอให้ลบ / Report
+                    <Icon name="shield" size={16} /> {t('report.menu')}
                   </button>
                 )}
                 {canDelete && (
                   <button onClick={remove} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-50 text-sm font-semibold text-rose-500">
-                    <Icon name="trash" size={16} /> Delete post
+                    <Icon name="trash" size={16} /> {t('post.delete')}
                   </button>
                 )}
               </div>
@@ -167,8 +169,8 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
       {post.body && <p className="px-4 pb-3 text-[15px] leading-relaxed text-stone-800 whitespace-pre-wrap break-words">{post.body}</p>}
       {rejected && (
         <div className="mx-4 mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700" data-badge="rejected">
-          <b>รูป/วิดีโอนี้ถูกลบออกแล้ว</b> — {post.moderationReason || 'ขัดกับนโยบายเนื้อหา (อาวุธ / เลือด / ความรุนแรง)'}
-          <div className="text-xs text-rose-500 mt-0.5">Your media was removed under our content policy. Only you can see this notice.</div>
+          <b>{t('post.removedTitle')}</b> — {post.moderationReason || t('post.removedReason')}
+          <div className="text-xs text-rose-500 mt-0.5">{t('post.removedNote')}</div>
         </div>
       )}
       {mediaSrc && !rejected && (
@@ -183,7 +185,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
       )}
       {pending && !mediaSrc && (
         <div className="mx-4 mb-3 h-40 rounded-2xl border border-dashed border-amber-300 bg-amber-50 flex items-center justify-center text-sm font-semibold text-amber-700">
-          กำลังตรวจสอบภาพ/วิดีโอ... (visible only to you)
+          {t('post.reviewingOnlyYou')}
         </div>
       )}
       <ReportModal postId={post.id} open={reporting} onClose={() => setReporting(false)} />
@@ -202,7 +204,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
           </span>
           {post.commentCount > 0 && (
             <button onClick={toggleComments} className="hover:underline">
-              {formatCount(post.commentCount)} comment{post.commentCount === 1 ? '' : 's'}
+              {t('post.comments', { count: post.commentCount })}
             </button>
           )}
         </div>
@@ -214,13 +216,13 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
           aria-pressed={!!post.likedByMe}
           className={`flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold transition hover:bg-stone-50 ${post.likedByMe ? 'text-[#FF6B6B]' : 'text-stone-500'}`}
         >
-          <Icon name="heart" size={20} filled={!!post.likedByMe} className={post.likedByMe ? 'scale-110 transition' : 'transition'} /> Like
+          <Icon name="heart" size={20} filled={!!post.likedByMe} className={post.likedByMe ? 'scale-110 transition' : 'transition'} /> {t('post.like')}
         </button>
         <button onClick={toggleComments} className={`flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold hover:bg-stone-50 ${showComments ? 'text-stone-900' : 'text-stone-500'}`}>
-          <Icon name="comment" size={20} /> Comment
+          <Icon name="comment" size={20} /> {t('post.comment')}
         </button>
         <button onClick={share} className="flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold text-stone-500 hover:bg-stone-50">
-          <Icon name="share" size={20} /> {copied ? 'Copied!' : 'Share'}
+          <Icon name="share" size={20} /> {copied ? t('common.copied') : t('post.share')}
         </button>
       </div>
 
@@ -243,13 +245,13 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
                   </Link>
                   <p className="text-sm text-stone-700 whitespace-pre-wrap break-words">{cm.body}</p>
                 </div>
-                <div className="text-[11px] text-stone-400 mt-0.5 ml-2">{timeAgo(cm.createdAt)}</div>
+                <div className="text-[11px] text-stone-400 mt-0.5 ml-2">{timeAgo(cm.createdAt, t, lang)}</div>
               </div>
             </div>
           ))}
           {nextCursor && (
             <button onClick={() => loadComments(nextCursor)} disabled={loadingComments} className="text-xs font-bold text-stone-500 hover:text-stone-800">
-              {loadingComments ? 'Loading…' : 'View more comments'}
+              {loadingComments ? t('common.loading') : t('post.moreComments')}
             </button>
           )}
           <form onSubmit={send} className="flex items-center gap-2 pt-2">
@@ -257,10 +259,10 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value.slice(0, SOCIAL_COMMENT_MAX_CHARS))}
-              placeholder="Write a comment…"
+              placeholder={t('post.writeComment')}
               className="flex-1 min-w-0 rounded-full bg-white border border-stone-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-300"
             />
-            <button type="submit" disabled={!draft.trim() || sending} className="w-9 h-9 rounded-full bg-[#FFE135] text-stone-900 flex items-center justify-center disabled:opacity-40" aria-label="Send comment">
+            <button type="submit" disabled={!draft.trim() || sending} className="w-9 h-9 rounded-full bg-[#FFE135] text-stone-900 flex items-center justify-center disabled:opacity-40" aria-label={t('post.sendComment')}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 20.5 21 12 3 3.5l2.5 7L15 12l-9.5 1.5z" />
               </svg>

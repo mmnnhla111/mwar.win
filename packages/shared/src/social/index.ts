@@ -99,11 +99,18 @@ export const ReportActionSchema = z.object({
   action: z.enum(['delete', 'reclassify_18', 'dismiss']),
 });
 
-export const SocialSettingsSchema = z.object({
-  showNsfw: z.boolean(),
-  /** Must be true when turning 18+ on (the viewer confirmed they are 18 or older). */
-  confirmAdult: z.boolean().optional(),
-});
+/** UI language codes the account can store (phase 1 active: en, th, id, vi, es; phase 2 slots: zh, ko, ja, hi, pt). */
+export const UI_LANG_CODES = ['en', 'th', 'id', 'vi', 'es', 'zh', 'ko', 'ja', 'hi', 'pt'] as const;
+export type UiLang = (typeof UI_LANG_CODES)[number];
+
+export const SocialSettingsSchema = z
+  .object({
+    showNsfw: z.boolean().optional(),
+    /** Must be true when turning 18+ on (the viewer confirmed they are 18 or older). */
+    confirmAdult: z.boolean().optional(),
+    preferredLang: z.enum(UI_LANG_CODES).optional(),
+  })
+  .refine((v) => v.showNsfw !== undefined || v.preferredLang !== undefined, { message: 'Nothing to update' });
 
 export const ModerationResultSchema = z.object({
   node_name: z.string().trim().min(1).max(64),
@@ -238,6 +245,8 @@ export interface BootstrapUser {
   createdAt: number;
   /** 18+ content preference (default false). */
   showNsfw: boolean;
+  /** Saved UI language ('en' is also the default for accounts that never picked one). */
+  preferredLang: UiLang;
 }
 
 export interface BootstrapWalletSummary {

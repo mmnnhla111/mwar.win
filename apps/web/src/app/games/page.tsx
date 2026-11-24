@@ -8,6 +8,7 @@ import { Icon } from '../../components/ui/Icon';
 import { getGames } from '../../lib/api';
 import { formatCount } from '../../lib/format';
 import { memoGet, memoSet } from '../../lib/memo';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 function FpsThumb() {
   // Inline SVG banner: no image request, crisp at any size
@@ -45,6 +46,7 @@ function FpsThumb() {
 }
 
 export default function GamesPage() {
+  const { t } = useTranslation();
   const [data, setData] = useState<GamesResponse | null>(() => memoGet<GamesResponse>('games', 30_000));
   const [loading, setLoading] = useState(false);
 
@@ -72,10 +74,10 @@ export default function GamesPage() {
     <div className="space-y-4">
       <div className="flex items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-stone-900 tracking-tight">Games</h1>
-          <p className="text-sm text-stone-500">Pick a game, then jump into a room with friends.</p>
+          <h1 className="text-2xl font-extrabold text-stone-900 tracking-tight">{t('nav.games')}</h1>
+          <p className="text-sm text-stone-500">{t('games.subtitle')}</p>
         </div>
-        <button onClick={() => load(true)} className="w-9 h-9 rounded-full bg-white border border-stone-200 text-stone-500 hover:text-stone-900 flex items-center justify-center" aria-label="Refresh">
+        <button onClick={() => load(true)} className="w-9 h-9 rounded-full bg-white border border-stone-200 text-stone-500 hover:text-stone-900 flex items-center justify-center" aria-label={t('common.refresh')}>
           <Icon name="refresh" size={17} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
@@ -86,7 +88,7 @@ export default function GamesPage() {
             <div className="relative h-40 sm:h-44 overflow-hidden">
               <FpsThumb />
               <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-extrabold text-emerald-700">
-                <span className="w-2 h-2 rounded-full bg-[#34D399] animate-pulse" /> LIVE
+                <span className="w-2 h-2 rounded-full bg-[#34D399] animate-pulse" /> {t('games.live')}
               </span>
             </div>
             <div className="p-4">
@@ -95,20 +97,20 @@ export default function GamesPage() {
                 <Icon name="chevron" size={18} className="text-stone-400 group-hover:text-stone-900 transition" />
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {(fps?.tags || ['3D FPS', 'Play-to-Earn', 'Mobile & PC']).map((t) => (
-                  <span key={t} className="rounded-full bg-[#E0F2FE] text-sky-800 px-2.5 py-0.5 text-[11px] font-bold">
-                    {t}
+                {(fps?.tags || ['3D FPS', 'Play-to-Earn', 'Mobile & PC']).map((tg) => (
+                  <span key={tg} className="rounded-full bg-[#E0F2FE] text-sky-800 px-2.5 py-0.5 text-[11px] font-bold">
+                    {tg}
                   </span>
                 ))}
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <div className="rounded-2xl bg-[#FFFBEA] px-3 py-2">
-                  <div className="text-[11px] font-semibold text-stone-500">จำนวนคนเล่นทั้งหมด</div>
-                  <div className="text-sm font-extrabold text-stone-900">{fps ? formatCount(fps.totalPlayers) : '–'} Players</div>
+                  <div className="text-[11px] font-semibold text-stone-500">{t('games.totalPlayers')}</div>
+                  <div className="text-sm font-extrabold text-stone-900">{t('games.playersN', { n: fps ? formatCount(fps.totalPlayers) : '–' })}</div>
                 </div>
                 <div className="rounded-2xl bg-[#ECFDF5] px-3 py-2">
-                  <div className="text-[11px] font-semibold text-stone-500">กำลังออนไลน์</div>
-                  <div className="text-sm font-extrabold text-emerald-700">{fps ? formatCount(fps.onlineNow) : '–'} Online</div>
+                  <div className="text-[11px] font-semibold text-stone-500">{t('games.onlineNow')}</div>
+                  <div className="text-sm font-extrabold text-emerald-700">{t('games.onlineN', { n: fps ? formatCount(fps.onlineNow) : '–' })}</div>
                 </div>
               </div>
             </div>
@@ -119,8 +121,8 @@ export default function GamesPage() {
           <span className="w-14 h-14 rounded-2xl bg-[#EDE9FE] text-violet-600 flex items-center justify-center">
             <Icon name="sparkle" size={26} />
           </span>
-          <div className="mt-3 font-extrabold text-stone-800">More games coming soon</div>
-          <p className="text-sm text-stone-500 mt-1 max-w-[240px]">New game modes and mini-games will appear here.</p>
+          <div className="mt-3 font-extrabold text-stone-800">{t('games.moreSoon')}</div>
+          <p className="text-sm text-stone-500 mt-1 max-w-[240px]">{t('games.moreSoonHint')}</p>
         </Card>
       </div>
     </div>

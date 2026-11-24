@@ -11,11 +11,13 @@ import { Card } from '../components/ui/Card';
 import { Icon } from '../components/ui/Icon';
 import { getFeed } from '../lib/api';
 import { memoGet, memoSet, memoDrop } from '../lib/memo';
+import { useTranslation } from '../i18n/I18nProvider';
 
 type FeedState = { posts: SocialPost[]; next: string | null };
 
 function HomeFeed() {
   const params = useSearchParams();
+  const { t: tr } = useTranslation();
   const tagParam = params.get('tag');
   const tag = (SOCIAL_POST_TAGS as readonly string[]).includes(tagParam || '') ? (tagParam as SocialPostTag) : null;
   const key = `feed:${tag || ''}`;
@@ -47,11 +49,12 @@ function HomeFeed() {
         });
         setNext(pg.nextCursor);
       } catch (err: any) {
-        setError(err?.message || 'Could not load the feed');
+        setError(err?.message || tr('feed.loadFailed'));
       } finally {
         setLoading(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [key, tag]
   );
 
@@ -77,7 +80,7 @@ function HomeFeed() {
         </span>
         <span className="flex-1 min-w-0">
           <span className="block font-extrabold text-sm">MWAR Tactical FPS</span>
-          <span className="block text-xs text-stone-300">Rooms are live · tap to pick a room</span>
+          <span className="block text-xs text-stone-300">{tr('feed.quickPlay')}</span>
         </span>
         <Icon name="chevron" size={18} className="text-stone-400" />
       </Link>
@@ -97,7 +100,7 @@ function HomeFeed() {
             href="/"
             className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${!tag ? 'bg-stone-900 text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'}`}
           >
-            For you
+            {tr('feed.forYou')}
           </Link>
           {SOCIAL_POST_TAGS.map((t) => (
             <Link
@@ -105,7 +108,7 @@ function HomeFeed() {
               href={`/?tag=${t}`}
               className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${tag === t ? 'bg-[#FFE135] text-stone-900' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'}`}
             >
-              #{t}
+              #{tr(`tag.${t}`)}
             </Link>
           ))}
         </div>
@@ -113,8 +116,8 @@ function HomeFeed() {
           onClick={() => load({ force: true })}
           disabled={loading}
           className="shrink-0 w-9 h-9 rounded-full bg-white border border-stone-200 text-stone-500 hover:text-stone-900 flex items-center justify-center"
-          aria-label="Refresh feed"
-          title="Refresh"
+          aria-label={tr('feed.refresh')}
+          title={tr('common.refresh')}
         >
           <Icon name="refresh" size={17} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -131,8 +134,8 @@ function HomeFeed() {
         empty={
           <Card className="p-8 text-center">
             <div className="text-4xl">🍋</div>
-            <div className="mt-2 font-extrabold text-stone-900">{tag ? `No #${tag} posts yet` : 'Your feed is fresh and empty'}</div>
-            <p className="text-sm text-stone-500 mt-1">Share a highlight, find a squad, or say hi!</p>
+            <div className="mt-2 font-extrabold text-stone-900">{tag ? tr('feed.emptyTag', { tag: tr(`tag.${tag}`) }) : tr('feed.empty')}</div>
+            <p className="text-sm text-stone-500 mt-1">{tr('feed.emptyHint')}</p>
           </Card>
         }
       />

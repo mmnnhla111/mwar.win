@@ -4,8 +4,10 @@ import React, { useEffect, useState } from 'react';
 import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
 import { formatMicroUsd } from '@mwar/shared';
 import { TakedownQueue } from '../../components/admin/TakedownQueue';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function AdminAuditPage() {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<'fleet' | 'takedown'>('fleet');
   const [pendingList, setPendingList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +29,7 @@ export default function AdminAuditPage() {
       const res = await apiFetch('/api/audit/pending');
       setPendingList(res.withdrawals || []);
     } catch (err: any) {
-      setActionMsg(`Failed to load: ${err.message}`);
+      setActionMsg(t('takedown.loadFailed', { error: err.message }));
     } finally {
       setLoading(false);
     }
@@ -65,10 +67,10 @@ export default function AdminAuditPage() {
           reason: action === 'approve' ? 'Audit verified clean by administrator' : 'Suspicious kill/chest activity',
         }),
       });
-      setActionMsg(`Action ${action.toUpperCase()} completed on request ${res.withdrawalId.slice(0, 8)}`);
+      setActionMsg(t('admin.reviewDone', { action: action === 'approve' ? t('admin.approve') : t('admin.reject'), id: res.withdrawalId.slice(0, 8) }));
       await loadPending();
     } catch (err: any) {
-      setActionMsg(`Error: ${err.message}`);
+      setActionMsg(t('common.errorWith', { error: err.message }));
     }
   };
 
@@ -80,9 +82,9 @@ export default function AdminAuditPage() {
         room_capacity_fast: fast,
       });
       await loadNodes();
-      setActionMsg(`Updated room capacities for node ${nodeId}`);
+      setActionMsg(t('admin.capacityUpdated', { node: nodeId }));
     } catch (err: any) {
-      setActionMsg(`Capacity update failed: ${err.message}`);
+      setActionMsg(t('admin.capacityFailed', { error: err.message }));
     } finally {
       setUpdatingNodeId(null);
     }
@@ -106,12 +108,12 @@ export default function AdminAuditPage() {
   };
 
   const formatLastHeartbeat = (timestamp?: number) => {
-    if (!timestamp) return 'Never connected';
+    if (!timestamp) return t('admin.never');
     const secondsAgo = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
-    if (secondsAgo < 45) return `Active now (${secondsAgo}s ago)`;
-    if (secondsAgo < 90) return `Heartbeat ${secondsAgo}s ago`;
+    if (secondsAgo < 45) return t('admin.activeNow', { s: secondsAgo });
+    if (secondsAgo < 90) return t('admin.heartbeatAgo', { s: secondsAgo });
     const mins = Math.floor(secondsAgo / 60);
-    return `Offline (${mins}m ago)`;
+    return t('admin.offlineAgo', { m: mins });
   };
 
   return (
@@ -124,17 +126,17 @@ export default function AdminAuditPage() {
           </div>
           <div>
             <h1 className="text-xl sm:text-2xl font-extrabold text-stone-900 tracking-tight flex items-center space-x-2">
-              <span>MWAR SERVER FLEET & CASHOUT AUDIT CONSOLE</span>
+              <span>{t('admin.title')}</span>
             </h1>
             <p className="text-xs text-stone-500 mt-0.5">
-              1-Click Ubuntu server provisioning, Colyseus 20Hz nodes telemetry, and multi-tier fraud prevention.
+              {t('admin.subtitle')}
             </p>
           </div>
         </div>
 
         <div className="flex items-center space-x-2 text-xs font-bold text-amber-700 bg-stone-50 px-3.5 py-1.5 rounded-2xl border border-stone-200/80">
           <span className="w-2 h-2 rounded-full bg-[#FFE135] animate-ping" />
-          <span>Active Auditor Mode</span>
+          <span>{t('admin.auditorMode')}</span>
         </div>
       </div>
 
@@ -147,9 +149,9 @@ export default function AdminAuditPage() {
 
       <div className="flex gap-2 overflow-x-auto" role="tablist">
         {([
-          ['fleet', '🖥️ Server Fleet & Cashouts'],
-          ['takedown', '🚩 คำขอแจ้งลบ (Takedown Requests)'],
-        ] as const).map(([id, label]) => (
+          ['fleet', '🖥️', 'admin.tab.fleet'],
+          ['takedown', '🚩', 'takedown.title'],
+        ] as const).map(([id, icon, label]) => (
           <button
             key={id}
             role="tab"
@@ -160,7 +162,7 @@ export default function AdminAuditPage() {
               tab === id ? 'bg-[#FFE135] border-yellow-300 text-stone-900' : 'bg-white border-stone-200/80 text-stone-500 hover:text-stone-900'
             }`}
           >
-            {label}
+            {icon} {t(label)}
           </button>
         ))}
       </div>
@@ -176,10 +178,10 @@ export default function AdminAuditPage() {
             <span className="text-2xl">🖥️</span>
             <div>
               <h2 className="text-base sm:text-lg font-extrabold text-stone-900 tracking-tight">
-                UBUNTU BARE-METAL & VPS SERVER FLEET
+                {t('admin.fleetTitle')}
               </h2>
               <p className="text-xs text-stone-500">
-                Authoritative Colyseus RAM Game Servers & PostgreSQL 16 Financial Audit Log Receivers.
+                {t('admin.fleetSubtitle')}
               </p>
             </div>
           </div>
@@ -190,7 +192,7 @@ export default function AdminAuditPage() {
               disabled={nodesLoading}
               className="bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold px-3.5 py-2 rounded-xl border border-stone-200/80 transition active:scale-95 flex items-center space-x-1.5"
             >
-              <span>{nodesLoading ? '🔄 Refreshing...' : '🔄 Refresh Nodes'}</span>
+              <span>🔄 {nodesLoading ? t('admin.refreshing') : t('admin.refreshNodes')}</span>
             </button>
           </div>
         </div>
@@ -199,7 +201,7 @@ export default function AdminAuditPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {nodes.length === 0 ? (
             <div className="col-span-full bg-stone-50 border border-stone-200/80 rounded-2xl p-6 text-center text-xs text-stone-500">
-              No server nodes registered yet. Use the 1-Click Provisioning tool below to connect your first node!
+              {t('admin.noNodes')}
             </div>
           ) : (
             nodes.map((node) => {
@@ -220,7 +222,7 @@ export default function AdminAuditPage() {
                         {node.node_name}
                       </h3>
                       <div className="text-[10px] text-stone-500 font-mono mt-0.5">
-                        Role: <span className="text-amber-700 font-bold uppercase">{node.role}</span> • {node.region || 'Local Bare-Metal'}
+                        {t('admin.role')}: <span className="text-amber-700 font-bold uppercase">{node.role}</span> • {node.region || t('admin.localBareMetal')}
                       </div>
                     </div>
 
@@ -232,7 +234,7 @@ export default function AdminAuditPage() {
                       }`}
                     >
                       <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-                      {isOnline ? 'ONLINE' : 'OFFLINE'}
+                      {isOnline ? t('admin.online') : t('admin.offline')}
                     </span>
                   </div>
 
@@ -240,7 +242,7 @@ export default function AdminAuditPage() {
                   <div className="grid grid-cols-2 gap-2 mt-4 bg-white p-2.5 rounded-xl border border-stone-200/80">
                     <div>
                       <div className="flex justify-between text-[10px] text-stone-500 font-bold">
-                        <span>CPU LOAD</span>
+                        <span>{t('admin.cpu')}</span>
                         <span className="text-stone-900 font-mono">{node.cpu_usage.toFixed(1)}%</span>
                       </div>
                       <div className="w-full bg-stone-100 h-1.5 rounded-full overflow-hidden mt-1">
@@ -255,7 +257,7 @@ export default function AdminAuditPage() {
 
                     <div>
                       <div className="flex justify-between text-[10px] text-stone-500 font-bold">
-                        <span>RAM USAGE</span>
+                        <span>{t('admin.ram')}</span>
                         <span className="text-stone-900 font-mono">{node.ram_usage.toFixed(1)}%</span>
                       </div>
                       <div className="w-full bg-stone-100 h-1.5 rounded-full overflow-hidden mt-1">
@@ -271,18 +273,18 @@ export default function AdminAuditPage() {
 
                   {/* Live Rooms & Players */}
                   <div className="flex items-center justify-between text-xs py-2.5 border-b border-stone-200/80 font-medium">
-                    <span className="text-stone-500 text-[11px]">Combat Rooms:</span>
+                    <span className="text-stone-500 text-[11px]">{t('admin.rooms')}</span>
                     <span className="text-stone-900 font-bold">{node.active_rooms} active</span>
                   </div>
                   <div className="flex items-center justify-between text-xs py-2 border-b border-stone-200/80 font-medium">
-                    <span className="text-stone-500 text-[11px]">Connected Players:</span>
+                    <span className="text-stone-500 text-[11px]">{t('admin.players')}</span>
                     <span className="text-emerald-600 font-extrabold font-mono">{node.player_count} online</span>
                   </div>
 
                   {/* Capacity Controls */}
                   <div className="mt-3 pt-1 space-y-1.5">
                     <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-stone-500">Mini Mode Capacity:</span>
+                      <span className="text-stone-500">{t('admin.miniCap')}</span>
                       <div className="flex items-center space-x-1">
                         {[20, 30, 40].map((cap) => (
                           <button
@@ -302,7 +304,7 @@ export default function AdminAuditPage() {
                     </div>
 
                     <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-stone-500">Standard 100 Capacity:</span>
+                      <span className="text-stone-500">{t('admin.stdCap')}</span>
                       <div className="flex items-center space-x-1">
                         {[60, 100, 120].map((cap) => (
                           <button
@@ -339,7 +341,7 @@ export default function AdminAuditPage() {
             <div className="flex items-center space-x-2">
               <span className="text-xl">⚡</span>
               <h3 className="text-sm font-extrabold text-amber-700 tracking-tight">
-                GENERATE 1-CLICK AUTHENTICATED INSTALL COMMAND
+                {t('admin.genTitle')}
               </h3>
             </div>
             <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-bold px-2 py-0.5 rounded-full">
@@ -348,20 +350,19 @@ export default function AdminAuditPage() {
           </div>
 
           <p className="text-xs text-stone-500 leading-relaxed">
-            Configure role and node parameters below. Then run the generated one-liner as root (<code className="text-amber-700">sudo bash</code>) on your fresh server.
-            The script automatically installs Node 20, pnpm, pm2, PostgreSQL, Redis, builds the codebase, injects live production secrets, and configures auto-boot on power failure.
+            {t('admin.genHelp')}
           </p>
 
           {/* Form options */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-[10px] font-extrabold text-stone-500 uppercase mb-1">Node Role</label>
+              <label className="block text-[10px] font-extrabold text-stone-500 uppercase mb-1">{t('admin.nodeRole')}</label>
               <div className="flex flex-col space-y-1.5">
                 {[
-                  { id: 'all', label: '🎮 All-in-One' },
-                  { id: 'game', label: '⚔️ Game Only' },
-                  { id: 'logs', label: '📜 Logs Only' },
-                  { id: 'moderator', label: '🛡️ NSFW Moderator' },
+                  { id: 'all', label: '🎮 ' + t('admin.roleAll') },
+                  { id: 'game', label: '⚔️ ' + t('admin.roleGame') },
+                  { id: 'logs', label: '📜 ' + t('admin.roleLogs') },
+                  { id: 'moderator', label: '🛡️ ' + t('admin.roleModerator') },
                 ].map((r) => (
                   <button
                     key={r.id}
@@ -379,7 +380,7 @@ export default function AdminAuditPage() {
             </div>
 
             <div>
-              <label className="block text-[10px] font-extrabold text-stone-500 uppercase mb-1">Node Hostname / Name</label>
+              <label className="block text-[10px] font-extrabold text-stone-500 uppercase mb-1">{t('admin.nodeName')}</label>
               <input
                 type="text"
                 value={nodeNameInput}
@@ -387,12 +388,12 @@ export default function AdminAuditPage() {
                 placeholder="mwar-game-server-1"
                 className="w-full bg-white border border-stone-200/80 rounded-xl px-3 py-2 text-xs text-stone-900 focus:outline-none focus:border-yellow-400"
               />
-              <span className="text-[10px] text-stone-500 mt-1 block">Used for telemetry identification.</span>
+              <span className="text-[10px] text-stone-500 mt-1 block">{t('admin.nodeNameHint')}</span>
             </div>
 
             <div>
               <label className="block text-[10px] font-extrabold text-stone-500 uppercase mb-1">
-                Provisioning Key {provisionKey ? <span className="text-emerald-600 font-normal">● Loaded</span> : <span className="text-amber-700 font-normal">● Optional</span>}
+                {t('admin.provKey')} {provisionKey ? <span className="text-emerald-600 font-normal">● {t('admin.loaded')}</span> : <span className="text-amber-700 font-normal">● {t('admin.optional')}</span>}
               </label>
               <input
                 type="password"
@@ -401,12 +402,12 @@ export default function AdminAuditPage() {
                 placeholder="mwar_pvkey_..."
                 className="w-full bg-white border border-stone-200/80 rounded-xl px-3 py-2 text-xs text-stone-900 focus:outline-none focus:border-yellow-400 font-mono"
               />
-              <span className="text-[10px] text-stone-500 mt-1 block">Loaded via Admin JWT or paste token.</span>
+              <span className="text-[10px] text-stone-500 mt-1 block">{t('admin.provKeyHint')}</span>
             </div>
 
             <div>
               <label className="block text-[10px] font-extrabold text-stone-500 uppercase mb-1">
-                Cloudflare Tunnel Token <span className="text-stone-500">(Optional)</span>
+                {t('admin.tunnel')} <span className="text-stone-500">({t('admin.optional')})</span>
               </label>
               <input
                 type="text"
@@ -415,14 +416,14 @@ export default function AdminAuditPage() {
                 placeholder="eyJh..."
                 className="w-full bg-white border border-stone-200/80 rounded-xl px-3 py-2 text-xs text-stone-900 focus:outline-none focus:border-yellow-400 font-mono"
               />
-              <span className="text-[10px] text-stone-500 mt-1 block">Auto-installs cloudflared service if set.</span>
+              <span className="text-[10px] text-stone-500 mt-1 block">{t('admin.tunnelHint')}</span>
             </div>
           </div>
 
           {/* Generated Command Box */}
           <div className="bg-stone-900/30 border border-stone-200/80 rounded-xl p-3.5 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-extrabold text-stone-500 tracking-wider">TERMINAL ONE-LINER COMMAND:</span>
+              <span className="text-[10px] font-extrabold text-stone-500 tracking-wider">{t('admin.terminal')}</span>
               <button
                 onClick={handleCopyCommand}
                 className={`text-xs font-extrabold px-3.5 py-1.5 rounded-lg transition active:scale-95 shadow-[0_2px_12px_rgba(0,0,0,0.04)] flex items-center space-x-1.5 ${
@@ -431,7 +432,7 @@ export default function AdminAuditPage() {
                     : 'bg-rose-600 hover:bg-rose-500 text-white'
                 }`}
               >
-                <span>{copied ? '✅ COPIED TO CLIPBOARD!' : '📋 COPY COMMAND'}</span>
+                <span>{copied ? '✅ ' + t('admin.copiedCmd') : '📋 ' + t('admin.copyCmd')}</span>
               </button>
             </div>
 
@@ -447,10 +448,10 @@ export default function AdminAuditPage() {
         <div className="bg-white rounded-3xl border border-sky-200 p-5 space-y-2 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
           <div className="flex items-center space-x-2">
             <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse" />
-            <h3 className="text-xs font-extrabold text-sky-600 tracking-wider">LAYER 1: DETERMINISTIC AUDIT</h3>
+            <h3 className="text-xs font-extrabold text-sky-600 tracking-wider">{t('admin.layer1')}</h3>
           </div>
           <p className="text-xs text-stone-500 leading-relaxed">
-            Instant 1-second verification comparing Cloudflare D1 wallet balance against the 90-day PostgreSQL append-only financial ledger.
+            {t('admin.layer1Text')}
           </p>
           <div className="bg-stone-50 p-2 rounded-xl border border-stone-200/80 text-[10px] font-mono text-stone-600">
             D1 Balance == SUM(Logs)
@@ -460,10 +461,10 @@ export default function AdminAuditPage() {
         <div className="bg-white rounded-3xl border border-violet-200 p-5 space-y-2 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
           <div className="flex items-center space-x-2">
             <span className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse" />
-            <h3 className="text-xs font-extrabold text-violet-600 tracking-wider">LAYER 2: HEURISTIC AUDIT</h3>
+            <h3 className="text-xs font-extrabold text-violet-600 tracking-wider">{t('admin.layer2')}</h3>
           </div>
           <p className="text-xs text-stone-500 leading-relaxed">
-            Analyzes kill rate frequencies, aim vectors, 15-second chest collection timings, and IP subnet correlation.
+            {t('admin.layer2Text')}
           </p>
           <div className="bg-stone-50 p-2 rounded-xl border border-stone-200/80 text-[10px] font-mono text-stone-600">
             Kill Rate &lt; 2.5/s • 0 Self-Ref
@@ -473,10 +474,10 @@ export default function AdminAuditPage() {
         <div className="bg-white rounded-3xl border border-emerald-200 p-5 space-y-2 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
           <div className="flex items-center space-x-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <h3 className="text-xs font-extrabold text-emerald-600 tracking-wider">LAYER 3: DEEP AI EVALUATION</h3>
+            <h3 className="text-xs font-extrabold text-emerald-600 tracking-wider">{t('admin.layer3')}</h3>
           </div>
           <p className="text-xs text-stone-500 leading-relaxed">
-            Large-value cashouts (&gt; $50) undergo anomaly verification before NOWPayments API batch dispatch.
+            {t('admin.layer3Text')}
           </p>
           <div className="bg-stone-50 p-2 rounded-xl border border-stone-200/80 text-[10px] font-mono text-stone-600">
             Confidence &gt; 0.85 Auto-Dispatched
@@ -487,32 +488,32 @@ export default function AdminAuditPage() {
       {/* 4. Pending Cashouts Review Table */}
       <div className="bg-white border border-stone-200/80 rounded-3xl overflow-hidden shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="p-4 sm:p-5 border-b border-stone-200/80 flex justify-between items-center">
-          <span className="text-sm font-extrabold text-stone-900">Pending Fraud Reviews ({pendingList.length})</span>
+          <span className="text-sm font-extrabold text-stone-900">{t('admin.pendingReviews', { n: pendingList.length })}</span>
           <button
             onClick={loadPending}
             className="text-xs text-amber-700 hover:text-amber-700 font-bold bg-stone-100 px-3 py-1 rounded-xl border border-stone-200/80"
           >
-            Refresh Queue
+            {t('admin.refreshQueue')}
           </button>
         </div>
 
         {loading ? (
-          <div className="p-12 text-center text-xs text-stone-500 animate-pulse">Scanning pending withdrawals...</div>
+          <div className="p-12 text-center text-xs text-stone-500 animate-pulse">{t('admin.scanning')}</div>
         ) : pendingList.length === 0 ? (
           <div className="p-12 text-center text-xs text-stone-500">
-            ✅ Queue clear! All pending cashouts have been audited and settled.
+            ✅ {t('admin.queueClear')}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-stone-50 text-stone-500 font-bold border-b border-stone-200/80 uppercase text-[10px] tracking-wider">
                 <tr>
-                  <th className="p-3.5">Withdrawal ID</th>
-                  <th className="p-3.5">User</th>
-                  <th className="p-3.5">Amount</th>
-                  <th className="p-3.5">Currency</th>
-                  <th className="p-3.5">AI Score</th>
-                  <th className="p-3.5 text-right">Actions</th>
+                  <th className="p-3.5">{t('admin.col.id')}</th>
+                  <th className="p-3.5">{t('admin.col.user')}</th>
+                  <th className="p-3.5">{t('wallet.col.amount')}</th>
+                  <th className="p-3.5">{t('admin.col.currency')}</th>
+                  <th className="p-3.5">{t('admin.col.score')}</th>
+                  <th className="p-3.5 text-right">{t('admin.col.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100 text-stone-700">
@@ -540,13 +541,13 @@ export default function AdminAuditPage() {
                         onClick={() => handleReview(item.id, 'approve')}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1 rounded-xl text-xs transition active:scale-95"
                       >
-                        APPROVE
+                        {t('admin.approve')}
                       </button>
                       <button
                         onClick={() => handleReview(item.id, 'reject')}
                         className="bg-rose-600 hover:bg-rose-500 text-white font-bold px-3 py-1 rounded-xl text-xs transition active:scale-95"
                       >
-                        REJECT
+                        {t('admin.reject')}
                       </button>
                     </td>
                   </tr>

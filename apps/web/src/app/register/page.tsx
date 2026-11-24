@@ -7,6 +7,7 @@ import { apiFetch, setAuthToken, clearBootstrapCache } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { AuthCard, FieldLabel, FormError } from '../../components/auth/AuthCard';
 import { btn, inputCls } from '../../components/ui/Card';
+import { useTranslation } from '../../i18n/I18nProvider';
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -14,6 +15,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export default function RegisterPage() {
   const router = useRouter();
   const { refresh } = useSession();
+  const { t } = useTranslation();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -32,9 +34,9 @@ export default function RegisterPage() {
   }, []);
 
   const errors = {
-    username: !USERNAME_RE.test(username) ? '3–20 letters, numbers or _' : '',
-    email: !EMAIL_RE.test(email) ? 'Enter a valid email' : '',
-    password: password.length < 8 ? 'At least 8 characters' : '',
+    username: !USERNAME_RE.test(username) ? t('register.usernameRule') : '',
+    email: !EMAIL_RE.test(email) ? t('register.emailRule') : '',
+    password: password.length < 8 ? t('register.passwordRule') : '',
   };
   const valid = !errors.username && !errors.email && !errors.password;
 
@@ -54,7 +56,7 @@ export default function RegisterPage() {
       await refresh(true);
       router.replace('/');
     } catch (err: any) {
-      setError(err?.message || 'Sign up failed');
+      setError(err?.message || t('register.failed'));
       setBusy(false);
     }
   };
@@ -64,20 +66,20 @@ export default function RegisterPage() {
 
   return (
     <AuthCard
-      title="สมัครสมาชิก ✨"
-      subtitle="Create your account and join the squad."
+      title={t('register.title')}
+      subtitle={t('register.subtitle')}
       footer={
         <span>
-          Already have an account?{' '}
+          {t('register.haveAccount')}{' '}
           <Link href="/login" className="font-extrabold text-stone-900 underline decoration-[#FACC15] decoration-[3px] underline-offset-4">
-            Sign in
+            {t('register.signIn')}
           </Link>
         </span>
       }
     >
       <form onSubmit={submit} className="space-y-4" noValidate>
         <div>
-          <FieldLabel htmlFor="reg-user">Username</FieldLabel>
+          <FieldLabel htmlFor="reg-user">{t('register.username')}</FieldLabel>
           <input
             id="reg-user"
             className={inputCls}
@@ -90,7 +92,7 @@ export default function RegisterPage() {
           {hint('username')}
         </div>
         <div>
-          <FieldLabel htmlFor="reg-email">Email</FieldLabel>
+          <FieldLabel htmlFor="reg-email">{t('register.email')}</FieldLabel>
           <input
             id="reg-email"
             className={inputCls}
@@ -104,7 +106,7 @@ export default function RegisterPage() {
           {hint('email')}
         </div>
         <div>
-          <FieldLabel htmlFor="reg-pw">Password</FieldLabel>
+          <FieldLabel htmlFor="reg-pw">{t('auth.password')}</FieldLabel>
           <input
             id="reg-pw"
             className={inputCls}
@@ -113,12 +115,12 @@ export default function RegisterPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             onBlur={() => setTouched((t) => ({ ...t, password: true }))}
-            placeholder="At least 8 characters"
+            placeholder={t('register.passwordRule')}
           />
           {hint('password')}
         </div>
         <div>
-          <FieldLabel htmlFor="reg-ref">Referral / upline code (optional)</FieldLabel>
+          <FieldLabel htmlFor="reg-ref">{t('register.ref')}</FieldLabel>
           <input
             id="reg-ref"
             className={`${inputCls} ${refLocked ? 'bg-[#FFFBEA] border-[#FDE68A]' : ''}`}
@@ -127,13 +129,13 @@ export default function RegisterPage() {
               setRefCode(e.target.value);
               setRefLocked(false);
             }}
-            placeholder="Friend's username or code"
+            placeholder={t('register.refPlaceholder')}
           />
-          {refLocked && <p className="text-xs font-semibold text-[#B08600] mt-1 ml-1">Filled in from your invite link 🍋</p>}
+          {refLocked && <p className="text-xs font-semibold text-[#B08600] mt-1 ml-1">{t('register.refFilled')}</p>}
         </div>
         <FormError msg={error} />
         <button type="submit" disabled={busy} className={`${btn.primary} w-full py-3 text-[15px]`}>
-          {busy ? 'Creating account…' : 'สร้างบัญชี (Create Account)'}
+          {busy ? t('register.creating') : t('register.create')}
         </button>
       </form>
     </AuthCard>

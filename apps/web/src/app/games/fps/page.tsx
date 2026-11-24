@@ -12,12 +12,13 @@ import { getFpsRooms, getFpsRoster } from '../../../lib/api';
 import { useSession } from '../../../lib/session';
 import { useVisibleInterval } from '../../../lib/useVisibleInterval';
 import { RewardedVideoModal } from '../../../game/ui/AdEngine';
+import { useTranslation } from '../../../i18n/I18nProvider';
 
 const FILTERS: { id: FpsRoomFilter; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'large', label: 'Large Map' },
-  { id: 'small', label: 'Small Map' },
-  { id: 'practice', label: 'Practice' },
+  { id: 'all', label: 'fps.filter.all' },
+  { id: 'large', label: 'fps.filter.large' },
+  { id: 'small', label: 'fps.filter.small' },
+  { id: 'practice', label: 'fps.filter.practice' },
 ];
 
 const AUTO_REFRESH_MS = 45_000;
@@ -33,21 +34,23 @@ function matches(room: FpsRoomLive, f: FpsRoomFilter) {
 }
 
 function StatusBadge({ room }: { room: FpsRoomLive }) {
-  if (!room.multiplayer) return <span className="rounded-full bg-[#E0F2FE] text-sky-700 text-[11px] font-extrabold px-2.5 py-1">Solo</span>;
+  const { t } = useTranslation();
+  if (!room.multiplayer) return <span className="rounded-full bg-[#E0F2FE] text-sky-700 text-[11px] font-extrabold px-2.5 py-1 whitespace-nowrap">{t('fps.solo')}</span>;
   return room.isFull ? (
-    <span className="rounded-full bg-[#FFE4E6] text-rose-600 text-[11px] font-extrabold px-2.5 py-1">เต็ม / Full</span>
+    <span className="rounded-full bg-[#FFE4E6] text-rose-600 text-[11px] font-extrabold px-2.5 py-1 whitespace-nowrap">{t('fps.full')}</span>
   ) : (
-    <span className="rounded-full bg-[#D1FAE5] text-emerald-700 text-[11px] font-extrabold px-2.5 py-1">ว่าง / Open</span>
+    <span className="rounded-full bg-[#D1FAE5] text-emerald-700 text-[11px] font-extrabold px-2.5 py-1 whitespace-nowrap">{t('fps.open')}</span>
   );
 }
 
 function Capacity({ room, wide = false }: { room: FpsRoomLive; wide?: boolean }) {
-  if (room.capacity === null) return <span className="text-sm font-bold text-stone-700">Local / ∞</span>;
+  const { t } = useTranslation();
+  if (room.capacity === null) return <span className="text-sm font-bold text-stone-700">{t('fps.local')}</span>;
   const pct = Math.min(100, Math.round((room.players / room.capacity) * 100));
   return (
     <div className={wide ? 'w-full' : 'w-28'}>
       <div className="text-sm font-extrabold text-stone-900 tabular-nums">
-        {room.players}/{room.capacity} <span className="text-stone-400 font-semibold text-xs">คน</span>
+        {room.players}/{room.capacity} <span className="text-stone-400 font-semibold text-xs">{t('fps.people')}</span>
       </div>
       <div className="mt-1 h-1.5 rounded-full bg-stone-100 overflow-hidden">
         <div className={`h-full rounded-full ${room.isFull ? 'bg-[#FF6B6B]' : pct > 70 ? 'bg-[#FACC15]' : 'bg-[#34D399]'}`} style={{ width: `${pct}%` }} />
@@ -62,6 +65,7 @@ function Capacity({ room, wide = false }: { room: FpsRoomLive; wide?: boolean })
  */
 export default function FpsLobbyPage() {
   const { boot, patch } = useSession();
+  const { t, tx } = useTranslation();
   const [rooms, setRooms] = useState<FpsRoomLive[]>(offlineRooms);
   const [serverOnline, setServerOnline] = useState<boolean | null>(null);
   const [filter, setFilter] = useState<FpsRoomFilter>('all');
@@ -97,20 +101,20 @@ export default function FpsLobbyPage() {
       {/* Top bar */}
       <Card className="p-3 sm:p-4">
         <div className="flex items-center gap-2 sm:gap-3">
-          <Link href="/games" className="w-9 h-9 rounded-full bg-stone-100 hover:bg-stone-200 flex items-center justify-center text-stone-700 shrink-0" aria-label="Back to games">
+          <Link href="/games" className="w-9 h-9 rounded-full bg-stone-100 hover:bg-stone-200 flex items-center justify-center text-stone-700 shrink-0" aria-label={t('fps.backToGames')}>
             <Icon name="back" size={18} />
           </Link>
           <div className="min-w-0 flex-1">
-            <h1 className="font-extrabold text-stone-900 text-lg leading-tight truncate">MWAR Tactical FPS · Rooms</h1>
+            <h1 className="font-extrabold text-stone-900 text-lg leading-tight truncate">MWAR Tactical FPS · {t('nav.rooms')}</h1>
             <div className="text-xs text-stone-500 flex items-center gap-1.5">
               <span className={`w-2 h-2 rounded-full ${serverOnline === false ? 'bg-stone-300' : 'bg-[#34D399]'}`} />
-              {serverOnline === false ? 'Game server not reachable · solo practice still works' : 'Live room numbers'}
+              {serverOnline === false ? t('fps.offline') : t('fps.liveNumbers')}
             </div>
           </div>
-          <span className="inline-flex items-center gap-1 sm:gap-1.5 rounded-full bg-[#FFF6C2] text-stone-900 text-xs sm:text-sm font-extrabold px-2.5 sm:px-3 py-1.5 shrink-0" title="Energy Tickets">
+          <span className="inline-flex items-center gap-1 sm:gap-1.5 rounded-full bg-[#FFF6C2] text-stone-900 text-xs sm:text-sm font-extrabold px-2.5 sm:px-3 py-1.5 shrink-0" title={t('fps.energyTickets')}>
             <Icon name="bolt" size={16} filled /> EC: {ec}/{ecMax}
           </span>
-          <button onClick={load} disabled={loading} className="w-9 h-9 rounded-full bg-stone-100 hover:bg-stone-200 flex items-center justify-center text-stone-700 shrink-0" aria-label="Refresh rooms" title="Refresh">
+          <button onClick={load} disabled={loading} className="w-9 h-9 rounded-full bg-stone-100 hover:bg-stone-200 flex items-center justify-center text-stone-700 shrink-0" aria-label={t('fps.refreshRooms')} title={t('common.refresh')}>
             <Icon name="refresh" size={17} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -121,12 +125,12 @@ export default function FpsLobbyPage() {
               onClick={() => setFilter(f.id)}
               className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${filter === f.id ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}
             >
-              {f.label}
+              {t(f.label)}
             </button>
           ))}
           {ec < ecMax && (
             <button onClick={() => setVideo('video_30s')} className="shrink-0 ml-auto rounded-full bg-[#FFE135] hover:bg-[#FACC15] text-stone-900 text-xs font-extrabold px-3 py-1.5">
-              ▶ Recharge EC
+              ▶ {t('fps.recharge')}
             </button>
           )}
         </div>
@@ -137,12 +141,12 @@ export default function FpsLobbyPage() {
         <table className="w-full text-left">
           <thead>
             <tr className="text-[11px] uppercase tracking-wider text-stone-400 border-b border-stone-100">
-              <th className="font-bold px-4 py-3">Room</th>
-              <th className="font-bold px-3 py-3">Mode / Map</th>
-              <th className="font-bold px-3 py-3">Players</th>
-              <th className="font-bold px-3 py-3">Spectators</th>
-              <th className="font-bold px-3 py-3">Entry</th>
-              <th className="font-bold px-4 py-3 text-right">Status</th>
+              <th className="font-bold px-4 py-3">{t('fps.col.room')}</th>
+              <th className="font-bold px-3 py-3">{t('fps.col.modeMap')}</th>
+              <th className="font-bold px-3 py-3">{t('side.players')}</th>
+              <th className="font-bold px-3 py-3">{t('fps.spectators')}</th>
+              <th className="font-bold px-3 py-3">{t('fps.col.entry')}</th>
+              <th className="font-bold px-4 py-3 text-right">{t('fps.col.status')}</th>
             </tr>
           </thead>
           <tbody>
@@ -156,11 +160,11 @@ export default function FpsLobbyPage() {
                 <td className="px-4 py-3.5">
                   <div className="flex items-center gap-2.5">
                     <span className="rounded-lg bg-stone-900 text-[#FFE135] text-[11px] font-extrabold px-2 py-1 tabular-nums">{r.id}</span>
-                    <span className="font-bold text-sm text-stone-900">{r.name}</span>
+                    <span className="font-bold text-sm text-stone-900">{tx(`fps.room.${r.id}.name`, r.name)}</span>
                   </div>
                 </td>
                 <td className="px-3 py-3.5">
-                  <div className="text-sm font-semibold text-stone-800">{r.modeLabel}</div>
+                  <div className="text-sm font-semibold text-stone-800">{tx(`fps.room.${r.id}.mode`, r.modeLabel)}</div>
                   <div className="text-xs text-stone-500 flex items-center gap-1">
                     <Icon name="map" size={12} /> {r.map}
                   </div>
@@ -170,7 +174,7 @@ export default function FpsLobbyPage() {
                 </td>
                 <td className="px-3 py-3.5 text-sm text-stone-700">
                   <span className="inline-flex items-center gap-1">
-                    <Icon name="eye" size={15} className="text-stone-400" /> {r.spectators} ผู้รับชม
+                    <Icon name="eye" size={15} className="text-stone-400" /> {t('fps.watchingN', { n: r.spectators })}
                   </span>
                 </td>
                 <td className="px-3 py-3.5">
@@ -179,7 +183,7 @@ export default function FpsLobbyPage() {
                       <Icon name="bolt" size={14} filled className="text-[#E5B800]" /> {r.costEc} EC
                     </span>
                   ) : (
-                    <span className="text-sm font-extrabold text-emerald-600">FREE</span>
+                    <span className="text-sm font-extrabold text-emerald-600">{t('fps.free')}</span>
                   )}
                 </td>
                 <td className="px-4 py-3.5 text-right">
@@ -198,13 +202,13 @@ export default function FpsLobbyPage() {
             <Card className="p-3.5 active:scale-[0.99] transition">
               <div className="flex items-center gap-2">
                 <span className="rounded-lg bg-stone-900 text-[#FFE135] text-[11px] font-extrabold px-2 py-1">{r.id}</span>
-                <span className="font-bold text-sm text-stone-900 truncate flex-1">{r.name}</span>
+                <span className="font-bold text-sm text-stone-900 truncate flex-1">{tx(`fps.room.${r.id}.name`, r.name)}</span>
                 <StatusBadge room={r} />
               </div>
               <div className="mt-2.5 grid grid-cols-[1fr_auto] gap-3 items-end">
                 <div className="min-w-0">
                   <div className="text-xs text-stone-500 truncate">
-                    {r.modeLabel} · {r.map}
+                    {tx(`fps.room.${r.id}.mode`, r.modeLabel)} · {r.map}
                   </div>
                   <div className="mt-1.5">
                     <Capacity room={r} wide />
@@ -212,9 +216,9 @@ export default function FpsLobbyPage() {
                 </div>
                 <div className="text-right text-xs text-stone-500 space-y-1">
                   <div className="inline-flex items-center gap-1">
-                    <Icon name="eye" size={13} /> {r.spectators} ผู้รับชม
+                    <Icon name="eye" size={13} /> {t('fps.watchingN', { n: r.spectators })}
                   </div>
-                  <div className="font-extrabold text-stone-900">{r.costEc ? `${r.costEc} EC` : <span className="text-emerald-600">FREE</span>}</div>
+                  <div className="font-extrabold text-stone-900">{r.costEc ? `${r.costEc} EC` : <span className="text-emerald-600">{t('fps.free')}</span>}</div>
                 </div>
               </div>
             </Card>
@@ -246,6 +250,7 @@ export default function FpsLobbyPage() {
 
 function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: () => void; ec: number }) {
   const router = useRouter();
+  const { t, tx } = useTranslation();
   const [roster, setRoster] = useState<FpsRosterEntry[]>([]);
   const [next, setNext] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
@@ -289,7 +294,7 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
       title={
         <span className="flex items-center gap-2">
           <span className="rounded-lg bg-stone-900 text-[#FFE135] text-[11px] font-extrabold px-2 py-1">{room.id}</span>
-          <span className="truncate">{room.name}</span>
+          <span className="truncate">{tx(`fps.room.${room.id}.name`, room.name)}</span>
         </span>
       }
     >
@@ -298,30 +303,30 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
           <span className="rounded-full bg-[#E0F2FE] text-sky-800 text-xs font-bold px-2.5 py-1 inline-flex items-center gap-1">
             <Icon name="map" size={13} /> {room.map}
           </span>
-          <span className="rounded-full bg-[#EDE9FE] text-violet-700 text-xs font-bold px-2.5 py-1">{room.modeLabel}</span>
+          <span className="rounded-full bg-[#EDE9FE] text-violet-700 text-xs font-bold px-2.5 py-1">{tx(`fps.room.${room.id}.mode`, room.modeLabel)}</span>
           <span className="rounded-full bg-[#FFF6C2] text-stone-900 text-xs font-bold px-2.5 py-1 inline-flex items-center gap-1">
-            <Icon name="bolt" size={13} filled /> {room.costEc ? `${room.costEc} EC entry` : 'FREE'}
+            <Icon name="bolt" size={13} filled /> {room.costEc ? t('fps.entryEc', { n: room.costEc }) : t('fps.free')}
           </span>
           <StatusBadge room={room} />
         </div>
 
         <div className="grid grid-cols-2 gap-2">
           <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3">
-            <div className="text-[11px] font-semibold text-stone-500">Players</div>
+            <div className="text-[11px] font-semibold text-stone-500">{t('side.players')}</div>
             <Capacity room={room} wide />
           </div>
           <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3">
-            <div className="text-[11px] font-semibold text-stone-500">Spectators</div>
-            <div className="text-sm font-extrabold text-stone-900">{room.spectators} ผู้รับชม</div>
+            <div className="text-[11px] font-semibold text-stone-500">{t('fps.spectators')}</div>
+            <div className="text-sm font-extrabold text-stone-900">{t('fps.watchingN', { n: room.spectators })}</div>
           </div>
         </div>
 
         <div>
-          <div className="text-xs font-bold text-stone-500 mb-1.5">Rules</div>
+          <div className="text-xs font-bold text-stone-500 mb-1.5">{t('fps.rules')}</div>
           <ul className="space-y-1">
-            {room.rules.map((r) => (
+            {room.rules.map((r, i) => (
               <li key={r} className="text-sm text-stone-700 flex gap-2">
-                <Icon name="check" size={16} className="text-emerald-500 mt-0.5 shrink-0" /> {r}
+                <Icon name="check" size={16} className="text-emerald-500 mt-0.5 shrink-0" /> {tx(`fps.room.${room.id}.rule${i + 1}`, r)}
               </li>
             ))}
           </ul>
@@ -330,8 +335,8 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
         {room.multiplayer && (
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <div className="text-xs font-bold text-stone-500">In this room {total ? `(${total})` : ''}</div>
-              <button onClick={() => loadRoster()} className="text-stone-400 hover:text-stone-800" aria-label="Refresh roster">
+              <div className="text-xs font-bold text-stone-500">{t('fps.inRoom')} {total ? `(${total})` : ''}</div>
+              <button onClick={() => loadRoster()} className="text-stone-400 hover:text-stone-800" aria-label={t('fps.refreshRoster')}>
                 <Icon name="refresh" size={14} className={loading ? 'animate-spin' : ''} />
               </button>
             </div>
@@ -341,7 +346,7 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
                   <Spinner />
                 </div>
               )}
-              {!loading && roster.length === 0 && <p className="py-5 text-center text-sm text-stone-400">Nobody here yet. Be the first!</p>}
+              {!loading && roster.length === 0 && <p className="py-5 text-center text-sm text-stone-400">{t('fps.nobody')}</p>}
               {roster.map((p, i) => {
                 const row = (
                   <>
@@ -355,7 +360,7 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
                         p.status === 'alive' ? 'bg-[#D1FAE5] text-emerald-700' : p.status === 'dead' ? 'bg-[#FFE4E6] text-rose-600' : 'bg-[#E0F2FE] text-sky-700'
                       }`}
                     >
-                      {p.status}
+                      {t(`fps.status.${p.status}`)}
                     </span>
                   </>
                 );
@@ -371,14 +376,14 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
               })}
               {next && (
                 <button onClick={() => loadRoster(next)} className="w-full py-2 text-xs font-bold text-stone-500 hover:text-stone-800">
-                  Show more players
+                  {t('fps.morePlayers')}
                 </button>
               )}
             </div>
           </div>
         )}
 
-        {noEc && !full && <p className="text-xs font-semibold text-[#B08600] bg-[#FFFBEA] rounded-2xl px-3 py-2">No EC left: you can still join, but this match won&apos;t pay out. Recharge EC with a video or wait for the hourly refill.</p>}
+        {noEc && !full && <p className="text-xs font-semibold text-[#B08600] bg-[#FFFBEA] rounded-2xl px-3 py-2">{t('fps.noEc')}</p>}
 
         <div className={`grid gap-2 ${room.multiplayer ? 'grid-cols-2' : 'grid-cols-1'}`}>
           <button
@@ -389,11 +394,11 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
             onClick={() => !full && router.push(fpsLaunchUrl(room))}
             className={full ? 'rounded-full py-3 text-sm font-extrabold bg-stone-200 text-stone-400 cursor-not-allowed' : `${btn.primary} py-3`}
           >
-            {full ? 'ห้องเต็ม (Room Full)' : room.multiplayer ? 'เข้าเล่น (Join Match)' : 'เข้าเล่น (Play Solo)'}
+            {full ? t('fps.roomFull') : room.multiplayer ? t('fps.join') : t('fps.playSolo')}
           </button>
           {room.multiplayer && (
             <button type="button" data-action="spectate" onClick={() => router.push(fpsLaunchUrl(room, true))} className={`${btn.dark} py-3`}>
-              <Icon name="eye" size={17} /> รับชม (Spectate)
+              <Icon name="eye" size={17} /> {t('fps.spectate')}
             </button>
           )}
         </div>
