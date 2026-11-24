@@ -97,6 +97,18 @@ echo ""
 
 export DEBIAN_FRONTEND=noninteractive
 
+# --- 0. Self-Healing: Auto-Repair Broken dpkg / apt States (Power Loss / Interrupted Install Recovery) ---
+echo "      Checking package manager state and recovering interrupted dpkg runs..."
+BROKEN_PKGS=$(dpkg -l 2>/dev/null | awk '/^[a-z]H|^[a-z]R|^[a-z][a-z]R/ {print $2}' || true)
+if [ -n "\${BROKEN_PKGS}" ]; then
+  echo "      Found broken / reinstreq package(s): \${BROKEN_PKGS}. Force-removing..."
+  for pkg in \${BROKEN_PKGS}; do
+    dpkg --remove --force-remove-reinstreq "\${pkg}" 2>/dev/null || true
+  done
+fi
+dpkg --configure -a 2>/dev/null || true
+apt-get install -f -y -o DPkg::Lock::Timeout=120 2>/dev/null || true
+
 # --- 1. System Dependencies ---
 echo "[1/7] Installing base system utilities..."
 apt-get -o DPkg::Lock::Timeout=120 update -y

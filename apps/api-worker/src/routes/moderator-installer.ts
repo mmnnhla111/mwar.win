@@ -31,6 +31,18 @@ ROOT=/opt/mwar-node
 MOD=\${ROOT}/apps/moderation-worker
 ENV_FILE=\${ROOT}/.env
 
+# --- 0. Self-Healing: Auto-Repair Broken dpkg / apt States (Power Loss / Interrupted Install Recovery) ---
+echo "      Checking package manager state and recovering interrupted dpkg runs..."
+BROKEN_PKGS=$(dpkg -l 2>/dev/null | awk '/^[a-z]H|^[a-z]R|^[a-z][a-z]R/ {print $2}' || true)
+if [ -n "\${BROKEN_PKGS}" ]; then
+  echo "      Found broken / reinstreq package(s): \${BROKEN_PKGS}. Force-removing..."
+  for pkg in \${BROKEN_PKGS}; do
+    dpkg --remove --force-remove-reinstreq "\${pkg}" 2>/dev/null || true
+  done
+fi
+dpkg --configure -a 2>/dev/null || true
+\${APT} install -f -y 2>/dev/null || true
+
 echo "[1/7] System packages (python3, venv, ffmpeg)..."
 \${APT} update -y
 \${APT} install -y python3 python3-venv python3-pip ffmpeg git curl ca-certificates
