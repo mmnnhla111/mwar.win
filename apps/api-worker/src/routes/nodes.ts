@@ -75,20 +75,20 @@ export DEBIAN_FRONTEND=noninteractive
 
 # --- 1. System Dependencies ---
 echo "[1/7] Installing base system utilities..."
-apt-get update -y
-apt-get install -y curl git build-essential ufw software-properties-common jq unzip tar
+apt-get -o DPkg::Lock::Timeout=120 update -y
+apt-get -o DPkg::Lock::Timeout=120 install -y curl git build-essential ufw software-properties-common jq unzip tar
 
 # --- 2. Database Services (PostgreSQL 16 & Redis) ---
 if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
   echo "[2/7] Installing Redis Server for Colyseus state..."
-  apt-get install -y redis-server
+  apt-get -o DPkg::Lock::Timeout=120 install -y redis-server
   systemctl enable redis-server
   systemctl restart redis-server
 fi
 
 if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
   echo "[2/7] Configuring PostgreSQL 16 for Audit Log Engine..."
-  apt-get install -y postgresql postgresql-contrib
+  apt-get -o DPkg::Lock::Timeout=120 install -y postgresql postgresql-contrib
   systemctl enable postgresql
   systemctl restart postgresql
 
@@ -139,7 +139,7 @@ if ! command -v node >/dev/null 2>&1 || [[ "$(node -v)" != v20* ]]; then
   set +e
   curl -4 -fsSL --retry 5 --retry-delay 3 https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null
   if [ $? -eq 0 ]; then
-    apt-get install -y nodejs 2>/dev/null
+    apt-get -o DPkg::Lock::Timeout=120 install -y nodejs 2>/dev/null
     if command -v node >/dev/null 2>&1 && [[ "$(node -v)" == v20* ]]; then
       NODE_SETUP_OK=1
     fi
@@ -181,7 +181,7 @@ echo "[4/7] Ensuring Cloudflare Tunnel (cloudflared) is installed..."
 if ! command -v cloudflared >/dev/null 2>&1; then
   curl -4 -fsSL --retry 5 --retry-delay 3 -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb || true
   if [ -f /tmp/cloudflared.deb ]; then
-    dpkg -i /tmp/cloudflared.deb || apt-get install -f -y
+    dpkg -i /tmp/cloudflared.deb || apt-get -o DPkg::Lock::Timeout=120 install -f -y
     rm -f /tmp/cloudflared.deb
   fi
 fi
