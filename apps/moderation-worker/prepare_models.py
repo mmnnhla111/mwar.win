@@ -74,19 +74,36 @@ def main() -> int:
             return self.m.encode_image(pixel_values)
 
     onnx_path = os.path.join(MODELS, "clip_visual.onnx")
+    if os.path.exists(onnx_path):
+        try:
+            os.remove(onnx_path)
+        except OSError:
+            pass
     dummy = torch.randn(1, 3, int(size), int(size))
     print(f"[prepare] exporting image encoder to {onnx_path} ...", flush=True)
     with torch.no_grad():
-        torch.onnx.export(
-            Visual(model).eval(),
-            dummy,
-            onnx_path,
-            input_names=["pixel_values"],
-            output_names=["image_embeds"],
-            dynamic_axes={"pixel_values": {0: "batch"}, "image_embeds": {0: "batch"}},
-            opset_version=17,
-            do_constant_folding=True,
-        )
+        export_kwargs = {
+            "input_names": ["pixel_values"],
+            "output_names": ["image_embeds"],
+            "dynamic_axes": {"pixel_values": {0: "batch"}, "image_embeds": {0: "batch"}},
+            "opset_version": 17,
+            "do_constant_folding": True,
+        }
+        try:
+            torch.onnx.export(
+                Visual(model).eval(),
+                dummy,
+                onnx_path,
+                dynamo=False,
+                **export_kwargs,
+            )
+        except TypeError:
+            torch.onnx.export(
+                Visual(model).eval(),
+                dummy,
+                onnx_path,
+                **export_kwargs,
+            )
         ref = model.encode_image(dummy).float().numpy()
 
     # Sanity check: ONNX Runtime output must match PyTorch

@@ -93,6 +93,7 @@ set_env MOD_HEALTH_PORT "3100"
 
 echo "[6/7] Downloading + exporting models once (CLIP -> ONNX, text prompts, NudeNet v3)..."
 cd "\${MOD}"
+rm -f "\${MOD}/models/clip_visual.onnx"
 OMP_NUM_THREADS=${threads} MKL_NUM_THREADS=${threads} OPENBLAS_NUM_THREADS=${threads} MOD_CPU_THREADS=${threads} \\
   "\${MOD}/.venv/bin/python" prepare_models.py
 
