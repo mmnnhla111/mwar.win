@@ -7,6 +7,7 @@ import { SessionProvider, useSession } from '../../lib/session';
 import { getAuthToken } from '../../lib/api';
 import { TopNav } from './TopNav';
 import { LeftSidebar, RightSidebar } from './Sidebars';
+import { MonetagInPage } from '../ad-networks/MonetagInPage';
 import { BottomNav } from './BottomNav';
 import { SwipeTabs } from './SwipeTabs';
 import { PwaInstall } from './PwaInstall';
@@ -143,10 +144,20 @@ function ShellSwitch({ children }: { children: React.ReactNode }) {
     const ref = new URLSearchParams(window.location.search).get('ref');
     if (ref) import('../../lib/referral').then((m) => m.captureReferral(ref)).catch(() => {});
   }, []);
-  if (isGamePath(pathname)) return <GameFrame>{children}</GameFrame>;
-  if (isAuthPath(pathname)) return <AuthFrame>{children}</AuthFrame>;
-  if (isBarePath(pathname)) return <div className="min-h-[100dvh] bg-[#FAF9F5]">{children}</div>;
-  return <MainFrame>{children}</MainFrame>;
+  return (
+    <>
+      <MonetagInPage />
+      {isGamePath(pathname) ? (
+        <GameFrame>{children}</GameFrame>
+      ) : isAuthPath(pathname) ? (
+        <AuthFrame>{children}</AuthFrame>
+      ) : isBarePath(pathname) ? (
+        <div className="min-h-[100dvh] bg-[#FAF9F5]">{children}</div>
+      ) : (
+        <MainFrame>{children}</MainFrame>
+      )}
+    </>
+  );
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {

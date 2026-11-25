@@ -21,6 +21,7 @@ import { authMiddleware } from '../middleware/auth';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, utcDateKey } from '../utils/ad-value';
 import { logFinancialTransaction } from '../utils/audit-logger';
 import { ENERGY_POOL_ACCOUNT_ID } from '../utils/guards';
+import { getAdConfig, pickDirectLink, valueSlot } from '../utils/ad-networks';
 
 type Ctx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
 
@@ -61,7 +62,7 @@ async function ecBpFor(c: Ctx, format: CheerAdFormat, country: string): Promise<
 }
 
 /** Who receives the cheer: the post's author or the profile owner. `null` userId for the EC panel. */
-async function resolveTarget(
+export async function resolveTarget(
   c: Ctx,
   targetType: CheerTargetType,
   targetId: string | null | undefined
@@ -83,7 +84,7 @@ async function resolveTarget(
 }
 
 /** Counts + EC for the status card: one D1 batch. */
-async function loadStatus(c: Ctx, targetType: CheerTargetType, targetId: string | null, targetUserId: string | null): Promise<CheerStatus> {
+export async function loadStatus(c: Ctx, targetType: CheerTargetType, targetId: string | null, targetUserId: string | null): Promise<CheerStatus> {
   const me = c.get('user').userId;
   const today = dayKey();
   const res = await c.env.DB.batch([
@@ -114,6 +115,11 @@ async function loadStatus(c: Ctx, targetType: CheerTargetType, targetId: string 
     else if (cooldownRemaining > durationSeconds) reason = 'cooldown';
     options.push({ format, ecBp: bp, durationSeconds, available: !reason, ...(reason ? { reason } : {}) });
   }
+  // Live mode: what a real direct-link visit is worth here (country eCPM × the slot's safety multiplier)
+  let liveEcBp: CheerStatus['liveEcBp'];
+  const adCfg = await getAdConfig(c);
+  const link = pickDirectLink(adCfg);
+  if (link) liveEcBp = { video_15s: valueSlot(adCfg, country, link.slot, 15).ecBp, video_30s: valueSlot(adCfg, country, link.slot, 30).ecBp };
   return {
     targetType,
     targetId,
@@ -127,6 +133,7 @@ async function loadStatus(c: Ctx, targetType: CheerTargetType, targetId: string 
     energyTickets,
     maxEnergyTickets: MAX_ENERGY_TICKETS,
     options,
+    ...(liveEcBp ? { liveEcBp } : {}),
   };
 }
 
@@ -194,61 +201,22 @@ cheerRouter.post('/', async (c) => {
 
   const country = cfCountry(c);
   const { bp, valueMicroUsd, source } = await ecBpFor(c, view.ad_format, country);
-  const today = dayKey();
-  const eventId = `chr_${now.toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
-  const ins = await c.env.DB
-    .prepare(
-      `INSERT INTO cheer_events (id, user_id, target_type, target_id, target_user_id, ad_format, view_id, ec_progress_bp, value_micro_usd, country_code, date_key, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
-       WHERE (SELECT COUNT(*) FROM cheer_events WHERE user_id = ?2 AND date_key = ?11) < ?13
-         AND NOT EXISTS (SELECT 1 FROM cheer_events WHERE user_id = ?2 AND date_key IN (?11, ?16) AND created_at > ?12 - ?14)
-         AND (?5 IS NULL OR (?5 <> ?2 AND (SELECT COUNT(*) FROM cheer_events WHERE user_id = ?2 AND target_user_id = ?5 AND date_key = ?11) < ?15))`
-    )
-    .bind(
-      eventId,
-      me.userId,
-      view.target_type,
-      view.target_id,
-      view.target_user_id,
-      view.ad_format,
-      view.id,
-      bp,
-      valueMicroUsd,
-      country,
-      today,
-      now,
-      CHEER_DAILY_CAP,
-      CHEER_COOLDOWN_SECONDS,
-      CHEER_PER_TARGET_DAILY_CAP,
-      dayKey(-1)
-    )
-    .run()
-    .catch((err: unknown) => {
-      if (String(err).includes('UNIQUE')) return { meta: { changes: 0 }, duplicate: true } as any;
-      throw err;
-    });
-  if ((ins as any).duplicate) return c.json({ error: 'This cheer was already counted' }, 409);
-  if ((ins.meta?.changes ?? 0) !== 1) {
-    const status = await loadStatus(c, view.target_type, view.target_id, view.target_user_id);
-    const reason: CheerUnavailableReason =
-      status.dailyRemaining <= 0 ? 'daily_cap' : view.target_user_id && status.targetUsed >= status.targetCap ? 'target_cap' : view.target_user_id === me.userId ? 'own_content' : 'cooldown';
-    return c.json({ error: 'Cheer limit reached', code: 'CHEER_LIMIT', reason, retryInSeconds: status.cooldownRemaining, status }, 429);
+  const rec = await recordCheer(c, {
+    viewId: view.id,
+    targetType: view.target_type,
+    targetId: view.target_id,
+    targetUserId: view.target_user_id,
+    format: view.ad_format,
+    bp,
+    valueMicroUsd,
+    country,
+    drawEnergyPool: true,
+  });
+  if (!rec.ok) {
+    if (rec.duplicate) return c.json({ error: 'This cheer was already counted' }, 409);
+    return c.json({ error: 'Cheer limit reached', code: 'CHEER_LIMIT', reason: rec.reason, retryInSeconds: rec.status.cooldownRemaining, status: rec.status }, 429);
   }
-
-  // Counted: close the session, bump the counters, back it with the Energy Pool (one batch)
-  const stmts = [
-    c.env.DB.prepare('UPDATE ad_video_views SET completed_at = ?1 WHERE id = ?2 AND completed_at IS NULL').bind(now, view.id),
-    c.env.DB.prepare(
-      `INSERT INTO system_balances (id, energy_pool_drawn_micro_usd, updated_at) VALUES ('global', ?1, ?2)
-       ON CONFLICT(id) DO UPDATE SET energy_pool_drawn_micro_usd = energy_pool_drawn_micro_usd + ?1, updated_at = ?2`
-    ).bind(valueMicroUsd, now),
-  ];
-  if (view.target_type === 'post') stmts.push(c.env.DB.prepare('UPDATE social_posts SET cheer_count = cheer_count + 1 WHERE id = ?1').bind(view.target_id));
-  if (view.target_user_id) stmts.push(c.env.DB.prepare('UPDATE users SET cheer_count = cheer_count + 1 WHERE id = ?1').bind(view.target_user_id));
-  if (view.target_type === 'post') stmts.push(c.env.DB.prepare('SELECT cheer_count AS n FROM social_posts WHERE id = ?1').bind(view.target_id));
-  else if (view.target_user_id) stmts.push(c.env.DB.prepare('SELECT cheer_count AS n FROM users WHERE id = ?1').bind(view.target_user_id));
-  const res = await c.env.DB.batch(stmts);
-  const cheerCount = view.target_user_id ? Number((res[res.length - 1].results?.[0] as any)?.n ?? 0) : null;
+  const { eventId, cheerCount } = rec;
 
   await logAdImpression(c.env.DB, { userId: me.userId, provider: 'mwar_cheer', country, format: view.ad_format, purpose: 'ec_recharge', microUsd: valueMicroUsd, source: source as any, ecBp: bp });
   const ec = await creditEcProgress(c.env, me.userId, bp, `cheer:${view.target_type}:${view.target_id || '-'}:${view.ad_format}`);
@@ -276,3 +244,88 @@ cheerRouter.post('/', async (c) => {
   };
   return c.json(body);
 });
+
+/**
+ * Count one cheer: the cheer_events row is inserted with every limit checked inside the same
+ * INSERT … SELECT (parallel claims can never pass a cap), then the session is closed and the target's
+ * cheer_count goes up. Simulated cheers are backed by the Energy Pool; real network ads are not
+ * (the network pays the revenue). Used by the simulated Cheer claim and the direct-link claim.
+ */
+export async function recordCheer(
+  c: Ctx,
+  v: {
+    viewId: string;
+    targetType: CheerTargetType;
+    targetId: string | null;
+    targetUserId: string | null;
+    format: string;
+    bp: number;
+    valueMicroUsd: number;
+    country: string;
+    drawEnergyPool: boolean;
+  }
+): Promise<
+  | { ok: true; eventId: string; cheerCount: number | null }
+  | { ok: false; duplicate: true }
+  | { ok: false; duplicate?: false; reason: CheerUnavailableReason; status: CheerStatus }
+> {
+  const me = c.get('user').userId;
+  const now = nowSec();
+  const today = dayKey();
+  const eventId = `chr_${now.toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+  const ins = await c.env.DB
+    .prepare(
+      `INSERT INTO cheer_events (id, user_id, target_type, target_id, target_user_id, ad_format, view_id, ec_progress_bp, value_micro_usd, country_code, date_key, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+       WHERE (SELECT COUNT(*) FROM cheer_events WHERE user_id = ?2 AND date_key = ?11) < ?13
+         AND NOT EXISTS (SELECT 1 FROM cheer_events WHERE user_id = ?2 AND date_key IN (?11, ?16) AND created_at > ?12 - ?14)
+         AND (?5 IS NULL OR (?5 <> ?2 AND (SELECT COUNT(*) FROM cheer_events WHERE user_id = ?2 AND target_user_id = ?5 AND date_key = ?11) < ?15))`
+    )
+    .bind(
+      eventId,
+      me,
+      v.targetType,
+      v.targetId,
+      v.targetUserId,
+      v.format,
+      v.viewId,
+      v.bp,
+      v.valueMicroUsd,
+      v.country,
+      today,
+      now,
+      CHEER_DAILY_CAP,
+      CHEER_COOLDOWN_SECONDS,
+      CHEER_PER_TARGET_DAILY_CAP,
+      dayKey(-1)
+    )
+    .run()
+    .catch((err: unknown) => {
+      if (String(err).includes('UNIQUE')) return { meta: { changes: 0 }, duplicate: true } as any;
+      throw err;
+    });
+  if ((ins as any).duplicate) return { ok: false, duplicate: true };
+  if ((ins.meta?.changes ?? 0) !== 1) {
+    const status = await loadStatus(c, v.targetType, v.targetId, v.targetUserId);
+    const reason: CheerUnavailableReason =
+      status.dailyRemaining <= 0 ? 'daily_cap' : v.targetUserId && status.targetUsed >= status.targetCap ? 'target_cap' : v.targetUserId === me ? 'own_content' : 'cooldown';
+    return { ok: false, reason, status };
+  }
+
+  const stmts = [c.env.DB.prepare('UPDATE ad_video_views SET completed_at = ?1 WHERE id = ?2 AND completed_at IS NULL').bind(now, v.viewId)];
+  if (v.drawEnergyPool) {
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO system_balances (id, energy_pool_drawn_micro_usd, updated_at) VALUES ('global', ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET energy_pool_drawn_micro_usd = energy_pool_drawn_micro_usd + ?1, updated_at = ?2`
+      ).bind(v.valueMicroUsd, now)
+    );
+  }
+  if (v.targetType === 'post') stmts.push(c.env.DB.prepare('UPDATE social_posts SET cheer_count = cheer_count + 1 WHERE id = ?1').bind(v.targetId));
+  if (v.targetUserId) stmts.push(c.env.DB.prepare('UPDATE users SET cheer_count = cheer_count + 1 WHERE id = ?1').bind(v.targetUserId));
+  if (v.targetType === 'post') stmts.push(c.env.DB.prepare('SELECT cheer_count AS n FROM social_posts WHERE id = ?1').bind(v.targetId));
+  else if (v.targetUserId) stmts.push(c.env.DB.prepare('SELECT cheer_count AS n FROM users WHERE id = ?1').bind(v.targetUserId));
+  const res = await c.env.DB.batch(stmts);
+  const cheerCount = v.targetUserId ? Number((res[res.length - 1].results?.[0] as any)?.n ?? 0) : null;
+  return { ok: true, eventId, cheerCount };
+}

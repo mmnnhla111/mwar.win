@@ -9,6 +9,9 @@ import { completeCheer, getCheerStatus, startCheer } from '../../lib/api';
 import { formatEc } from '../../lib/format';
 import { useSession } from '../../lib/session';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { useAdConfig } from '../../lib/ads';
+import { AdsterraBanner } from '../ad-networks/AdsterraBanner';
+import { DirectLinkCountdown, useDirectLinkVisit } from '../ad-networks/DirectLinkVisit';
 
 type Phase =
   | { kind: 'menu' }
@@ -53,6 +56,19 @@ export function CheerModal({
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const claimed = useRef<string | null>(null);
+  // Live mode: video options become a real direct-link visit (Monetag first, Adsterra Smartlink fallback)
+  const adCfg = useAdConfig();
+  const liveDirect = adCfg?.adMode === 'live' && adCfg.directLink;
+  const liveBanner = adCfg?.adMode === 'live' && adCfg.adsterraEnabled ? adCfg.banner300x250 : null;
+  const direct = useDirectLinkVisit((r) => {
+    if (r.status) setStatus(r.status);
+    setPhase({ kind: 'done', format: r.format === 'video_30s' ? 'video_30s' : 'video_15s', addedPct: r.ecProgressAddedPct, ticketsAwarded: r.ticketsAwarded });
+    if (typeof r.energyTickets === 'number') {
+      patch((b) => ({ ...b, user: { ...b.user, energyTickets: r.energyTickets!, maxEnergyTickets: r.maxEnergyTickets, energyProgressPct: r.energyProgressPct } }));
+    }
+    onCheered?.(r.cheerCount);
+  });
+  const visiting = direct.visit.kind === 'away' || direct.visit.kind === 'claiming' || direct.visit.kind === 'starting';
 
   const loadStatus = useCallback(async () => {
     setError(null);
@@ -64,7 +80,17 @@ export function CheerModal({
   }, [targetType, targetId, t]);
 
   useEffect(() => {
+    if (direct.visit.kind === 'error') {
+      setError(direct.visit.code === 'CHEER_LIMIT' || direct.visit.code === 'AD_COOLDOWN' ? t('cheer.limitHit') : direct.visit.message);
+      setPhase({ kind: 'menu' });
+      direct.reset();
+      loadStatus();
+    }
+  }, [direct, loadStatus, t]);
+
+  useEffect(() => {
     if (!open) return;
+    direct.reset();
     setPhase({ kind: 'menu' });
     setStatus(null);
     claimed.current = null;
@@ -110,8 +136,13 @@ export function CheerModal({
 
   const pick = async (o: CheerOption) => {
     if (!o.available || busy) return;
-    setBusy(true);
     setError(null);
+    if (liveDirect && o.format !== 'banner') {
+      // Must stay synchronous up to window.open (inside begin) so the ad tab is not popup-blocked
+      direct.begin({ purpose: 'cheer', seconds: o.format === 'video_30s' ? 30 : 15, targetType, targetId }).catch(() => {});
+      return;
+    }
+    setBusy(true);
     try {
       const r = await startCheer({ format: o.format, targetType, targetId });
       const start = Date.now();
@@ -126,7 +157,7 @@ export function CheerModal({
   };
 
   const close = () => {
-    if (phase.kind === 'watching' && !window.confirm(t('cheer.leaveConfirm'))) return;
+    if ((phase.kind === 'watching' || direct.visit.kind === 'away') && !window.confirm(t('cheer.leaveConfirm'))) return;
     onClose();
   };
 
@@ -187,7 +218,19 @@ export function CheerModal({
           </div>
         )}
 
-        {phase.kind === 'menu' && status && (
+        {visiting && (
+          <div data-cheer-visiting>
+            {direct.visit.kind === 'away' ? (
+              <DirectLinkCountdown visit={direct.visit} onOpen={direct.markOpened} />
+            ) : (
+              <div className="py-6 flex flex-col items-center gap-2 text-sm text-stone-500">
+                <Spinner /> {direct.visit.kind === 'claiming' ? t('cheer.claiming') : ''}
+              </div>
+            )}
+          </div>
+        )}
+
+        {phase.kind === 'menu' && status && !visiting && (
           <div className="space-y-2">
             {status.dailyRemaining <= 0 ? (
               <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-semibold text-stone-600" data-cheer-capped>
@@ -212,9 +255,13 @@ export function CheerModal({
                     </span>
                     <span className="flex-1 min-w-0">
                       <span className="block font-bold text-stone-900">{t(`cheer.format.${o.format}`, { s: o.durationSeconds })}</span>
-                      <span className="block text-xs text-stone-500">{o.available ? t('cheer.secondsAd', { s: o.durationSeconds }) : reasonText(o)}</span>
+                      <span className="block text-xs text-stone-500">
+                        {o.available ? (liveDirect && o.format !== 'banner' ? t('ads.visitOption', { s: o.durationSeconds }) : t('cheer.secondsAd', { s: o.durationSeconds })) : reasonText(o)}
+                      </span>
                     </span>
-                    <span className="shrink-0 rounded-full bg-[#FFE135] px-2.5 py-1 text-xs font-extrabold text-stone-900">{rewardLabel(o.ecBp)}</span>
+                    <span className="shrink-0 rounded-full bg-[#FFE135] px-2.5 py-1 text-xs font-extrabold text-stone-900">
+                      {rewardLabel(liveDirect && o.format !== 'banner' ? (status.liveEcBp?.[o.format] ?? o.ecBp) : o.ecBp)}
+                    </span>
                   </button>
                 ))
             )}
@@ -224,12 +271,19 @@ export function CheerModal({
 
         {phase.kind === 'watching' && (
           <div className="space-y-3" data-cheer-watching>
-            <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-[#FFF6C2] via-[#FFFBEA] to-[#E0F2FE] border border-stone-100 h-44 flex flex-col items-center justify-center text-center px-6">
-              <span className="absolute top-2 left-3 text-[10px] font-bold uppercase tracking-wider text-stone-400">{t('side.sponsored')}</span>
-              <span className="text-4xl">{FORMAT_ICON[phase.format]}</span>
-              <div className="mt-2 font-bold text-stone-800">{t(`cheer.format.${phase.format}`, { s: phase.total })}</div>
-              <div className="text-xs text-stone-500">{t('cheer.watching')}</div>
-            </div>
+            {phase.format === 'banner' && liveBanner ? (
+              <div className="relative rounded-2xl overflow-hidden border border-stone-100 bg-stone-50 py-2" data-cheer-live-banner>
+                <span className="absolute top-1 left-3 z-10 text-[10px] font-bold uppercase tracking-wider text-stone-400">{t('side.sponsored')}</span>
+                <AdsterraBanner spec={liveBanner} />
+              </div>
+            ) : (
+              <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-[#FFF6C2] via-[#FFFBEA] to-[#E0F2FE] border border-stone-100 h-44 flex flex-col items-center justify-center text-center px-6">
+                <span className="absolute top-2 left-3 text-[10px] font-bold uppercase tracking-wider text-stone-400">{t('side.sponsored')}</span>
+                <span className="text-4xl">{FORMAT_ICON[phase.format]}</span>
+                <div className="mt-2 font-bold text-stone-800">{t(`cheer.format.${phase.format}`, { s: phase.total })}</div>
+                <div className="text-xs text-stone-500">{t('cheer.watching')}</div>
+              </div>
+            )}
             <div className="h-2 rounded-full bg-stone-100 overflow-hidden">
               <div
                 className="h-full bg-[#FACC15] transition-[width] duration-1000 ease-linear"

@@ -9,6 +9,7 @@ import { useSession } from '../../lib/session';
 import { TakedownQueue } from '../../components/admin/TakedownQueue';
 import { MembersAdmin } from '../../components/admin/MembersAdmin';
 import { GamesAdmin } from '../../components/admin/GamesAdmin';
+import { AdNetworksAdmin } from '../../components/admin/AdNetworksAdmin';
 import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function AdminAuditPage() {
@@ -24,6 +25,7 @@ export default function AdminAuditPage() {
     ['games', '🎮', 'admin.tab.games', 'games'],
     ['takedown', '🚩', 'takedown.title', 'takedown'],
     ['staff', '🪪', 'admin.tab.staff', 'staff'],
+    ['ads', '📣', 'admin.tab.ads', 'ads'],
   ] as const).filter(([, , , perm]) => can(perm));
   type TabId = (typeof TABS)[number][0];
   const [tabState, setTab] = useState<TabId | null>(null);
@@ -186,6 +188,7 @@ export default function AdminAuditPage() {
 
       {!tab && <div className="bg-white border border-stone-200/80 rounded-3xl p-10 text-center text-sm text-stone-500" data-admin-denied>{t('admin.noAccess')}</div>}
       {tab === 'staff' && <StaffRolesAdmin />}
+      {tab === 'ads' && <AdNetworksAdmin />}
       {tab === 'takedown' && <TakedownQueue />}
       {tab === 'members' && <MembersAdmin />}
       {tab === 'games' && <GamesAdmin />}

@@ -3,6 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAdConfig } from '../../lib/ads';
+import { AdsterraBanner } from '../ad-networks/AdsterraBanner';
 import type { SocialAuthor } from '@mwar/shared';
 import { Icon, type IconName } from '../ui/Icon';
 import { Avatar } from '../ui/Avatar';
@@ -121,6 +123,9 @@ export function RightSidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!boot]);
 
+  const adCfg = useAdConfig();
+  const liveBanner = adCfg?.adMode === 'live' && adCfg.adsterraEnabled ? adCfg.banner300x250 : null;
+
   const meId = boot?.user.id;
   const newest = (data?.newest || []).filter((p) => p.id !== meId).slice(0, 5);
   const online = (data?.online || []).filter((p) => p.userId !== meId).slice(0, 5);
@@ -170,14 +175,20 @@ export function RightSidebar() {
         </div>
       </Card>
 
-      {/* Sponsored slot (reserved for future banner monetization: no ad requests yet) */}
-      <Card className="p-4">
+      {/* Sponsored slot: live Adsterra 300×250 (sandboxed iframe) or the test-mode sponsor card */}
+      <Card className="p-4" data-sponsor-card={liveBanner ? 'live' : 'test'}>
         <div className="text-[11px] font-bold uppercase tracking-wider text-stone-400">{t('side.sponsored')}</div>
-        <div className="mt-2 rounded-2xl bg-gradient-to-br from-[#FFF6C2] via-[#FFFBEA] to-[#E0F2FE] border border-stone-100 h-[150px] flex flex-col items-center justify-center text-center px-4">
-          <Icon name="megaphone" size={26} className="text-stone-500" />
-          <div className="mt-1.5 text-sm font-bold text-stone-700">{t('side.yourBrand')}</div>
-          <div className="text-xs text-stone-500">{t('side.adSlot')}</div>
-        </div>
+        {liveBanner ? (
+          <div className="mt-2 w-full overflow-hidden rounded-2xl">
+            <AdsterraBanner spec={liveBanner} />
+          </div>
+        ) : (
+          <div className="mt-2 rounded-2xl bg-gradient-to-br from-[#FFF6C2] via-[#FFFBEA] to-[#E0F2FE] border border-stone-100 h-[150px] flex flex-col items-center justify-center text-center px-4">
+            <Icon name="megaphone" size={26} className="text-stone-500" />
+            <div className="mt-1.5 text-sm font-bold text-stone-700">{t('side.yourBrand')}</div>
+            <div className="text-xs text-stone-500">{t('side.adSlot')}</div>
+          </div>
+        )}
       </Card>
 
       {/* Online now + suggestions */}

@@ -39,6 +39,8 @@ export interface CheerStatus {
   energyTickets: number;
   maxEnergyTickets: number;
   options: CheerOption[];
+  /** Live mode with a direct link: EC progress (bp) a real direct-link visit gives here (country × multiplier). */
+  liveEcBp?: Partial<Record<CheerAdFormat, number>>;
 }
 
 export interface CheerResult {

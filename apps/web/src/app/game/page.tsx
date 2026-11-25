@@ -46,6 +46,9 @@ import {
 import { BrowserGuard, keyboardLockSupported } from '../../game/input/browserGuard';
 import RadialPropMenu, { propIndexAt, RADIAL } from '../../game/ui/RadialPropMenu';
 import LoadoutScreen from '../../game/ui/LoadoutScreen';
+import { useAdConfig } from '../../lib/ads';
+import { AdsterraBanner } from '../../components/ad-networks/AdsterraBanner';
+import { DirectLinkAdModal } from '../../components/ad-networks/DirectLinkVisit';
 import { flushBannerImpressions, RechargeVideoButtons, RewardedVideoModal, SimulatedAdBanner, usePendingBanners, type AdEcResult } from '../../game/ui/AdEngine';
 import { BLIP_LIFETIME_MS, drawMinimap, RadarBlip } from '../../game/ui/minimap';
 import {
@@ -273,6 +276,7 @@ export default function GamePage() {
   const [hitMarker, setHitMarker] = useState<{ at: number; kill: boolean; head: boolean } | null>(null);
   const [roundBanner, setRoundBanner] = useState<string | null>(null);
   const [videoAd, setVideoAd] = useState<null | 'video_15s' | 'video_30s'>(null);
+  const adCfg = useAdConfig();
   const [kbLockSupported, setKbLockSupported] = useState(false);
 
   // Loadout / deploy, prop wheel, fullscreen, scope, command bar
@@ -2855,7 +2859,12 @@ export default function GamePage() {
         </div>
       )}
 
-      {videoAd && <RewardedVideoModal format={videoAd} onClose={() => setVideoAd(null)} onResult={applyEcResult} />}
+      {videoAd &&
+        (adCfg?.adMode === 'live' && adCfg.directLink ? (
+          <DirectLinkAdModal seconds={videoAd === 'video_15s' ? 15 : 30} onClose={() => setVideoAd(null)} onResult={applyEcResult} />
+        ) : (
+          <RewardedVideoModal format={videoAd} onClose={() => setVideoAd(null)} onResult={applyEcResult} />
+        ))}
 
       {/* Medkit cast progress (4 s, stand still) */}
       {hudStats.medkitCast >= 0 && hudStats.alive && (
@@ -3379,10 +3388,15 @@ export default function GamePage() {
               {ecToast && <span className="ml-2 font-semibold text-yellow-200/70">{ecToast}</span>}
             </div>
           )}
-          <SimulatedAdBanner
-            onResult={applyEcResult}
-            className={`${isMobile ? 'w-[320px] h-[50px]' : 'w-[468px] h-[60px]'} border border-slate-700/70 border-b-0 rounded-t-lg`}
-          />
+          {adCfg?.adMode === 'live' && adCfg.adsterraEnabled && adCfg.banner320x50 ? (
+            // Live: real Adsterra 320×50 in a sandboxed iframe; 20 s visible-tab impression ping → EC
+            <AdsterraBanner spec={adCfg.banner320x50} pingSlot="adsterra_320x50" onResult={applyEcResult} className="bg-slate-950 border border-slate-700/70 border-b-0 rounded-t-lg" />
+          ) : (
+            <SimulatedAdBanner
+              onResult={applyEcResult}
+              className={`${isMobile ? 'w-[320px] h-[50px]' : 'w-[468px] h-[60px]'} border border-slate-700/70 border-b-0 rounded-t-lg`}
+            />
+          )}
         </div>
       )}
 

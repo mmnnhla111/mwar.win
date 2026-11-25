@@ -273,3 +273,34 @@ Deploy (as Agy, in this order):
 Quick check: sign in as the owner → avatar menu → Admin → tab "ทีมงานและตำแหน่ง" shows you as ผู้ดูแลสูงสุด.
 On a phone: ☰ opens the menu, swiping left on the feed goes to Games. Post 2 photos → you see them at once with a
 1/2 counter; another account sees the post after the moderation node approves it.
+
+## Adsterra + Monetag ad networks, country eCPM valuation, direct link + S2S postback (migration 0015, 2026-11-25)
+
+The real zone keys / links are **not** in git. They live only in the gitignored `Ads/seed_ad_networks.sql`
+on the deploy PC (generated from the files in `Ads/`). Never `git add -f` anything inside `Ads/`.
+
+1. D1 (remote): table `ad_network_configs` (singleton `default`, starts in **test** mode), `ad_click_tokens`,
+   `ad_impressions.ad_slot`
+   ```bash
+   cd apps/api-worker
+   npx wrangler d1 migrations apply core_db --remote        # 0015_ad_networks_and_ecpm_calibration.sql
+   npx wrangler d1 execute core_db --remote --file=../../Ads/seed_ad_networks.sql   # real codes, ad_mode stays 'test'
+   npx wrangler d1 execute core_db --remote --command "SELECT ad_mode, monetag_inpage_zone_id, mult_monetag_direct_pct FROM ad_network_configs"
+   ```
+2. Worker secret (skip if it already exists): `npx wrangler secret put AD_POSTBACK_SECRET` (a long random string),
+   then `npx wrangler deploy`.
+3. Web: `pnpm run deploy:pages`. `apps/web/public/sw.js` keeps the Monetag `self.options` / `importScripts(...)`
+   block at the top — do not remove it.
+4. Go live when ready: owner → Admin → tab "จัดการโฆษณา (Ad Networks)" → check the five codes show "ใช้ได้ ✓",
+   adjust the multipliers with the preview table, then press "โหมดใช้งานจริง (Live Mode)". It takes effect within
+   60 s (edge cache). "โหมดทดสอบ" turns every real ad off again within 60 s.
+5. Monetag S2S postback (after Monetag Support enables it): copy the URL from the same tab, replace
+   `<AD_POSTBACK_SECRET>` with the real secret, paste it in Monetag → Postback.
+
+What players get: ads credit **EC only** (not withdrawable, capped at 300). Value per view =
+statistical eCPM of the player's Cloudflare country × the slot multiplier; a direct-link visit needs the ad tab
+open for 15 / 30 s (server clock, 45 s cooldown, single-use token). Withdrawable money still only comes from game rooms.
+
+Quick check (live mode): the right sidebar shows a 300×250 ad; Feed / Profile / Games / Market / Wallet / Network
+get the Monetag In-Page push, `/game` never does; Solo / Practice shows a 320×50 ad at the bottom; "เติม EC" opens
+the sponsor in a new tab and a countdown that credits EC when you come back.

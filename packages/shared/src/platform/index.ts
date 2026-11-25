@@ -28,6 +28,8 @@ export const STAFF_PERMISSIONS = {
   nodes: ['super_admin', 'admin'],
   /** Takedown reports + 18+ review. */
   takedown: ['super_admin', 'admin', 'moderator'],
+  /** Ad networks (Adsterra / Monetag) config, live/test mode, eCPM multipliers. */
+  ads: ['super_admin'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 export type StaffPermission = keyof typeof STAFF_PERMISSIONS;
 
