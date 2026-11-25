@@ -4,6 +4,7 @@ import type { FinancialLog } from '@mwar/shared';
 import { CHAT_RETENTION_MONTHS } from '@mwar/shared';
 import type { Env } from './types';
 import { authRouter } from './routes/auth';
+import { socialAuthRouter } from './routes/auth-social';
 import { networkRouter } from './routes/network';
 import { walletRouter } from './routes/wallet';
 import { marketplaceRouter, releaseMarketplaceEscrow } from './routes/marketplace';
@@ -53,6 +54,7 @@ app.get('/health', (c) => {
 });
 
 // Mount Module Routers
+app.route('/api/auth', socialAuthRouter);
 app.route('/api/auth', authRouter);
 app.route('/api/network', networkRouter);
 app.route('/api/wallet', walletRouter);

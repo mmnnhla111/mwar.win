@@ -151,6 +151,7 @@ Every ad event is logged in `ad_impressions` (purpose `ec_recharge` or `monetize
 | 7.12 | WhatsApp OTP is really verified in production | [x] *was `[ ]`* (any 6 digits were accepted outside dev mode) | Hashed `otp_codes`, 5 min TTL, 5 attempts, 60 s resend limit |
 | 7.13 | Telegram login signature is checked in production | [x] *was `[ ]`* (the payload was trusted) | `verifyTelegramAuth()` with `TELEGRAM_BOT_TOKEN` |
 | 7.14 | Ad S2S postbacks are authenticated and replay-proof | [x] *was `[ ]`* (anyone could call the postback URL with any user_id) | `AD_POSTBACK_SECRET` + `ad_postbacks (provider, tx_id)` primary key; `/dev/simulate-watch` works only in DEV_MOCK_MODE |
+| 7.15 | One player per phone-verified identity (anti-sybil) | [x] *was `[ ]`* (open email sign-up; and with `DEV_MOCK_MODE="true"` on the live Worker, the WhatsApp OTP `123456` and the unsigned Telegram endpoint could open unlimited accounts) | Accounts open only through Telegram / LINE (`routes/auth-social.ts`, `oauth_accounts UNIQUE(provider, provider_user_id)`, migration 0011). `POST /api/auth/register` returns 403; old WhatsApp / Telegram-widget logins answer 410 outside local dev. An account must keep at least one Telegram/LINE link (switching replaces it), so a backup password cannot be used to free the same id for another account. |
 
 ## 8. Wallet, withdrawals and marketplace
 

@@ -30,6 +30,12 @@ export interface Env {
   LOG_INGEST_SECRET?: string;
   /** Telegram bot token used to verify Login Widget signatures (production). */
   TELEGRAM_BOT_TOKEN?: string;
+  /** Public bot username (without @) for Telegram Login. Telegram login is on when this + the token are set. */
+  TELEGRAM_BOT_USERNAME?: string;
+  /** LINE Login channel id (public). LINE login is on when this + LINE_CHANNEL_SECRET are set. */
+  LINE_CHANNEL_ID?: string;
+  /** LINE Login channel secret (secret). */
+  LINE_CHANNEL_SECRET?: string;
   /** Public HTTP origin of the Colyseus game server (serves the read-only GET /rooms snapshot). */
   GAME_SERVER_HTTP_URL?: string;
   /** Web app origin used in password-reset links (default https://mwar.win). */

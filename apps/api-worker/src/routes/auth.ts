@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import {
-  RegisterSchema,
   LoginSchema,
   WhatsAppOtpRequestSchema,
   WhatsAppOtpVerifySchema,
@@ -55,74 +54,24 @@ async function verifyTelegramAuth(data: Record<string, unknown>, botToken: strin
   return hex === hash.toLowerCase();
 }
 
+/** Old WhatsApp-OTP / Telegram-widget sign-in: they could open accounts without phone-unique proof. */
+const legacyGone = (c: any) =>
+  c.json({ error: 'This sign-in method was retired. Please continue with Telegram or LINE.', code: 'LEGACY_LOGIN_RETIRED' }, 410);
+
 export const authRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
-// 1. Standard Registration
-authRouter.post('/register', async (c) => {
-  const body = await c.req.json().catch(() => null);
-  const parseResult = RegisterSchema.safeParse(body);
-  if (!parseResult.success) {
-    return c.json({ error: 'Validation failed', details: parseResult.error.format() }, 400);
-  }
-
-  const { username, email, password, referrer_id } = parseResult.data;
-
-  // Check unique constraints
-  const existing = await c.env.DB
-    .prepare('SELECT id, username, email FROM users WHERE username = ?1 OR email = ?2')
-    .bind(username, email)
-    .first();
-
-  if (existing) {
-    return c.json({ error: 'Username or email already in use' }, 409);
-  }
-
-  // Verify referrer if provided: the upline code is the sponsor's user id or username
-  let referrerUserId: string | null = null;
-  if (referrer_id) {
-    const referrer = await c.env.DB
-      .prepare('SELECT id FROM users WHERE id = ?1 UNION ALL SELECT id FROM users WHERE username = ?1 LIMIT 1')
-      .bind(referrer_id)
-      .first<{ id: string }>();
-    if (!referrer) {
-      return c.json({ error: 'Referral code not found' }, 400);
-    }
-    referrerUserId = referrer.id;
-  }
-
-  const userId = crypto.randomUUID();
-  const passwordHash = await hashPassword(password);
-  const now = Math.floor(Date.now() / 1000);
-
-  // Atomic batch: Create user & Initialize wallet
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      'INSERT INTO users (id, username, email, password_hash, referrer_id, role, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)'
-    ).bind(userId, username, email, passwordHash, referrerUserId, 'player', 'active', now),
-    c.env.DB.prepare(
-      'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
-    ).bind(userId, now),
-  ]);
-
-  // Build MLM 5-level hierarchy
-  if (referrerUserId) {
-    await buildNetworkTree(c.env.DB, userId, referrerUserId);
-  }
-
-  const token = await signJwt({ userId, username, role: 'player' }, c.env.JWT_SECRET);
-
-  return c.json({
-    success: true,
-    token,
-    user: {
-      id: userId,
-      username,
-      email,
-      role: 'player',
-      referrer_id: referrerUserId,
+// 1. Open (email/password) registration is closed: accounts are opened only through Telegram or LINE
+//    (POST /api/auth/oauth/telegram | /oauth/line in auth-social.ts), which allow one account per phone
+//    number. This stops sybil farming without us collecting phone numbers.
+authRouter.post('/register', (c) =>
+  c.json(
+    {
+      error: 'Sign-up with email is closed. Please sign up with Telegram or LINE on the login page.',
+      code: 'REGISTRATION_SOCIAL_ONLY',
     },
-  }, 201);
-});
+    403
+  )
+);
 
 // 2. Standard Login
 authRouter.post('/login', async (c) => {
@@ -272,9 +221,9 @@ authRouter.post('/profile', authMiddleware, async (c) => {
   const { username, avatarUrl } = parseResult.data;
 
   const currentUser = await c.env.DB
-    .prepare('SELECT id, username, rename_count FROM users WHERE id = ?1')
+    .prepare('SELECT id, username, rename_count, username_locked FROM users WHERE id = ?1')
     .bind(authUser.userId)
-    .first<{ id: string; username: string; rename_count: number }>();
+    .first<{ id: string; username: string; rename_count: number; username_locked: number }>();
 
   if (!currentUser) {
     return c.json({ error: 'User not found' }, 404);
@@ -292,6 +241,10 @@ authRouter.post('/profile', authMiddleware, async (c) => {
   // Validate Username Change
   let newRenameCount = currentUser.rename_count || 0;
   if (username && username !== currentUser.username) {
+    // A username can be chosen once (Telegram/LINE accounts start with a generated one), then never changed
+    if (currentUser.username_locked) {
+      return c.json({ error: 'Your username is already set and cannot be changed' }, 409);
+    }
     if (newRenameCount >= 3) {
       return c.json({ error: 'Rename limit reached (Maximum 3 renames allowed)' }, 400);
     }
@@ -317,6 +270,7 @@ authRouter.post('/profile', authMiddleware, async (c) => {
     bindings.push(username);
     updates.push(`rename_count = ?${paramIdx++}`);
     bindings.push(newRenameCount);
+    updates.push('username_locked = 1');
   }
 
   if (avatarUrl !== undefined) {
@@ -347,6 +301,7 @@ authRouter.post('/profile', authMiddleware, async (c) => {
 
 // 4. WhatsApp OTP Request (DEV_MOCK_MODE prints to console)
 authRouter.post('/whatsapp/request-otp', async (c) => {
+  if (!isLocalDev(c)) return legacyGone(c);
   const body = await c.req.json().catch(() => null);
   const parseResult = WhatsAppOtpRequestSchema.safeParse(body);
   if (!parseResult.success) {
@@ -390,6 +345,7 @@ authRouter.post('/whatsapp/request-otp', async (c) => {
 
 // 5. WhatsApp OTP Verify
 authRouter.post('/whatsapp/verify-otp', async (c) => {
+  if (!isLocalDev(c)) return legacyGone(c);
   const body = await c.req.json().catch(() => null);
   const parseResult = WhatsAppOtpVerifySchema.safeParse(body);
   if (!parseResult.success) {
@@ -469,6 +425,7 @@ authRouter.post('/whatsapp/verify-otp', async (c) => {
 
 // 6. Telegram Auth (Mock or Real Widget)
 authRouter.post('/telegram', async (c) => {
+  if (!isLocalDev(c)) return legacyGone(c);
   const body = await c.req.json().catch(() => null);
   const parseResult = TelegramLoginSchema.safeParse(body);
   if (!parseResult.success) {
@@ -602,7 +559,7 @@ authRouter.post('/reset-password', async (c) => {
   const passwordHash = await hashPassword(parsed.data.newPassword);
   const res = await c.env.DB.batch([
     c.env.DB.prepare('UPDATE password_reset_tokens SET used_at = ?1 WHERE token_hash = ?2 AND used_at IS NULL').bind(now, hash),
-    c.env.DB.prepare('UPDATE users SET password_hash = ?1 WHERE id = ?2 AND changes() = 1').bind(passwordHash, row.user_id),
+    c.env.DB.prepare('UPDATE users SET password_hash = ?1, has_password = 1, password_changed_at = ?3 WHERE id = ?2 AND changes() = 1').bind(passwordHash, row.user_id, now),
     c.env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?1 AND token_hash != ?2').bind(row.user_id, hash),
   ]);
   if ((res[1].meta?.changes ?? 0) !== 1) {

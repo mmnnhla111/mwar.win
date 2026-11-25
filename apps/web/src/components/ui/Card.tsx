@@ -3,8 +3,17 @@
 import React from 'react';
 import { useTranslation } from '../../i18n/I18nProvider';
 
-export function Card({ className = '', children, as: Tag = 'div' }: { className?: string; children: React.ReactNode; as?: any }) {
-  return <Tag className={`bg-white rounded-3xl border border-stone-200/80 shadow-[0_2px_12px_rgba(0,0,0,0.04)] ${className}`}>{children}</Tag>;
+export function Card({
+  className = '',
+  children,
+  as: Tag = 'div',
+  ...rest
+}: { className?: string; children: React.ReactNode; as?: any } & { [data: `data-${string}`]: string | boolean | undefined }) {
+  return (
+    <Tag {...rest} className={`bg-white rounded-3xl border border-stone-200/80 shadow-[0_2px_12px_rgba(0,0,0,0.04)] ${className}`}>
+      {children}
+    </Tag>
+  );
 }
 
 export function Spinner({ size = 18, className = '' }: { size?: number; className?: string }) {

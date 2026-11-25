@@ -6,7 +6,20 @@ import { LemonLogo } from '../ui/Icon';
 import { LanguagePill } from '../i18n/LanguagePicker';
 import { useTranslation } from '../../i18n/I18nProvider';
 
-export function AuthCard({ title, subtitle, children, footer }: { title: string; subtitle?: string; children: React.ReactNode; footer?: React.ReactNode }) {
+export function AuthCard({
+  title,
+  subtitle,
+  children,
+  footer,
+  headerAction,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+  /** Small action at the top-right of the card (e.g. "Skip"). */
+  headerAction?: React.ReactNode;
+}) {
   const { t } = useTranslation();
   return (
     <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-14 relative overflow-hidden">
@@ -24,7 +37,10 @@ export function AuthCard({ title, subtitle, children, footer }: { title: string;
       </Link>
 
       <div className="relative w-full max-w-[400px] bg-white rounded-[28px] border border-stone-200/80 shadow-[0_8px_40px_rgba(0,0,0,0.06)] p-6 sm:p-8">
-        <h1 className="text-2xl font-extrabold text-stone-900 tracking-tight">{title}</h1>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="text-2xl font-extrabold text-stone-900 tracking-tight min-w-0">{title}</h1>
+          {headerAction && <div className="shrink-0 pt-0.5">{headerAction}</div>}
+        </div>
         {subtitle && <p className="text-sm text-stone-500 mt-1">{subtitle}</p>}
         <div className="mt-6">{children}</div>
       </div>

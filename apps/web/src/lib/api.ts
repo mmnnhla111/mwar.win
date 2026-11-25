@@ -18,6 +18,9 @@ import type {
   GamesResponse,
   FpsRoomsResponse,
   FpsRoomRosterResponse,
+  AuthProvidersResponse,
+  OAuthLoginResponse,
+  LinkedAccountsResponse,
 } from '@mwar/shared';
 
 export const API_BASE_URL =
@@ -92,8 +95,9 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit =
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const err = new Error(data.error || data.message || `Request failed with status ${response.status}`) as Error & { status?: number };
+    const err = new Error(data.error || data.message || `Request failed with status ${response.status}`) as Error & { status?: number; code?: string };
     err.status = response.status;
+    if (typeof data.code === 'string') err.code = data.code;
     throw err;
   }
 
@@ -277,19 +281,47 @@ export function logout() {
 }
 
 // ---------------------------------------------------------------------------
-// Auth (password reset)
+// Auth: Telegram / LINE sign-in, connected accounts, username (once), backup password
 // ---------------------------------------------------------------------------
-export function requestPasswordReset(email: string) {
-  return apiFetch<{ success: boolean; message: string; devResetLink?: string; devResetToken?: string }>('/api/auth/forgot-password', {
-    method: 'POST',
-    body: JSON.stringify({ email }),
-  });
+let providersCache: Promise<AuthProvidersResponse> | null = null;
+export function getAuthProviders(): Promise<AuthProvidersResponse> {
+  if (!providersCache) {
+    providersCache = apiFetch<AuthProvidersResponse>('/api/auth/providers').catch((e) => {
+      providersCache = null;
+      throw e;
+    });
+  }
+  return providersCache;
 }
 
-export function resetPassword(token: string, newPassword: string) {
-  return apiFetch<{ success: boolean; message: string }>('/api/auth/reset-password', {
+export function checkReferralCode(code: string) {
+  return apiFetch<{ valid: boolean; username: string | null }>(`/api/auth/referral?code=${encodeURIComponent(code)}`);
+}
+
+export function oauthTelegram(payload: Record<string, unknown>) {
+  return apiFetch<OAuthLoginResponse>('/api/auth/oauth/telegram', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function oauthLine(payload: { code: string; redirect_uri: string; referral_code?: string | null; link_to_current_user?: boolean }) {
+  return apiFetch<OAuthLoginResponse>('/api/auth/oauth/line', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function getLinkedAccounts() {
+  return apiFetch<LinkedAccountsResponse>('/api/auth/linked-accounts');
+}
+
+export function unlinkAccount(provider: 'telegram' | 'line') {
+  return apiFetch<{ success: boolean }>(`/api/auth/linked-accounts/${provider}`, { method: 'DELETE' });
+}
+
+export function setUsernameOnce(username: string) {
+  return apiFetch<{ success: boolean; username: string; token: string }>('/api/auth/username', { method: 'POST', body: JSON.stringify({ username }) });
+}
+
+export function setBackupPassword(password: string, username?: string) {
+  return apiFetch<{ success: boolean; username: string; token?: string; passwordChangeAvailableAt: number }>('/api/auth/backup-password', {
     method: 'POST',
-    body: JSON.stringify({ token, newPassword }),
+    body: JSON.stringify({ password, ...(username ? { username } : {}) }),
   });
 }
 

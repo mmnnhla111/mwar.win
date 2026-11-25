@@ -25,7 +25,13 @@ export function isTabActive(tab: NavTab, pathname: string): boolean {
   return tab.match.some((m) => (m === '/' ? p === '/' : p === m || p.startsWith(`${m}/`)));
 }
 
-export const AUTH_PATHS = ['/login', '/register', '/forgot-password'];
+export const AUTH_PATHS = ['/login', '/register'];
+
+/** Pages with no app chrome that work signed in or out (OAuth callbacks, first-run setup). */
+export function isBarePath(pathname: string) {
+  const p = pathname.replace(/\/+$/, '') || '/';
+  return p === '/welcome' || p.startsWith('/auth/');
+}
 
 export function isAuthPath(pathname: string) {
   const p = pathname.replace(/\/+$/, '') || '/';

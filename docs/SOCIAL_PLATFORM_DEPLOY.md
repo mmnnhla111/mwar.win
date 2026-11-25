@@ -111,3 +111,25 @@ pnpm run deploy:pages                                    # build runs the i18n k
   language → the country from the device time zone (Thailand → Thai, Indonesia → Indonesian, Vietnam →
   Vietnamese, Spain / Latin America → Spanish) → English. No extra request is made.
 - The in-game 3D HUD (`apps/web/src/game/**`) is not translated in this round.
+
+## Telegram + LINE login round (migration 0011)
+
+Accounts are opened only through Telegram or LINE (1 phone number = 1 account, no phone numbers stored).
+Email sign-up (`POST /api/auth/register`) now answers 403; `/register` redirects to `/login` (keeps `?ref=`) and `/forgot-password` is gone.
+Password login stays as a folded "backup password" option on `/login`.
+
+1. Telegram: in @BotFather run `/setdomain` for the bot and enter `mwar.win`.
+2. LINE: in the LINE Developers console create a **LINE Login** channel, add the callback URL
+   `https://mwar.win/auth/callback/line`, and enable the `profile` + `openid` scopes.
+3. Worker config (in `apps/api-worker`): uncomment `TELEGRAM_BOT_USERNAME` and `LINE_CHANNEL_ID` in `wrangler.toml`, then
+   ```bash
+   npx wrangler secret put TELEGRAM_BOT_TOKEN      # if not set yet
+   npx wrangler secret put LINE_CHANNEL_SECRET
+   npx wrangler d1 migrations apply core_db --remote   # 0011_social_oauth_accounts.sql
+   npx wrangler deploy
+   ```
+4. Web: `pnpm run deploy:pages` (adds `/auth/callback/telegram`, `/auth/callback/line`, `/welcome`).
+
+A provider whose settings are missing shows as "not available yet" on `/login` and the API answers 503 with setup steps.
+Rules: username is generated at sign-up and can be chosen once (then locked); backup password can be changed once per 24 h;
+switching Telegram/LINE in Settings replaces the old link; the last Telegram/LINE link cannot be removed.

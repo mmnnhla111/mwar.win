@@ -8,7 +8,7 @@ import { getAuthToken } from '../../lib/api';
 import { TopNav } from './TopNav';
 import { LeftSidebar, RightSidebar } from './Sidebars';
 import { BottomNav } from './BottomNav';
-import { isAuthPath, isGamePath } from './nav';
+import { isAuthPath, isBarePath, isGamePath } from './nav';
 import { LemonLogo } from '../ui/Icon';
 import { Spinner } from '../ui/Card';
 import { FloatingQuestWidget } from '../FloatingQuestWidget';
@@ -76,8 +76,8 @@ function MainFrame({ children }: { children: React.ReactNode }) {
     if (hasToken === false || status === 'anon') {
       const params = new URLSearchParams(window.location.search);
       const ref = params.get('ref');
-      // Old referral links (/?ref=…) land on sign-up with the code pre-filled
-      if (ref) router.replace(`/register?ref=${encodeURIComponent(ref)}`);
+      // Referral links (/?ref=…) land on the login page with the code pre-filled
+      if (ref) router.replace(`/login?ref=${encodeURIComponent(ref)}`);
       else router.replace('/login');
     }
   }, [hasToken, status, router]);
@@ -135,6 +135,7 @@ function ShellSwitch({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || '/';
   if (isGamePath(pathname)) return <GameFrame>{children}</GameFrame>;
   if (isAuthPath(pathname)) return <AuthFrame>{children}</AuthFrame>;
+  if (isBarePath(pathname)) return <div className="min-h-[100dvh] bg-[#FAF9F5]">{children}</div>;
   return <MainFrame>{children}</MainFrame>;
 }
 

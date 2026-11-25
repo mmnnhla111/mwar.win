@@ -118,7 +118,7 @@ function ProfileView() {
 
   const copyRef = async () => {
     if (!boot) return;
-    await navigator.clipboard.writeText(`${window.location.origin}/register?ref=${boot.user.username}`).catch(() => {});
+    await navigator.clipboard.writeText(`${window.location.origin}/login?ref=${boot.user.username}`).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   };

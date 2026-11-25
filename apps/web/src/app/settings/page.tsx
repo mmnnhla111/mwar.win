@@ -12,6 +12,7 @@ import { useSession } from '../../lib/session';
 import { memoDrop } from '../../lib/memo';
 import { displayName } from '../../lib/format';
 import { LanguageGrid } from '../../components/i18n/LanguagePicker';
+import { ConnectedAccounts } from '../../components/settings/ConnectedAccounts';
 import { useTranslation } from '../../i18n/I18nProvider';
 
 function Toggle({ on, onChange, disabled, label }: { on: boolean; onChange: () => void; disabled?: boolean; label: string }) {
@@ -115,6 +116,8 @@ export default function SettingsPage() {
         </div>
         <p className="px-5 pb-5 text-xs text-stone-400">{t('settings.profileHint')}</p>
       </Card>
+
+      <ConnectedAccounts />
 
       <Card className="p-5 flex items-center gap-3">
         <Icon name="shield" size={20} />
