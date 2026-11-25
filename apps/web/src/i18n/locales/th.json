@@ -758,5 +758,15 @@
   "ads.admin.secretSet": "ตั้งค่า AD_POSTBACK_SECRET ใน Worker แล้ว",
   "ads.admin.secretMissing": "ยังไม่ได้ตั้ง AD_POSTBACK_SECRET ใน Worker (postback จะถูกปฏิเสธ)",
   "ads.admin.postbackPending": "จะเริ่มทำงานเมื่อฝ่าย Support ของ Monetag เปิดใช้ S2S Postback ให้บัญชีเรา ระหว่างนี้ระบบใช้การนับเวลาในแอป (Path A)",
-  "ads.admin.liveNote": "โหมดใช้งานจริงเปิดอยู่: โฆษณาให้แค่ EC (ถอนไม่ได้) เงินที่ถอนได้มาจากห้องเกมเท่านั้น"
+  "ads.admin.liveNote": "โหมดใช้งานจริงเปิดอยู่: โฆษณาให้แค่ EC (ถอนไม่ได้) เงินที่ถอนได้มาจากห้องเกมเท่านั้น",
+  "tgbot.waitingTitle": "กำลังรอการยืนยันจากแอป Telegram...",
+  "tgbot.waitingHint": "กดปุ่ม Start ในแชตบอท แล้วกดปุ่มกลับเข้าสู่เว็บ",
+  "tgbot.waitingLink": "กดปุ่ม Start ในแชตบอท แล้วกลับมาที่หน้านี้ ระบบจะเชื่อม Telegram ให้อัตโนมัติ",
+  "tgbot.reopen": "เปิดแอป Telegram อีกครั้ง",
+  "tgbot.timeout": "ยังไม่ได้รับการยืนยันจาก Telegram",
+  "tgbot.keepWaiting": "รอต่อ",
+  "tgbot.tryAgain": "เริ่มใหม่",
+  "tgbot.elsewhere": "ยืนยันผ่านปุ่มในแชต Telegram เรียบร้อยแล้ว",
+  "tgbot.continue": "ไปต่อ",
+  "tgbot.widgetFallback": "ใช้การล็อกอินผ่านเว็บ (กรอกเบอร์)"
 }

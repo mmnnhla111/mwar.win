@@ -758,5 +758,15 @@
   "ads.admin.secretSet": "Đã đặt AD_POSTBACK_SECRET trên Worker",
   "ads.admin.secretMissing": "Chưa đặt AD_POSTBACK_SECRET (postback bị từ chối)",
   "ads.admin.postbackPending": "Hoạt động khi bộ phận hỗ trợ Monetag bật postback S2S. Trong lúc chờ, dùng bộ đếm trong ứng dụng (Cách A).",
-  "ads.admin.liveNote": "Chế độ thật đang bật: quảng cáo chỉ cho EC (không rút được). Tiền rút được chỉ đến từ phòng game."
+  "ads.admin.liveNote": "Chế độ thật đang bật: quảng cáo chỉ cho EC (không rút được). Tiền rút được chỉ đến từ phòng game.",
+  "tgbot.waitingTitle": "Đang chờ Telegram xác nhận…",
+  "tgbot.waitingHint": "Bấm Start trong khung chat bot, rồi bấm nút để quay lại trang.",
+  "tgbot.waitingLink": "Bấm Start trong chat bot rồi quay lại đây: Telegram sẽ tự kết nối.",
+  "tgbot.reopen": "Mở lại Telegram",
+  "tgbot.timeout": "Telegram chưa xác nhận.",
+  "tgbot.keepWaiting": "Chờ tiếp",
+  "tgbot.tryAgain": "Bắt đầu lại",
+  "tgbot.elsewhere": "Đã xác nhận qua nút trong chat Telegram.",
+  "tgbot.continue": "Tiếp tục",
+  "tgbot.widgetFallback": "Đăng nhập qua web (nhập số điện thoại)"
 }

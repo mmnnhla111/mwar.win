@@ -2,13 +2,14 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { AuthProvidersResponse, OAuthProvider } from '@mwar/shared';
+import type { AuthProvidersResponse, OAuthLoginResponse, OAuthProvider, TelegramBotInitResponse } from '@mwar/shared';
 import { apiFetch, setAuthToken, clearBootstrapCache, getAuthProviders, checkReferralCode } from '../../lib/api';
-import { startLine, startTelegram, rememberRef, recalledRef } from '../../lib/oauth';
+import { startLine, startTelegramWidget, initTelegramBot, prepareTab, openDeepLink, rememberRef, recalledRef, authErrorKey } from '../../lib/oauth';
 import { restoreReferral } from '../../lib/referral';
 import { useSession } from '../../lib/session';
 import { AuthCard, FieldLabel, FormError } from '../../components/auth/AuthCard';
 import { ProviderButton } from '../../components/auth/ProviderButtons';
+import { TelegramBotWait } from '../../components/auth/TelegramBotWait';
 import { btn, inputCls } from '../../components/ui/Card';
 import { useTranslation } from '../../i18n/I18nProvider';
 
@@ -26,6 +27,7 @@ export default function LoginPage() {
   const [refFromLink, setRefFromLink] = useState(false);
   const [starting, setStarting] = useState<OAuthProvider | null>(null);
   const [socialError, setSocialError] = useState('');
+  const [tgWait, setTgWait] = useState<TelegramBotInitResponse | null>(null);
 
   const [pwOpen, setPwOpen] = useState(false);
   const [id, setId] = useState('');
@@ -58,30 +60,65 @@ export default function LoginPage() {
       .catch(() => setProvidersFailed(true));
   }, []);
 
+  const errText = (err: any) => {
+    const key = authErrorKey(err);
+    return key ? t(key) : err?.message || t('oauth.err.generic');
+  };
+
   const go = async (provider: OAuthProvider) => {
     if (!providers) return;
     setSocialError('');
+    // Telegram: open the tab for t.me synchronously inside the click (popup blockers)
+    const tab = provider === 'telegram' ? prepareTab() : null;
     setStarting(provider);
     const code = ref.trim();
+    const fail = (msg: string) => {
+      try {
+        tab?.close();
+      } catch {
+        /* ignore */
+      }
+      setSocialError(msg);
+      setStarting(null);
+    };
     if (code) {
       // Catch typos before leaving for Telegram / LINE: the upline cannot be changed later
       try {
         const r = await checkReferralCode(code);
-        if (!r.valid) {
-          setSocialError(t('oauth.err.referral'));
-          setStarting(null);
-          return;
-        }
+        if (!r.valid) return fail(t('oauth.err.referral'));
       } catch {
         /* network hiccup: the server checks again */
       }
     }
     rememberRef(code || null);
-    const ok = provider === 'telegram' ? startTelegram(providers, { ref: code || null }) : startLine(providers, { ref: code || null });
-    if (!ok) {
-      setSocialError(t('oauth.err.notConfigured'));
+    try {
+      if (provider === 'line') {
+        await startLine({ ref: code || null });
+        return; // leaving for LINE
+      }
+      const init = await initTelegramBot({ ref: code || null });
+      openDeepLink(tab, init.deepLinkUrl);
+      setTgWait(init);
       setStarting(null);
+    } catch (err) {
+      fail(errText(err));
     }
+  };
+
+  /** Desktop fallback: the legacy Telegram web widget (asks for a phone number). */
+  const goWidget = () => {
+    if (!providers) return;
+    setTgWait(null);
+    if (!startTelegramWidget(providers, { ref: ref.trim() || null })) setSocialError(t('oauth.err.notConfigured'));
+  };
+
+  const finishBot = async (res: OAuthLoginResponse) => {
+    if (!res.token) return setSocialError(t('oauth.err.generic'));
+    setAuthToken(res.token, true);
+    rememberRef(null);
+    clearBootstrapCache();
+    // Full navigation: the login page's "already signed in → feed" bounce must not win over /welcome
+    window.location.replace(res.isNewUser ? '/welcome' : '/');
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -113,6 +150,9 @@ export default function LoginPage() {
   return (
     <AuthCard title={t('login.title')} subtitle={t('oauth.subtitle')}>
       <div className="space-y-3" data-social-login>
+        {tgWait ? (
+          <TelegramBotWait init={tgWait} onSuccess={finishBot} onCancel={() => setTgWait(null)} onWidget={goWidget} />
+        ) : (
         <ProviderButton
           provider="telegram"
           label={t('oauth.continueTelegram')}
@@ -121,6 +161,7 @@ export default function LoginPage() {
           busy={starting === 'telegram'}
           note={tgOff ? t('oauth.notReady') : null}
         />
+        )}
         <ProviderButton
           provider="line"
           label={t('oauth.continueLine')}

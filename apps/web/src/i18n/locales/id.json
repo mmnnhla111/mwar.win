@@ -758,5 +758,15 @@
   "ads.admin.secretSet": "AD_POSTBACK_SECRET sudah diatur di Worker",
   "ads.admin.secretMissing": "AD_POSTBACK_SECRET belum diatur (postback ditolak)",
   "ads.admin.postbackPending": "Aktif setelah Support Monetag mengaktifkan postback S2S. Sementara itu dipakai timer di aplikasi (Jalur A).",
-  "ads.admin.liveNote": "Mode Live aktif: iklan hanya memberi EC (tidak bisa ditarik). Uang yang bisa ditarik hanya dari ruang game."
+  "ads.admin.liveNote": "Mode Live aktif: iklan hanya memberi EC (tidak bisa ditarik). Uang yang bisa ditarik hanya dari ruang game.",
+  "tgbot.waitingTitle": "Menunggu konfirmasi dari Telegram…",
+  "tgbot.waitingHint": "Ketuk Start di chat bot, lalu ketuk tombol untuk kembali ke situs.",
+  "tgbot.waitingLink": "Ketuk Start di chat bot, lalu kembali ke sini: Telegram tersambung otomatis.",
+  "tgbot.reopen": "Buka Telegram lagi",
+  "tgbot.timeout": "Telegram belum mengonfirmasi.",
+  "tgbot.keepWaiting": "Tunggu lagi",
+  "tgbot.tryAgain": "Mulai lagi",
+  "tgbot.elsewhere": "Sudah dikonfirmasi lewat tombol di chat Telegram.",
+  "tgbot.continue": "Lanjut",
+  "tgbot.widgetFallback": "Pakai login web (masukkan nomor HP)"
 }

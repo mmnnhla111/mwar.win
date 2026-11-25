@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import type { AuthProvidersResponse, LinkedAccountsResponse, OAuthProvider } from '@mwar/shared';
+import type { AuthProvidersResponse, LinkedAccountsResponse, OAuthProvider, TelegramBotInitResponse } from '@mwar/shared';
 import { USERNAME_RE, BACKUP_PASSWORD_MIN } from '@mwar/shared';
 import { getAuthProviders, getLinkedAccounts, setBackupPassword, setUsernameOnce, unlinkAccount } from '../../lib/api';
-import { authErrorKey, replaceAuthToken, startLine, startTelegram } from '../../lib/oauth';
+import { authErrorKey, replaceAuthToken, startLine, startTelegramWidget, initTelegramBot, prepareTab, openDeepLink, rememberRedirectAfter } from '../../lib/oauth';
+import { TelegramBotWait } from '../auth/TelegramBotWait';
 import { useSession } from '../../lib/session';
 import { Card, Spinner, btn, inputCls } from '../ui/Card';
 import { TelegramIcon, LineIcon } from '../auth/ProviderButtons';
@@ -24,6 +25,7 @@ export function ConnectedAccounts() {
   // "Telegram connected." after the link redirect (translated at render: the dictionary may still be loading)
   const [justLinked, setJustLinked] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [tgWait, setTgWait] = useState<TelegramBotInitResponse | null>(null);
   const [username, setUsername] = useState('');
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
@@ -53,11 +55,37 @@ export function ConnectedAccounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const connect = (p: OAuthProvider) => {
+  const connect = async (p: OAuthProvider) => {
     if (!providers) return;
     setMsg(null);
-    const ok = p === 'telegram' ? startTelegram(providers, { link: true }) : startLine(providers, { link: true });
-    if (!ok) setMsg({ ok: false, text: t('oauth.err.notConfigured') });
+    const purpose = (p === 'telegram' ? data?.telegram : data?.line) ? 'switch' : 'link';
+    const tab = p === 'telegram' ? prepareTab() : null;
+    setBusy(`connect-${p}`);
+    try {
+      if (p === 'line') {
+        await startLine({ purpose });
+        return; // leaving for LINE
+      }
+      const init = await initTelegramBot({ purpose });
+      openDeepLink(tab, init.deepLinkUrl);
+      setTgWait(init);
+    } catch (err) {
+      try {
+        tab?.close();
+      } catch {
+        /* ignore */
+      }
+      setMsg({ ok: false, text: errText(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const connectWidget = () => {
+    if (!providers) return;
+    setTgWait(null);
+    rememberRedirectAfter(null);
+    if (!startTelegramWidget(providers, { link: true })) setMsg({ ok: false, text: t('oauth.err.notConfigured') });
   };
 
   const disconnect = async (p: OAuthProvider) => {
@@ -135,7 +163,7 @@ export function ConnectedAccounts() {
         <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
           {acc ? (
             <>
-              <button type="button" onClick={() => connect(p)} disabled={!enabled} className={`${btn.soft} !px-3 !py-1.5 text-xs`} data-change={p}>
+              <button type="button" onClick={() => connect(p)} disabled={!enabled || busy === `connect-${p}`} className={`${btn.soft} !px-3 !py-1.5 text-xs`} data-change={p}>
                 {t('security.change')}
               </button>
               {linkedCount > 1 && (
@@ -145,7 +173,7 @@ export function ConnectedAccounts() {
               )}
             </>
           ) : (
-            <button type="button" onClick={() => connect(p)} disabled={!enabled} className={`${btn.primary} !px-3 !py-1.5 text-xs`} data-connect={p}>
+            <button type="button" onClick={() => connect(p)} disabled={!enabled || busy === `connect-${p}`} className={`${btn.primary} !px-3 !py-1.5 text-xs`} data-connect={p}>
               {t('security.connect')}
             </button>
           )}
@@ -170,6 +198,22 @@ export function ConnectedAccounts() {
         <>
           <div className="mt-2 divide-y divide-stone-100">
             {providerRow('telegram')}
+            {tgWait && (
+              <div className="py-3">
+                <TelegramBotWait
+                  init={tgWait}
+                  linking
+                  onSuccess={async () => {
+                    setTgWait(null);
+                    rememberRedirectAfter(null);
+                    await load();
+                    setMsg({ ok: true, text: t('security.linkedOk', { name: 'Telegram' }) });
+                  }}
+                  onCancel={() => setTgWait(null)}
+                  onWidget={connectWidget}
+                />
+              </div>
+            )}
             {providerRow('line')}
           </div>
           <p className="text-[11px] text-stone-400">{t('security.changeHint')}</p>

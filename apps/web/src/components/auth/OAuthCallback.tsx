@@ -4,14 +4,20 @@ import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { OAuthLoginResponse, OAuthProvider } from '@mwar/shared';
-import { clearBootstrapCache, getAuthToken, oauthLine, oauthTelegram, setAuthToken } from '../../lib/api';
-import { authErrorKey, callbackUrl, readTelegramResult, rememberRef, takePending } from '../../lib/oauth';
+import { clearBootstrapCache, getAuthToken, oauthLine, oauthTelegram, setAuthToken, telegramBotExchange } from '../../lib/api';
+import { authErrorKey, readTelegramResult, rememberRef, takePending, takeRedirectAfter } from '../../lib/oauth';
 import { getDeviceFp, storedReferral } from '../../lib/referral';
 import { useSession } from '../../lib/session';
 import { AuthCard, FormError } from './AuthCard';
 import { TelegramIcon, LineIcon } from './ProviderButtons';
 import { Spinner, btn } from '../ui/Card';
 import { useTranslation } from '../../i18n/I18nProvider';
+
+/**
+ * Single-execution guard across re-renders, StrictMode double effects and remounts: a LINE `code`,
+ * a server `state` or a Telegram exchange token is only ever sent once per page load.
+ */
+const handled = new Set<string>();
 
 /** Shared body of /auth/callback/telegram and /auth/callback/line (static pages). */
 export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
@@ -26,30 +32,39 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
-    const pending = takePending(provider);
-    const link = !!pending?.link;
-    setLinking(link);
+    const q = new URLSearchParams(window.location.search);
     const fail = (key: string) => setError({ key });
+
+    // Which one-time credential is this page carrying? (LINE code+state, bot token, or legacy widget)
+    const lineCode = provider === 'line' ? q.get('code') : null;
+    const lineState = provider === 'line' ? q.get('state') : null;
+    const botToken = provider === 'telegram' ? q.get('token') : null;
+    const guardKey = provider === 'line' ? `line:${lineCode || ''}:${lineState || ''}` : botToken ? `tgbot:${botToken}` : `tg:${window.location.hash}`;
+    if (handled.has(guardKey)) return;
+    handled.add(guardKey);
+    // Legacy Telegram widget only: what we were doing is in sessionStorage (may be missing: then a plain sign-in)
+    const pending = provider === 'telegram' && !botToken ? takePending('telegram') : null;
+    window.history.replaceState(null, '', window.location.pathname);
 
     (async () => {
       let res: OAuthLoginResponse;
       try {
-        if (link && !getAuthToken()) return fail('oauth.err.signInAgain');
-        // Sticky referral: the code chosen on /login, else the one kept on this device; plus the device hash
-        const refCode = link ? null : pending?.ref || (await storedReferral()) || null;
-        const deviceFp = link ? null : await getDeviceFp().catch(() => null);
         if (provider === 'line') {
-          const q = new URLSearchParams(window.location.search);
-          window.history.replaceState(null, '', window.location.pathname);
           if (q.get('error')) return fail('oauth.err.cancelled');
-          const code = q.get('code');
-          // CSRF: the state must be the one we generated before leaving for LINE
-          if (!code || !pending || q.get('state') !== pending.state) return fail('oauth.err.state');
-          res = await oauthLine({ code, redirect_uri: callbackUrl('line'), referral_code: refCode, device_fp: deviceFp, link_to_current_user: link || undefined });
+          // The state lives on the server (D1): nothing here depends on sessionStorage
+          if (!lineCode || !lineState) return fail('oauth.err.state');
+          const deviceFp = await getDeviceFp().catch(() => null);
+          res = await oauthLine({ code: lineCode, state: lineState, device_fp: deviceFp });
+        } else if (botToken) {
+          // 1-tap return from the Telegram bot's "🚀 เข้าสู่ระบบ mwar.win" button
+          res = await telegramBotExchange(botToken);
         } else {
+          const link = !!pending?.link;
+          if (link && !getAuthToken()) return fail('oauth.err.signInAgain');
           const data = readTelegramResult();
-          window.history.replaceState(null, '', window.location.pathname);
           if (!data) return fail('oauth.err.cancelled');
+          const refCode = link ? null : pending?.ref || (await storedReferral()) || null;
+          const deviceFp = link ? null : await getDeviceFp().catch(() => null);
           res = await oauthTelegram({ ...data, referral_code: refCode, device_fp: deviceFp, link_to_current_user: link || undefined });
         }
       } catch (err: any) {
@@ -57,11 +72,14 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
         return key ? fail(key) : setError(err?.message ? { raw: err.message } : { key: 'oauth.err.generic' });
       }
 
-      if (link) {
+      if (res.linked) {
+        setLinking(true);
+        const back = takeRedirectAfter();
         clearBootstrapCache();
-        router.replace(`/settings?linked=${provider}`);
+        router.replace(back && back.startsWith('/settings') ? back : `/settings?linked=${provider}`);
         return;
       }
+      takeRedirectAfter();
       if (!res.token) return fail('oauth.err.generic');
       setAuthToken(res.token, true);
       rememberRef(null);

@@ -34,14 +34,12 @@ export const TelegramOAuthSchema = z.object({
 });
 export type TelegramOAuthInput = z.infer<typeof TelegramOAuthSchema>;
 
-/** POST /api/auth/oauth/line — the authorization code from the LINE redirect. */
+/** POST /api/auth/oauth/line — the authorization code + the server-side state from the LINE redirect. */
 export const LineOAuthSchema = z.object({
   code: z.string().min(1).max(512),
-  redirect_uri: z.string().url().max(512),
-  referral_code: referralCode,
-  /** Sticky referral: the device fingerprint, used when no code came with the sign-up. */
+  state: z.string().regex(/^[A-Za-z0-9_-]{32,96}$/),
+  /** Sticky referral: the device fingerprint (used when init did not store one). */
   device_fp: z.string().regex(/^[a-f0-9]{32,64}$/).optional().nullable(),
-  link_to_current_user: z.boolean().optional(),
 });
 export type LineOAuthInput = z.infer<typeof LineOAuthSchema>;
 
@@ -99,3 +97,36 @@ export interface LinkedAccountsResponse {
   telegram: LinkedProviderAccount | null;
   line: LinkedProviderAccount | null;
 }
+
+// ---- Server-side OAuth state (LINE + Telegram bot deep link) ----------------------------------
+export const OAUTH_PURPOSES = ['login', 'link', 'switch'] as const;
+export type OAuthPurpose = (typeof OAUTH_PURPOSES)[number];
+/** A started LINE / Telegram sign-in stays valid for 10 minutes. */
+export const OAUTH_STATE_TTL_SECONDS = 600;
+
+/** POST /api/auth/oauth/line/init and /api/auth/oauth/telegram/bot-init */
+export const OAuthInitSchema = z.object({
+  purpose: z.enum(OAUTH_PURPOSES).optional().default('login'),
+  referral_code: referralCode,
+  device_fp: z.string().regex(/^[a-f0-9]{32,64}$/).optional().nullable(),
+  /** LINE only: this site's callback URL (checked against the allowed hosts). */
+  redirect_uri: z.string().url().max(512).optional(),
+});
+export type OAuthInitInput = z.input<typeof OAuthInitSchema>;
+
+export interface LineInitResponse {
+  state: string;
+  authorizeUrl: string;
+}
+export interface TelegramBotInitResponse {
+  state: string;
+  deepLinkUrl: string;
+  expiresInSec: number;
+}
+
+/** POST /api/auth/oauth/telegram/bot-exchange — the token behind the bot's return button. */
+export const TelegramBotExchangeSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{32,96}$/) });
+
+export type TelegramBotPollResponse =
+  | { status: 'pending' | 'expired' | 'consumed' }
+  | (OAuthLoginResponse & { status: 'approved' });

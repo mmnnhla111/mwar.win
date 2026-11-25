@@ -758,5 +758,15 @@
   "ads.admin.secretSet": "AD_POSTBACK_SECRET está configurado en el Worker",
   "ads.admin.secretMissing": "AD_POSTBACK_SECRET no está configurado (se rechazan los postbacks)",
   "ads.admin.postbackPending": "Se activa cuando el soporte de Monetag habilite el postback S2S. Mientras tanto se usa el temporizador en la app (Ruta A).",
-  "ads.admin.liveNote": "Modo real activo: los anuncios solo dan EC (no retirable). El dinero retirable solo viene de las salas de juego."
+  "ads.admin.liveNote": "Modo real activo: los anuncios solo dan EC (no retirable). El dinero retirable solo viene de las salas de juego.",
+  "tgbot.waitingTitle": "Esperando la confirmación de Telegram…",
+  "tgbot.waitingHint": "Toca Start en el chat del bot y luego el botón para volver al sitio.",
+  "tgbot.waitingLink": "Toca Start en el chat del bot y vuelve aquí: Telegram se conectará solo.",
+  "tgbot.reopen": "Abrir Telegram otra vez",
+  "tgbot.timeout": "Telegram aún no ha confirmado.",
+  "tgbot.keepWaiting": "Seguir esperando",
+  "tgbot.tryAgain": "Empezar de nuevo",
+  "tgbot.elsewhere": "Confirmado con el botón del chat de Telegram.",
+  "tgbot.continue": "Continuar",
+  "tgbot.widgetFallback": "Usar el inicio por web (con número de teléfono)"
 }

@@ -12,7 +12,11 @@ import {
   TELEGRAM_AUTH_MAX_AGE_SECONDS,
   ReferralTouchSchema,
   DEVICE_FP_RE,
+  OAuthInitSchema,
+  OAUTH_STATE_TTL_SECONDS,
+  TelegramBotExchangeSchema,
 } from '@mwar/shared';
+import type { LineInitResponse, OAuthPurpose, TelegramBotInitResponse } from '@mwar/shared';
 import type { AuthProvidersResponse, LinkedAccountsResponse, LinkedProviderAccount, OAuthLoginResponse, OAuthProvider } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { hashPassword, signJwt, verifyJwt } from '../utils/crypto';
@@ -154,7 +158,18 @@ async function issueToken(c: Ctx, u: { id: string; username: string; role: strin
   return signJwt({ userId: u.id, username: u.username, role: u.role as AuthUserPayload['role'] }, c.env.JWT_SECRET);
 }
 
-async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode?: string | null; link?: boolean; deviceFp?: string | null }) {
+interface CompleteOpts {
+  referralCode?: string | null;
+  link?: boolean;
+  /** Link / switch started from /settings with a server-side state: the player who started it. */
+  linkUserId?: string | null;
+  deviceFp?: string | null;
+  /** Extra fields merged into the JSON body (e.g. { status: 'approved' } for the bot poll). */
+  extra?: Record<string, unknown>;
+}
+
+async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: CompleteOpts): Promise<Response> {
+  const extra = opts.extra || {};
   const t = now();
   const label = idn.provider === 'telegram' ? 'Telegram' : 'LINE';
   const existing = await c.env.DB
@@ -164,8 +179,14 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
 
   // --- Link (or change) the provider on the signed-in account (/settings) ---
   if (opts.link) {
-    const me = await currentUser(c);
-    if (!me) return c.json({ error: 'Please sign in again to connect an account.' }, 401);
+    let me: { userId: string; username: string } | null = null;
+    if (opts.linkUserId) {
+      const u = await c.env.DB.prepare('SELECT id, username, status FROM users WHERE id = ?1').bind(opts.linkUserId).first<{ id: string; username: string; status: string }>();
+      if (u && u.status !== 'banned') me = { userId: u.id, username: u.username };
+    } else {
+      me = await currentUser(c);
+    }
+    if (!me) return c.json({ error: 'Please sign in again to connect an account.', code: 'SIGN_IN_AGAIN' }, 401);
     if (existing && existing.user_id !== me.userId) {
       return c.json({ error: `This ${label} account is already linked to another player`, code: 'ALREADY_LINKED' }, 409);
     }
@@ -183,7 +204,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
       ).bind(crypto.randomUUID(), me.userId, idn.provider, idn.providerUserId, idn.username, idn.displayName, idn.avatarUrl, t),
     ]);
     const body: OAuthLoginResponse = { success: true, isNewUser: false, linked: true, user: { id: me.userId, username: me.username } };
-    return c.json(body);
+    return c.json({ ...body, ...extra });
   }
 
   // --- Sign in ---
@@ -200,7 +221,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
       .bind(idn.username, idn.displayName, idn.avatarUrl, t, idn.provider, idn.providerUserId)
       .run();
     const body: OAuthLoginResponse = { success: true, token: await issueToken(c, u), isNewUser: false, user: { id: u.id, username: u.username } };
-    return c.json(body);
+    return c.json({ ...body, ...extra });
   }
 
   // --- First time: open an account ---
@@ -250,7 +271,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
     } catch (err: any) {
       const msg = String(err?.message || err);
       // Same Telegram/LINE account signed up twice at once: the other request won, sign in instead
-      if (msg.includes('oauth_accounts')) return completeOAuth(c, idn, { link: false });
+      if (msg.includes('oauth_accounts')) return completeOAuth(c, idn, { link: false, extra });
       if (!msg.includes('users.username')) throw err;
     }
   }
@@ -273,7 +294,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
     isNewUser: true,
     user: { id: userId, username },
   };
-  return c.json(body, 201);
+  return c.json({ ...body, ...extra }, 201);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,8 +324,89 @@ socialAuthRouter.post('/oauth/telegram', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/oauth/line  (authorization code → token → profile)
+// Server-side OAuth state (D1 oauth_states): survives the mobile app switch
+// browser → LINE / Telegram app → back, even into a new tab, a PWA or an in-app browser.
 // ---------------------------------------------------------------------------
+/** URL-safe random token: `bytes` random bytes → base64url (24 → 32 chars, 32 → 43 chars). */
+function randomToken(bytes: number) {
+  const b = crypto.getRandomValues(new Uint8Array(bytes));
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+interface OAuthStateRow {
+  state: string;
+  provider: 'line' | 'telegram_bot';
+  purpose: OAuthPurpose;
+  user_id: string | null;
+  referral_code: string | null;
+  redirect_uri: string | null;
+  status: 'pending' | 'approved' | 'consumed';
+  telegram_payload_json: string | null;
+  exchange_token: string | null;
+  created_at: number;
+  expires_at: number;
+  device_fp: string | null;
+}
+
+/** Validates the init body, resolves the signed-in player for link / switch, stores the row. */
+async function createState(
+  c: Ctx,
+  provider: OAuthStateRow['provider'],
+  stateLen: number,
+  redirectUri: (body: { redirect_uri?: string }) => string | null
+): Promise<{ ok: true; state: string; row: { purpose: OAuthPurpose; redirectUri: string | null } } | { ok: false; res: Response }> {
+  const parsed = OAuthInitSchema.safeParse((await c.req.json().catch(() => ({}))) ?? {});
+  if (!parsed.success) return { ok: false, res: c.json({ error: 'Invalid sign-in request' }, 400) };
+  const d = parsed.data;
+  let userId: string | null = null;
+  if (d.purpose !== 'login') {
+    const me = await currentUser(c);
+    if (!me) return { ok: false, res: c.json({ error: 'Please sign in again to connect an account.', code: 'SIGN_IN_AGAIN' }, 401) };
+    userId = me.userId;
+  }
+  const ref = d.purpose === 'login' && d.referral_code?.trim() ? d.referral_code.trim() : null;
+  if (ref && !(await findReferrer(c, ref)) && !d.device_fp) {
+    return { ok: false, res: c.json({ error: 'Referral code not found', code: 'REFERRAL_NOT_FOUND' }, 400) };
+  }
+  const uri = redirectUri(d);
+  if (uri === '') return { ok: false, res: c.json({ error: 'Invalid redirect address' }, 400) };
+  const t = now();
+  const state = randomToken(stateLen);
+  await c.env.DB
+    .prepare(
+      `INSERT INTO oauth_states (state, provider, purpose, user_id, referral_code, redirect_uri, status, created_at, expires_at, device_fp)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8, ?9)`
+    )
+    .bind(state, provider, d.purpose, userId, ref, uri, t, t + OAUTH_STATE_TTL_SECONDS, d.purpose === 'login' ? d.device_fp || null : null)
+    .run();
+  // Housekeeping: now and then drop rows that expired more than a day ago (indexed)
+  if (Math.random() < 0.05) {
+    c.executionCtx.waitUntil(c.env.DB.prepare('DELETE FROM oauth_states WHERE expires_at < ?1').bind(t - 86_400).run().catch(() => null));
+  }
+  return { ok: true, state, row: { purpose: d.purpose, redirectUri: uri } };
+}
+
+/** Sign in / open an account / link, from a consumed state row. */
+function completeFromState(c: Ctx, row: OAuthStateRow, idn: ProviderIdentity, fallbackDeviceFp?: string | null, extra?: Record<string, unknown>) {
+  const link = row.purpose === 'link' || row.purpose === 'switch';
+  return completeOAuth(c, idn, {
+    link,
+    linkUserId: link ? row.user_id : null,
+    referralCode: link ? null : row.referral_code,
+    deviceFp: link ? null : row.device_fp || fallbackDeviceFp || null,
+    extra,
+  });
+}
+
+const stateError = (c: Ctx) =>
+  c.json({ error: 'This sign-in link is no longer valid. Please start again from the login page.', code: 'OAUTH_STATE_INVALID' }, 400);
+
+// ---------------------------------------------------------------------------
+// LINE: POST /api/auth/oauth/line/init → authorize URL; POST /api/auth/oauth/line { code, state }
+// ---------------------------------------------------------------------------
+/** LINE API origin. LINE_API_BASE exists only for local end-to-end tests (.dev.vars) and must never be set in production. */
+const lineApi = (env: Env) => (env.LINE_API_BASE && /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(env.LINE_API_BASE) ? env.LINE_API_BASE : 'https://api.line.me');
+
 function allowedLineRedirect(c: Ctx, uri: string): boolean {
   try {
     const u = new URL(uri);
@@ -317,20 +419,57 @@ function allowedLineRedirect(c: Ctx, uri: string): boolean {
   }
 }
 
+/** The exact callback URL LINE must send the user back to (normalized: no trailing slash). */
+function lineRedirectFor(c: Ctx, requested?: string): string {
+  const def = `${(c.env.WEB_APP_URL || 'https://mwar.win').replace(/\/+$/, '')}/auth/callback/line`;
+  if (!requested) return def;
+  try {
+    const u = new URL(requested);
+    const norm = `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+    return allowedLineRedirect(c, norm) ? norm : '';
+  } catch {
+    return '';
+  }
+}
+
+socialAuthRouter.post('/oauth/line/init', async (c) => {
+  if (!lineReady(c.env)) return notConfigured(c, 'line');
+  const r = await createState(c, 'line', 32, (d) => lineRedirectFor(c, d.redirect_uri));
+  if (!r.ok) return r.res;
+  const u = new URL('https://access.line.me/oauth2/v2.1/authorize');
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('client_id', c.env.LINE_CHANNEL_ID!);
+  u.searchParams.set('redirect_uri', r.row.redirectUri!);
+  u.searchParams.set('state', r.state);
+  u.searchParams.set('scope', 'profile openid');
+  const body: LineInitResponse = { state: r.state, authorizeUrl: u.toString() };
+  return c.json(body);
+});
+
 socialAuthRouter.post('/oauth/line', async (c) => {
   if (!lineReady(c.env)) return notConfigured(c, 'line');
   const parsed = LineOAuthSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return c.json({ error: 'Invalid LINE login data' }, 400);
+  if (!parsed.success) return c.json({ error: 'Invalid LINE login data', code: 'OAUTH_STATE_INVALID' }, 400);
   const d = parsed.data;
-  if (!allowedLineRedirect(c, d.redirect_uri)) return c.json({ error: 'Invalid LINE redirect address' }, 400);
+  // Single use: the state is consumed atomically before LINE is even asked (replays fail here)
+  const t = now();
+  const row = await c.env.DB
+    .prepare(
+      `UPDATE oauth_states SET status = 'consumed', consumed_at = ?1
+       WHERE state = ?2 AND provider = 'line' AND status = 'pending' AND expires_at > ?1
+       RETURNING *`
+    )
+    .bind(t, d.state)
+    .first<OAuthStateRow>();
+  if (!row || !row.redirect_uri) return stateError(c);
 
-  const tokenRes = await fetch('https://api.line.me/oauth2/v2.1/token', {
+  const tokenRes = await fetch(`${lineApi(c.env)}/oauth2/v2.1/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       code: d.code,
-      redirect_uri: d.redirect_uri,
+      redirect_uri: row.redirect_uri,
       client_id: c.env.LINE_CHANNEL_ID!,
       client_secret: c.env.LINE_CHANNEL_SECRET!,
     }),
@@ -341,12 +480,13 @@ socialAuthRouter.post('/oauth/line', async (c) => {
   const tok = (await tokenRes.json().catch(() => null)) as { access_token?: string } | null;
   if (!tok?.access_token) return c.json({ error: 'LINE did not return an access token' }, 502);
 
-  const profRes = await fetch('https://api.line.me/v2/profile', { headers: { Authorization: `Bearer ${tok.access_token}` } }).catch(() => null);
+  const profRes = await fetch(`${lineApi(c.env)}/v2/profile`, { headers: { Authorization: `Bearer ${tok.access_token}` } }).catch(() => null);
   const prof = profRes?.ok ? ((await profRes.json().catch(() => null)) as { userId?: string; displayName?: string; pictureUrl?: string } | null) : null;
   if (!prof?.userId || !/^U[0-9a-f]{32}$/i.test(prof.userId)) return c.json({ error: 'Could not read your LINE profile' }, 502);
 
-  return completeOAuth(
+  return completeFromState(
     c,
+    row,
     {
       provider: 'line',
       providerUserId: prof.userId,
@@ -354,8 +494,153 @@ socialAuthRouter.post('/oauth/line', async (c) => {
       displayName: (prof.displayName || '').slice(0, 80) || null,
       avatarUrl: httpsUrl(prof.pictureUrl),
     },
-    { referralCode: d.referral_code, link: d.link_to_current_user === true, deviceFp: d.device_fp }
+    d.device_fp
   );
+});
+
+// ---------------------------------------------------------------------------
+// Telegram bot deep link (no phone number): t.me/<bot>?start=auth_<state>
+//   bot-init → webhook (/start auth_<state>, identity from message.from) → bot-exchange (button) | bot-poll (tab)
+// ---------------------------------------------------------------------------
+const TG_START_RE = /^\/start(?:@\w+)?\s+auth_([A-Za-z0-9_-]{16,48})\s*$/;
+
+socialAuthRouter.post('/oauth/telegram/bot-init', async (c) => {
+  if (!telegramReady(c.env)) return notConfigured(c, 'telegram');
+  const r = await createState(c, 'telegram_bot', 24, () => null); // 24 bytes → 32 chars (+ "auth_" ≤ 64)
+  if (!r.ok) return r.res;
+  const bot = (c.env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '');
+  const body: TelegramBotInitResponse = { state: r.state, deepLinkUrl: `https://t.me/${bot}?start=auth_${r.state}`, expiresInSec: OAUTH_STATE_TTL_SECONDS };
+  return c.json(body);
+});
+
+async function tgSend(env: Env, chatId: number, text: string, button?: { text: string; url: string }) {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      ...(button ? { reply_markup: { inline_keyboard: [[{ text: button.text, url: button.url }]] } } : {}),
+    }),
+  })
+    .then((r) => (r.ok ? null : r.text().then((t) => console.warn('[telegram] sendMessage', r.status, t.slice(0, 200)))))
+    .catch((e) => console.warn('[telegram] sendMessage failed', e));
+}
+
+/** POST /api/auth/telegram/webhook — Telegram Bot API updates (setWebhook with secret_token). */
+socialAuthRouter.post('/telegram/webhook', async (c) => {
+  const secret = c.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!secret || !safeEqual(c.req.header('X-Telegram-Bot-Api-Secret-Token'), secret)) return c.json({ ok: false }, 401);
+  const update = (await c.req.json().catch(() => null)) as any;
+  const msg = update?.message;
+  // Always 200 from here on, so Telegram never retries an update forever
+  if (!msg || msg.chat?.type !== 'private' || typeof msg.text !== 'string' || !msg.from || msg.from.is_bot) return c.json({ ok: true });
+  const chatId = Number(msg.chat.id);
+  const web = (c.env.WEB_APP_URL || 'https://mwar.win').replace(/\/+$/, '');
+  const m = msg.text.match(TG_START_RE);
+  if (!m) {
+    if (msg.text.startsWith('/start')) {
+      c.executionCtx.waitUntil(tgSend(c.env, chatId, '👋 mwar.win — เข้าสู่ระบบจากหน้าเว็บด้วยปุ่ม Telegram\nSign in from the website with the Telegram button.', { text: '🌐 mwar.win', url: `${web}/login` }));
+    }
+    return c.json({ ok: true });
+  }
+
+  // Identity comes ONLY from Telegram's own message.from (never from the text)
+  const from = msg.from as { id: number; username?: string; first_name?: string; last_name?: string };
+  if (!Number.isSafeInteger(from.id) || from.id <= 0) return c.json({ ok: true });
+  const payload = {
+    id: from.id,
+    username: typeof from.username === 'string' ? from.username.slice(0, 64) : null,
+    first_name: typeof from.first_name === 'string' ? from.first_name.slice(0, 256) : null,
+    last_name: typeof from.last_name === 'string' ? from.last_name.slice(0, 256) : null,
+  };
+  const t = now();
+  const exchangeToken = randomToken(32);
+  const row = await c.env.DB
+    .prepare(
+      `UPDATE oauth_states SET status = 'approved', telegram_payload_json = ?1, exchange_token = ?2, expires_at = ?3
+       WHERE state = ?4 AND provider = 'telegram_bot' AND status = 'pending' AND expires_at > ?5
+       RETURNING state`
+    )
+    .bind(JSON.stringify(payload), exchangeToken, t + OAUTH_STATE_TTL_SECONDS, m[1], t)
+    .first<{ state: string }>();
+  if (!row) {
+    c.executionCtx.waitUntil(
+      tgSend(c.env, chatId, '⚠️ ลิงก์นี้หมดอายุหรือถูกใช้ไปแล้ว กรุณาเริ่มใหม่จากหน้าเข้าสู่ระบบ\nThis sign-in link expired or was already used. Please start again.', {
+        text: '🌐 mwar.win',
+        url: `${web}/login`,
+      })
+    );
+    return c.json({ ok: true });
+  }
+  c.executionCtx.waitUntil(
+    tgSend(c.env, chatId, '✅ ยืนยันตัวตนสำเร็จ! แตะปุ่มด้านล่างเพื่อกลับเข้าสู่ mwar.win\nVerified! Tap the button below to return to mwar.win.', {
+      text: '🚀 เข้าสู่ระบบ mwar.win',
+      url: `${web}/auth/callback/telegram?token=${exchangeToken}`,
+    })
+  );
+  return c.json({ ok: true });
+});
+
+function telegramIdentity(row: OAuthStateRow): ProviderIdentity | null {
+  try {
+    const p = JSON.parse(row.telegram_payload_json || 'null') as { id: number; username: string | null; first_name: string | null; last_name: string | null } | null;
+    if (!p || !Number.isSafeInteger(p.id)) return null;
+    const fullName = [p.first_name, p.last_name].filter(Boolean).join(' ').trim();
+    return { provider: 'telegram', providerUserId: String(p.id), username: p.username || null, displayName: fullName || null, avatarUrl: null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /api/auth/oauth/telegram/bot-poll?state= — the waiting tab picks the session up once the bot
+ * approved it. The state can complete once through the poll and once through the bot button (each
+ * single use), so the player is signed in wherever they end up.
+ */
+socialAuthRouter.get('/oauth/telegram/bot-poll', async (c) => {
+  const state = c.req.query('state') || '';
+  if (!/^[A-Za-z0-9_-]{16,48}$/.test(state)) return c.json({ status: 'expired' });
+  const t = now();
+  const row = await c.env.DB
+    .prepare(
+      `UPDATE oauth_states SET status = 'consumed', consumed_at = COALESCE(consumed_at, ?1), polled_at = ?1
+       WHERE state = ?2 AND provider = 'telegram_bot' AND status IN ('approved', 'consumed') AND polled_at IS NULL
+         AND telegram_payload_json IS NOT NULL AND expires_at > ?1
+       RETURNING *`
+    )
+    .bind(t, state)
+    .first<OAuthStateRow>();
+  if (!row) {
+    const cur = await c.env.DB.prepare("SELECT status, expires_at FROM oauth_states WHERE state = ?1 AND provider = 'telegram_bot'").bind(state).first<{ status: string; expires_at: number }>();
+    c.header('Cache-Control', 'no-store');
+    if (!cur || cur.expires_at <= t) return c.json({ status: 'expired' });
+    return c.json({ status: cur.status === 'pending' ? 'pending' : 'consumed' });
+  }
+  const idn = telegramIdentity(row);
+  if (!idn) return stateError(c);
+  return completeFromState(c, row, idn, null, { status: 'approved' });
+});
+
+/** POST /api/auth/oauth/telegram/bot-exchange { token } — the bot's "🚀 เข้าสู่ระบบ mwar.win" button. */
+socialAuthRouter.post('/oauth/telegram/bot-exchange', async (c) => {
+  const parsed = TelegramBotExchangeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return stateError(c);
+  const t = now();
+  const row = await c.env.DB
+    .prepare(
+      `UPDATE oauth_states SET status = 'consumed', consumed_at = COALESCE(consumed_at, ?1), exchanged_at = ?1
+       WHERE exchange_token = ?2 AND provider = 'telegram_bot' AND status IN ('approved', 'consumed') AND exchanged_at IS NULL AND expires_at > ?1
+       RETURNING *`
+    )
+    .bind(t, parsed.data.token)
+    .first<OAuthStateRow>();
+  if (!row) return stateError(c);
+  const idn = telegramIdentity(row);
+  if (!idn) return stateError(c);
+  return completeFromState(c, row, idn);
 });
 
 // ---------------------------------------------------------------------------

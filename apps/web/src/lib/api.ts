@@ -20,6 +20,10 @@ import type {
   FpsRoomRosterResponse,
   AuthProvidersResponse,
   OAuthLoginResponse,
+  OAuthInitInput,
+  LineInitResponse,
+  TelegramBotInitResponse,
+  TelegramBotPollResponse,
   LinkedAccountsResponse,
   PostVisibility,
   StagedUpload,
@@ -307,8 +311,24 @@ export function oauthTelegram(payload: Record<string, unknown> & { device_fp?: s
   return apiFetch<OAuthLoginResponse>('/api/auth/oauth/telegram', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-export function oauthLine(payload: { code: string; redirect_uri: string; referral_code?: string | null; device_fp?: string | null; link_to_current_user?: boolean }) {
+export function oauthLine(payload: { code: string; state: string; device_fp?: string | null }) {
   return apiFetch<OAuthLoginResponse>('/api/auth/oauth/line', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function oauthLineInit(payload: OAuthInitInput) {
+  return apiFetch<LineInitResponse>('/api/auth/oauth/line/init', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function telegramBotInit(payload: OAuthInitInput) {
+  return apiFetch<TelegramBotInitResponse>('/api/auth/oauth/telegram/bot-init', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function telegramBotPoll(state: string) {
+  return apiFetch<TelegramBotPollResponse>(`/api/auth/oauth/telegram/bot-poll?state=${encodeURIComponent(state)}`, { cache: 'no-store' });
+}
+
+export function telegramBotExchange(token: string) {
+  return apiFetch<OAuthLoginResponse>('/api/auth/oauth/telegram/bot-exchange', { method: 'POST', body: JSON.stringify({ token }) });
 }
 
 export function getLinkedAccounts() {

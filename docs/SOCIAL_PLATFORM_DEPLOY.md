@@ -304,3 +304,39 @@ open for 15 / 30 s (server clock, 45 s cooldown, single-use token). Withdrawable
 Quick check (live mode): the right sidebar shows a 300×250 ad; Feed / Profile / Games / Market / Wallet / Network
 get the Monetag In-Page push, `/game` never does; Solo / Practice shows a 320×50 ad at the bottom; "เติม EC" opens
 the sponsor in a new tab and a countdown that credits EC when you come back.
+
+## Mobile LINE fix + Telegram bot deep-link login (migration 0016, 2026-11-25)
+
+LINE and the Telegram bot now keep the sign-in state on the server (D1 `oauth_states`, 10 minutes,
+single use), so coming back from the LINE / Telegram app in a new tab, a PWA or an in-app browser works.
+Telegram on phones opens `t.me/mwar_win_bot?start=auth_<state>`: no phone number. The old web widget stays
+as a small "ใช้การล็อกอินผ่านเว็บ (กรอกเบอร์)" link for desktops without the app.
+
+1. D1 (remote)
+   ```bash
+   cd apps/api-worker
+   npx wrangler d1 migrations apply core_db --remote        # 0016_oauth_states.sql
+   ```
+2. Webhook secret (any long random string of A–Z a–z 0–9 _ -, up to 256 chars) and deploy
+   ```bash
+   npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+   npx wrangler deploy
+   ```
+   Never set `LINE_API_BASE` in production (it exists only for local tests in `.dev.vars`).
+3. Register the bot webhook (PowerShell: use `curl.exe`; replace both placeholders, keep the quotes)
+   ```bash
+   curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+     -d "url=https://api.mwar.win/api/auth/telegram/webhook" \
+     -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
+     -d "allowed_updates=[\"message\"]" \
+     -d "drop_pending_updates=true"
+   curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"   # url set, last_error_message empty
+   ```
+   The bot must not have another webhook / polling process; `getWebhookInfo` shows the current one.
+4. LINE Developers console → LINE Login channel → Callback URL must be exactly
+   `https://mwar.win/auth/callback/line` (no trailing slash). Keep it Published.
+5. Web: `pnpm run deploy:pages`.
+
+Quick check on a phone: Login → "เข้าสู่ระบบด้วย Telegram" opens the Telegram app at @mwar_win_bot → Start →
+the bot answers "✅ ยืนยันตัวตนสำเร็จ!" with "🚀 เข้าสู่ระบบ mwar.win" (tap it, or just switch back: the waiting
+card signs you in within ~3 s). "เข้าสู่ระบบด้วย LINE" → LINE app → back to the site signs you in even if a new tab opened.

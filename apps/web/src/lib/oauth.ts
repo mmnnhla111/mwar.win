@@ -1,10 +1,14 @@
 /**
  * Telegram / LINE sign-in helpers (static export: the callbacks are plain pages under /auth/callback/*).
- * What we were doing (sign in or link, referral code, LINE CSRF state) is kept in sessionStorage
- * across the redirect to Telegram / LINE and back.
+ *
+ * LINE and the Telegram bot deep link keep their state on the SERVER (D1 oauth_states), so the
+ * callback works even when the phone comes back from the LINE / Telegram app in a new tab, a PWA
+ * or an in-app browser with empty sessionStorage. Only the legacy Telegram web widget (desktop
+ * fallback, phone number login) still uses the sessionStorage pending record.
  */
-import type { AuthProvidersResponse, OAuthProvider } from '@mwar/shared';
-import { setAuthToken } from './api';
+import type { AuthProvidersResponse, OAuthProvider, OAuthPurpose } from '@mwar/shared';
+import { oauthLineInit, setAuthToken, telegramBotInit } from './api';
+import { getDeviceFp } from './referral';
 
 const PENDING_KEY = 'mwar_oauth_pending';
 const REF_KEY = 'mwar_ref_code';
@@ -64,8 +68,11 @@ export function recalledRef(): string {
   }
 }
 
-/** Telegram Login (oauth.telegram.org) returns to /auth/callback/telegram#tgAuthResult=… */
-export function startTelegram(cfg: AuthProvidersResponse, opts: { ref?: string | null; link?: boolean } = {}) {
+/**
+ * Legacy Telegram Login web widget (oauth.telegram.org, asks for a phone number): small fallback for
+ * desktops without the Telegram app. Returns to /auth/callback/telegram#tgAuthResult=…
+ */
+export function startTelegramWidget(cfg: AuthProvidersResponse, opts: { ref?: string | null; link?: boolean } = {}) {
   if (!cfg.telegramEnabled || !cfg.telegramBotId) return false;
   savePending({ provider: 'telegram', state: randomState(), ref: opts.ref || null, link: !!opts.link, at: Date.now() });
   const u = new URL('https://oauth.telegram.org/auth');
@@ -77,19 +84,70 @@ export function startTelegram(cfg: AuthProvidersResponse, opts: { ref?: string |
   return true;
 }
 
-/** LINE Login (OAuth 2.0 authorization code) returns to /auth/callback/line?code=…&state=… */
-export function startLine(cfg: AuthProvidersResponse, opts: { ref?: string | null; link?: boolean } = {}) {
-  if (!cfg.lineEnabled || !cfg.lineChannelId) return false;
-  const state = randomState();
-  savePending({ provider: 'line', state, ref: opts.ref || null, link: !!opts.link, at: Date.now() });
-  const u = new URL('https://access.line.me/oauth2/v2.1/authorize');
-  u.searchParams.set('response_type', 'code');
-  u.searchParams.set('client_id', cfg.lineChannelId);
-  u.searchParams.set('redirect_uri', callbackUrl('line'));
-  u.searchParams.set('state', state);
-  u.searchParams.set('scope', 'profile openid');
-  window.location.assign(u.toString());
-  return true;
+/** Where to go after a link / switch finishes (localStorage: survives a new tab; never required). */
+const REDIRECT_KEY = 'mwar_oauth_redirect_after';
+export function rememberRedirectAfter(path: string | null) {
+  try {
+    if (path) localStorage.setItem(REDIRECT_KEY, JSON.stringify({ path, at: Date.now() }));
+    else localStorage.removeItem(REDIRECT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+export function takeRedirectAfter(): string | null {
+  try {
+    const raw = localStorage.getItem(REDIRECT_KEY);
+    localStorage.removeItem(REDIRECT_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as { path: string; at: number };
+    return Date.now() - v.at < PENDING_MAX_AGE_MS && typeof v.path === 'string' && v.path.startsWith('/') && !v.path.startsWith('//') ? v.path : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * LINE Login: the server creates the state (10 min, single use) and the exact authorize URL; the
+ * callback /auth/callback/line?code=…&state=… only needs those two values.
+ */
+export async function startLine(opts: { ref?: string | null; purpose?: OAuthPurpose } = {}) {
+  const purpose = opts.purpose || 'login';
+  const deviceFp = purpose === 'login' ? await getDeviceFp().catch(() => null) : null;
+  const r = await oauthLineInit({ purpose, referral_code: purpose === 'login' ? opts.ref || null : null, device_fp: deviceFp, redirect_uri: callbackUrl('line') });
+  rememberRedirectAfter(purpose === 'login' ? null : '/settings?linked=line');
+  window.location.assign(r.authorizeUrl);
+}
+
+/** Telegram bot deep link (no phone number): t.me/<bot>?start=auth_<state>. */
+export async function initTelegramBot(opts: { ref?: string | null; purpose?: OAuthPurpose } = {}) {
+  const purpose = opts.purpose || 'login';
+  const deviceFp = purpose === 'login' ? await getDeviceFp().catch(() => null) : null;
+  const r = await telegramBotInit({ purpose, referral_code: purpose === 'login' ? opts.ref || null : null, device_fp: deviceFp });
+  rememberRedirectAfter(purpose === 'login' ? null : '/settings?linked=telegram');
+  return r;
+}
+
+/**
+ * Open the Telegram deep link. Call `prepareTab()` synchronously inside the click (popup blockers),
+ * then `openDeepLink(tab, url)` once the URL is known. On phones t.me hands over to the Telegram app.
+ */
+export function prepareTab(): Window | null {
+  try {
+    return window.open('about:blank', '_blank');
+  } catch {
+    return null;
+  }
+}
+export function openDeepLink(tab: Window | null, url: string): boolean {
+  if (tab && !tab.closed) {
+    try {
+      tab.location.href = url;
+      return true;
+    } catch {
+      /* fall through */
+    }
+  }
+  return false;
 }
 
 /** Telegram's result: `#tgAuthResult=<base64 JSON>` (oauth.telegram.org) or plain query fields (widget data-auth-url). */
@@ -136,6 +194,10 @@ export function authErrorKey(err: any): string | null {
     case 'BAD_SIGNATURE':
     case 'LINE_CODE_REJECTED':
       return 'oauth.err.expired';
+    case 'OAUTH_STATE_INVALID':
+      return 'oauth.err.state';
+    case 'SIGN_IN_AGAIN':
+      return 'oauth.err.signInAgain';
     case 'REFERRAL_NOT_FOUND':
       return 'oauth.err.referral';
     case 'ALREADY_LINKED':

@@ -758,5 +758,15 @@
   "ads.admin.secretSet": "AD_POSTBACK_SECRET is set on the Worker",
   "ads.admin.secretMissing": "AD_POSTBACK_SECRET is not set on the Worker (postbacks are rejected)",
   "ads.admin.postbackPending": "Activates once Monetag Support enables S2S postback for our account. Until then the in-app timer (Path A) is used.",
-  "ads.admin.liveNote": "Live Mode is on: ads give EC only (not withdrawable). Withdrawable money only comes from game rooms."
+  "ads.admin.liveNote": "Live Mode is on: ads give EC only (not withdrawable). Withdrawable money only comes from game rooms.",
+  "tgbot.waitingTitle": "Waiting for Telegram to confirm…",
+  "tgbot.waitingHint": "Tap Start in the bot chat, then tap the button to come back to the site.",
+  "tgbot.waitingLink": "Tap Start in the bot chat, then come back here: Telegram is connected automatically.",
+  "tgbot.reopen": "Open Telegram again",
+  "tgbot.timeout": "Telegram has not confirmed yet.",
+  "tgbot.keepWaiting": "Keep waiting",
+  "tgbot.tryAgain": "Start again",
+  "tgbot.elsewhere": "Confirmed through the button in the Telegram chat.",
+  "tgbot.continue": "Continue",
+  "tgbot.widgetFallback": "Use web login instead (enter phone number)"
 }

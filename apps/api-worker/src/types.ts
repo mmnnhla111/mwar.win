@@ -36,6 +36,10 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   /** Public bot username (without @) for Telegram Login. Telegram login is on when this + the token are set. */
   TELEGRAM_BOT_USERNAME?: string;
+  /** Secret Telegram sends as X-Telegram-Bot-Api-Secret-Token on webhook calls (setWebhook secret_token). */
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  /** Local tests only (.dev.vars): mock LINE API origin, accepted only for http://127.0.0.1|localhost:<port>. */
+  LINE_API_BASE?: string;
   /** LINE Login channel id (public). LINE login is on when this + LINE_CHANNEL_SECRET are set. */
   LINE_CHANNEL_ID?: string;
   /** LINE Login channel secret (secret). */
