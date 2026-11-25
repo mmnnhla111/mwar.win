@@ -20,8 +20,8 @@ MAIL_FROM = "MWAR <no-reply@mwar.win>"
 # Telegram / LINE login (the only way to open an account). Uncomment and fill in, then also set the secrets:
 #   npx wrangler secret put TELEGRAM_BOT_TOKEN   (already used before)
 #   npx wrangler secret put LINE_CHANNEL_SECRET
-# TELEGRAM_BOT_USERNAME = "your_bot_username"
-# LINE_CHANNEL_ID = "1234567890"
+TELEGRAM_BOT_USERNAME = "mwar_win_bot"
+LINE_CHANNEL_ID = "2012786569"
 
 # 1. Core D1 Database (Users, Wallets, MLM Trees, Market, Withdrawals, Daily Quests)
 [[d1_databases]]
