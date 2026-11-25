@@ -13,7 +13,7 @@ import { MaterialLibrary } from '../../game/assets/materials';
 import { buildArena } from '../../game/assets/mapLayout';
 import { PLAY_HALF } from '../../game/assets/skyAndTerrain';
 import { buildLargeArena } from '../../game/maps/largeMap';
-import { LARGE_PLAY_HALF, LARGE_TERRAIN_BOUNDS, largeMapTerrainHeight, mapKindForMode } from '@mwar/shared';
+import { LARGE_PLAY_HALF, LARGE_TERRAIN_BOUNDS, largeMapTerrainHeight, mapKindForMode, MAX_ENERGY_TICKETS, INITIAL_ENERGY_TICKETS } from '@mwar/shared';
 import { animateBountyChest, createBountyChest } from '../../game/assets/props';
 import { Viewmodel } from '../../game/viewmodel';
 import { CombatEffects } from '../../game/effects';
@@ -126,6 +126,22 @@ function readSpectateRoom(): 'standard_100' | 'mini_30' | 'fast_mini' {
   return m === 'standard_100' || m === 'fast_mini' ? m : 'mini_30';
 }
 
+/** Admin room registry code from the lobby link (/game?room=TH-02&map=small): the server applies that room's settings. */
+function readRoomCode(): string | null {
+  if (typeof window === 'undefined') return null;
+  const q = new URLSearchParams(window.location.search);
+  const code = (q.get('room') || '').toUpperCase();
+  if (q.get('mode') === 'practice' || code === 'SOLO' || !/^[A-Z0-9][A-Z0-9_-]{1,15}$/.test(code)) return null;
+  return code;
+}
+
+/** Map chosen for the room by the admin (lobby link ?map=small|large); falls back to the mode default. */
+function readMapOverride(): 'small' | 'large' | null {
+  if (typeof window === 'undefined') return null;
+  const m = new URLSearchParams(window.location.search).get('map');
+  return m === 'small' || m === 'large' ? m : null;
+}
+
 const MODE_LABEL: Record<ArenaMode, string> = {
   mini_30: '30-PLAYER SKIRMISH',
   standard_100: '100-PLAYER WARZONE',
@@ -226,8 +242,8 @@ export default function GamePage() {
     botsAlive: 0,
     roundKills: 0,
     ecProgress: 0,
-    energyTickets: 6,
-    maxEnergyTickets: 6,
+    energyTickets: INITIAL_ENERGY_TICKETS,
+    maxEnergyTickets: MAX_ENERGY_TICKETS,
     roundsCompleted: 0,
     alive: true,
     respawnIn: 0,
@@ -650,8 +666,8 @@ export default function GamePage() {
     const camera = new THREE.PerspectiveCamera(HIP_FOV, width / height, 0.05, 2200);
     scene.add(camera);
 
-    // Map per mode: Warzone / 30P Skirmish / Spectator → 960 m large map; Fast & Mini / Solo Bot → 240 m small map
-    const largeMap = mapKindForMode(arenaMode === 'spectator' ? readSpectateRoom() : arenaMode) === 'large';
+    // Map: the room's configured map (lobby link), else per mode: 100P Warzone → 960 m; Skirmish / Fast & Mini / Solo → 240 m
+    const largeMap = (readMapOverride() ?? mapKindForMode(arenaMode === 'spectator' ? readSpectateRoom() : arenaMode)) === 'large';
     const playHalf = largeMap ? LARGE_PLAY_HALF : PLAY_HALF;
     const world = new CollisionWorld(
       largeMap
@@ -1220,18 +1236,19 @@ export default function GamePage() {
         // Room per mode: standard_100 / mini_30 (large map), fast_mini (small map); spectators watch mini_30
         const roomName =
           arenaMode === 'spectator' ? readSpectateRoom() : arenaMode === 'standard_100' ? 'standard_100' : arenaMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
-        // Paid arena: spend 1 EC for a signed entry ticket. Without one you still play, unpaid.
+        const roomCode = readRoomCode();
+        // Paid arena: spend the room's EC cost for a signed entry ticket. Without one you still play, unpaid.
         let entryToken: string | undefined;
         // Spectators never spend EC and never enter a paid seat
         if (meData?.user && !isGhostSpectator) {
           try {
-            const enter = await apiFetch<{ entryToken: string; energyTickets: number }>('/api/game/enter', {
+            const enter = await apiFetch<{ entryToken: string | null; energyTickets: number; free?: boolean }>('/api/game/enter', {
               method: 'POST',
-              body: JSON.stringify({ mode: roomName }),
+              body: JSON.stringify({ mode: roomName, roomCode: roomCode || undefined }),
             });
-            entryToken = enter.entryToken;
+            entryToken = enter.entryToken || undefined;
             setHudStats((prev) => ({ ...prev, energyTickets: enter.energyTickets }));
-            feed(`⚡ 1 EC used to enter the paid arena (${enter.energyTickets} left)`);
+            feed(enter.free ? '🎮 Free room: no EC used, no cash rewards' : `⚡ EC used to enter the paid arena (${enter.energyTickets} left)`);
           } catch {
             feed('⚡ No Energy Tickets — playing unpaid. Practice mode recharges EC.');
           }
@@ -1243,7 +1260,9 @@ export default function GamePage() {
         } catch {
           // storage blocked
         }
-        const joinPromise = colyseusClient.joinOrCreate(roomName, {
+        // Admin-configured rooms join the 'arena' room type by code; the server applies mode, map and caps
+        const joinPromise = colyseusClient.joinOrCreate(roomCode ? 'arena' : roomName, {
+          ...(roomCode ? { roomCode } : {}),
           entryToken,
           deviceId,
           userId: meData?.user?.id || `guest_${Math.random().toString(36).substring(2, 6)}`,
@@ -1257,8 +1276,8 @@ export default function GamePage() {
           const u = meData.user;
           setHudStats((prev) => ({
             ...prev,
-            energyTickets: entryToken ? prev.energyTickets : u.energy_tickets ?? 6,
-            maxEnergyTickets: u.max_energy_tickets ?? 6,
+            energyTickets: entryToken ? prev.energyTickets : u.energy_tickets ?? INITIAL_ENERGY_TICKETS,
+            maxEnergyTickets: Math.min(u.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS),
             ecProgress: u.energy_progress_pct ?? 0,
           }));
         }

@@ -26,9 +26,12 @@ import {
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
 import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState } from '../schema/GameState';
+import { getRegistryRoom } from '../roomRegistry';
 
 interface RoomOptions {
   mode?: 'mini_30' | 'standard_100' | 'fast_mini';
+  /** Room from the admin registry (TH-01, TH-02, …): mode, map and caps come from the registry. */
+  roomCode?: string;
   gameId?: string;
   workerApiUrl?: string;
   internalSecret?: string;
@@ -149,7 +152,7 @@ const MEDKIT_CAST_MS = 4000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
-export function verifyEntryToken(token: unknown, secret: string): { uid: string; un: string; eid: string; bty: number } | null {
+export function verifyEntryToken(token: unknown, secret: string): { uid: string; un: string; eid: string; bty: number; rc: string } | null {
   if (typeof token !== 'string' || !token.includes('.')) return null;
   const [body, sig] = token.split('.');
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
@@ -159,7 +162,13 @@ export function verifyEntryToken(token: unknown, secret: string): { uid: string;
     if (typeof json.exp !== 'number' || json.exp < Date.now() / 1000) return null;
     if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid)) return null;
     const bty = Number(json.bty);
-    return { uid: json.uid, un: String(json.un ?? ''), eid: String(json.eid ?? ''), bty: Number.isFinite(bty) && bty > 0 ? Math.floor(bty) : 0 };
+    return {
+      uid: json.uid,
+      un: String(json.un ?? ''),
+      eid: String(json.eid ?? ''),
+      bty: Number.isFinite(bty) && bty > 0 ? Math.floor(bty) : 0,
+      rc: typeof json.rc === 'string' ? json.rc : '',
+    };
   } catch {
     return null;
   }
@@ -182,6 +191,11 @@ export class ShootingRoom extends Room<GameState> {
   private medkitCasts = new Map<string, { startedAt: number; x: number; z: number }>();
 
   maxClients = 30;
+  /** Registry room code ('' for the legacy per-mode rooms). */
+  private roomCode = '';
+  /** Seat caps from the registry (0 = legacy: maxClients only). */
+  private maxPlayers = 0;
+  private maxSpectators = 0;
   private gameId: string = '';
   private workerApiUrl: string = 'http://127.0.0.1:8787';
   private internalSecret: string = 'local-dev-internal-game-secret-2026';
@@ -191,15 +205,27 @@ export class ShootingRoom extends Room<GameState> {
   onCreate(options: RoomOptions) {
     this.setState(new GameState());
 
-    const modeKey = options.mode === 'standard_100' ? 'STANDARD_100' : 'MINI_30';
+    // Registry rooms: mode, map and seat caps are whatever the admin configured for that room code
+    const reg = options.roomCode ? getRegistryRoom(options.roomCode) : null;
+    if (options.roomCode && !reg) throw new Error('This room is closed');
+    const engineMode = reg ? reg.engineMode : options.mode ?? 'mini_30';
+    const modeKey = engineMode === 'standard_100' ? 'STANDARD_100' : 'MINI_30';
     const spec = MAP_SPECS[modeKey] || MAP_SPECS.MINI_30;
-    // Map per mode: 100P Warzone + 30P Skirmish → 960 m large map; Fast & Mini → 240 m small map
-    const kind = mapKindForMode(options.mode ?? 'mini_30');
+    // Default map per mode: 100P Warzone → 960 m large map; 30P Skirmish + Fast & Mini → 240 m small map
+    const kind = reg ? reg.mapSize : mapKindForMode(engineMode);
     this.largeMap = kind === 'large';
     this.spawnPoints = this.largeMap ? LARGE_MAP_SPAWN_POINTS : ARENA_SPAWN_POINTS;
 
-    this.maxClients = spec.maxPlayers;
-    this.state.mapMode = options.mode === 'fast_mini' ? 'fast_mini' : spec.id;
+    if (reg) {
+      this.roomCode = reg.roomCode;
+      this.maxPlayers = reg.maxPlayers;
+      this.maxSpectators = reg.maxSpectators;
+      this.maxClients = reg.maxPlayers + reg.maxSpectators;
+    } else {
+      this.maxClients = spec.maxPlayers;
+    }
+    this.setMetadata({ roomCode: this.roomCode, mode: engineMode, mapSize: kind });
+    this.state.mapMode = engineMode === 'fast_mini' ? 'fast_mini' : spec.id;
     this.state.mapSizeX = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
     this.state.mapSizeZ = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
     this.gameId = `game_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -966,11 +992,21 @@ export class ShootingRoom extends Room<GameState> {
    * Paid seats: a valid EC entry token (signed by the API worker after spending 1 EC) makes the seat
    * earn Micro-USD. Everyone else may still play, but as an unpaid guest.
    */
-  onAuth(client: Client, options: { entryToken?: string; deviceId?: string }, request?: IncomingMessage) {
+  onAuth(client: Client, options: { entryToken?: string; deviceId?: string; spectator?: boolean }, request?: IncomingMessage) {
     const fwd = request?.headers?.['cf-connecting-ip'] || request?.headers?.['x-forwarded-for'];
     const ip = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim() || request?.socket?.remoteAddress || 'unknown';
+    // Registry rooms keep separate player and spectator seat caps
+    if (this.roomCode) {
+      let players = 0;
+      let spectators = 0;
+      this.state.players.forEach((p) => (p.isSpectator ? spectators++ : players++));
+      if (options?.spectator ? spectators >= this.maxSpectators : players >= this.maxPlayers) {
+        throw new Error(options?.spectator ? 'Spectator seats are full' : 'This room is full');
+      }
+    }
     const entry = verifyEntryToken(options?.entryToken, this.internalSecret);
-    const paid = !!entry && !this.usedEntryIds.has(entry.eid);
+    // A paid ticket only counts in the room it was bought for (entry cost is set per room)
+    const paid = !!entry && !this.usedEntryIds.has(entry.eid) && entry.rc === this.roomCode;
     if (paid && entry) this.usedEntryIds.add(entry.eid);
     this.meta.set(client.sessionId, {
       paid,

@@ -5,6 +5,15 @@ import { AppShell } from '../components/shell/AppShell';
 export const metadata: Metadata = {
   title: 'mwar.win — play, post & earn with friends',
   description: 'A cute social & gaming hub: share moments, follow friends and jump into MWAR Tactical FPS rooms.',
+  icons: {
+    icon: [
+      { url: '/favicon.ico', sizes: 'any' },
+      { url: '/brand/icon-192.png', type: 'image/png', sizes: '192x192' },
+    ],
+    apple: { url: '/brand/apple-touch-icon.png', sizes: '180x180' },
+  },
+  manifest: '/manifest.webmanifest',
+  openGraph: { images: ['/brand/icon-512.png'] },
 };
 
 export const viewport: Viewport = {

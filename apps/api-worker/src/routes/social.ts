@@ -14,6 +14,7 @@ import {
   SocialSettingsSchema,
   ContentReportSchema,
   ReportActionSchema,
+  earningsDisplay,
 } from '@mwar/shared';
 import type {
   SocialAuthor,
@@ -413,7 +414,7 @@ async function loadProfile(c: AppCtx, username: string): Promise<SocialProfile |
       .prepare(
         `SELECT u.id, u.username, u.display_name, u.bio, ${AVATAR_SQL('u')} AS avatar_url, u.cover_color,
                 u.total_kills, u.total_matches, u.followers_count, u.following_count, u.posts_count, u.created_at,
-                COALESCE(w.bounty_micro_usd, 0) AS bounty
+                u.earnings_visibility, COALESCE(w.total_earned_micro_usd, 0) AS earned
          FROM users u LEFT JOIN wallets w ON w.user_id = u.id
          WHERE u.username = ?1 AND u.status != 'banned'`
       )
@@ -429,7 +430,8 @@ async function loadProfile(c: AppCtx, username: string): Promise<SocialProfile |
       coverColor: ((PROFILE_COVER_IDS as string[]).includes(r.cover_color) ? r.cover_color : 'lemon') as ProfileCoverColor,
       totalKills: r.total_kills || 0,
       totalMatches: r.total_matches || 0,
-      headBountyMicroUsd: Number(r.bounty || 0),
+      // Privacy applied here, before caching: masked / hidden amounts never reach any viewer
+      totalEarnings: earningsDisplay(Number(r.earned || 0), r.earnings_visibility),
       followersCount: r.followers_count || 0,
       followingCount: r.following_count || 0,
       postsCount: r.posts_count || 0,
@@ -757,15 +759,19 @@ socialRouter.patch('/settings', async (c) => {
   const me = c.get('user');
   const parsed = SocialSettingsSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid settings' }, 400);
-  const { showNsfw, confirmAdult, preferredLang } = parsed.data;
+  const { showNsfw, confirmAdult, preferredLang, earningsVisibility } = parsed.data;
   if (showNsfw && confirmAdult !== true) {
     return c.json({ error: 'Please confirm you are 18 or older to show 18+ content' }, 400);
   }
   // One UPDATE; a field left out keeps its value
-  await c.env.DB.prepare('UPDATE users SET show_nsfw = COALESCE(?1, show_nsfw), preferred_lang = COALESCE(?2, preferred_lang) WHERE id = ?3')
-    .bind(showNsfw === undefined ? null : showNsfw ? 1 : 0, preferredLang ?? null, me.userId)
+  await c.env.DB.prepare(
+    'UPDATE users SET show_nsfw = COALESCE(?1, show_nsfw), preferred_lang = COALESCE(?2, preferred_lang), earnings_visibility = COALESCE(?3, earnings_visibility) WHERE id = ?4'
+  )
+    .bind(showNsfw === undefined ? null : showNsfw ? 1 : 0, preferredLang ?? null, earningsVisibility ?? null, me.userId)
     .run();
-  return c.json({ success: true, showNsfw, preferredLang });
+  // The public profile is edge-cached with the privacy mode applied: drop it so the change shows at once
+  if (earningsVisibility) await purgeProfile(c, me.username);
+  return c.json({ success: true, showNsfw, preferredLang, earningsVisibility });
 });
 
 // ----------------------------------------------------------------------------

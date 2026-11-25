@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { ShootingRoom } from './rooms/ShootingRoom';
+import { startRegistryRefresh, registryRooms } from './roomRegistry';
 
 // Attempt to load .env from multiple candidate locations
 const envCandidates = [
@@ -36,7 +37,8 @@ app.get('/health', (_req, res) => {
     status: 'ok',
     service: 'MWAR Authoritative Game Server (Colyseus v0.15+)',
     tickRateHz: 20,
-    roomsAvailable: ['mini_30', 'standard_100', 'fast_mini'],
+    roomsAvailable: ['arena', 'mini_30', 'standard_100', 'fast_mini'],
+    registryRooms: registryRooms().map((r) => r.roomCode),
     timestamp: new Date().toISOString(),
   });
 });
@@ -47,12 +49,17 @@ app.get('/health', (_req, res) => {
  */
 const ROSTER_CAP = 120;
 app.get('/rooms', async (_req, res) => {
-  const modes: Record<string, { players: number; spectators: number; roster: Array<{ username: string; userId: string; kills: number; deaths: number; status: string }> }> = {};
+  type Bucket = { players: number; spectators: number; roster: Array<{ username: string; userId: string; kills: number; deaths: number; status: string }> };
+  const modes: Record<string, Bucket> = {};
   for (const mode of ['standard_100', 'mini_30', 'fast_mini']) modes[mode] = { players: 0, spectators: 0, roster: [] };
+  // Per registry room code (what the web lobby shows); legacy per-mode rooms are still reported in `modes`
+  const rooms: Record<string, Bucket> = {};
+  for (const r of registryRooms()) rooms[r.roomCode] = { players: 0, spectators: 0, roster: [] };
   try {
     const listings = await matchMaker.query({});
     for (const listing of listings) {
-      const bucket = modes[listing.name];
+      const code = (listing.metadata as any)?.roomCode;
+      const bucket = listing.name === 'arena' ? (code ? rooms[code] : undefined) : modes[listing.name];
       if (!bucket) continue;
       const room = matchMaker.getRoomById(listing.roomId) as any;
       const players: any[] = room?.state?.players ? Array.from(room.state.players.values()) : [];
@@ -78,7 +85,7 @@ app.get('/rooms', async (_req, res) => {
     console.warn('[Game Server] /rooms snapshot failed', err);
   }
   res.set('Cache-Control', 'public, max-age=10');
-  res.json({ modes, timestamp: Date.now() });
+  res.json({ rooms, modes, timestamp: Date.now() });
 });
 
 const httpServer = createServer(app);
@@ -98,13 +105,18 @@ gameServer
   .define('standard_100', ShootingRoom, { mode: 'standard_100' })
   .enableRealtimeListing();
 
-// Fast & Mini Mode keeps the compact 240 m map (30P Skirmish + 100P Warzone use the 960 m map)
+// Fast & Mini Mode: compact 240 m map (30P Skirmish also uses the 240 m map; 100P Warzone the 960 m map)
 gameServer
   .define('fast_mini', ShootingRoom, { mode: 'fast_mini' })
   .enableRealtimeListing();
 
+// Admin room registry (GET /api/games/rooms-config): one 'arena' room per configured room code.
+// The client sends only { roomCode }; mode, map and seat caps come from the registry.
+gameServer.define('arena', ShootingRoom).filterBy(['roomCode']).enableRealtimeListing();
+startRegistryRefresh();
+
 httpServer.listen(port, host, () => {
   console.log(`[Game Server] Colyseus authoritative shooter server listening on ws://${host}:${port}`);
   console.log(`[Game Server] Healthcheck: http://${host}:${port}/health`);
-  console.log(`[Game Server] Defined Rooms: 'mini_30' (30P, 960m map), 'standard_100' (100P, 960m map), 'fast_mini' (240m map)`);
+  console.log(`[Game Server] Defined Rooms: 'arena' (admin registry by roomCode), legacy 'mini_30' (240m), 'standard_100' (960m), 'fast_mini' (240m)`);
 });

@@ -4,11 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
 import { formatMicroUsd } from '@mwar/shared';
 import { TakedownQueue } from '../../components/admin/TakedownQueue';
+import { MembersAdmin } from '../../components/admin/MembersAdmin';
+import { GamesAdmin } from '../../components/admin/GamesAdmin';
 import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function AdminAuditPage() {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'fleet' | 'takedown'>('fleet');
+  const [tab, setTab] = useState<'fleet' | 'members' | 'games' | 'takedown'>('fleet');
   const [pendingList, setPendingList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
@@ -150,6 +152,8 @@ export default function AdminAuditPage() {
       <div className="flex gap-2 overflow-x-auto" role="tablist">
         {([
           ['fleet', '🖥️', 'admin.tab.fleet'],
+          ['members', '👥', 'admin.tab.members'],
+          ['games', '🎮', 'admin.tab.games'],
           ['takedown', '🚩', 'takedown.title'],
         ] as const).map(([id, icon, label]) => (
           <button
@@ -168,6 +172,8 @@ export default function AdminAuditPage() {
       </div>
 
       {tab === 'takedown' && <TakedownQueue />}
+      {tab === 'members' && <MembersAdmin />}
+      {tab === 'games' && <GamesAdmin />}
 
       {tab === 'fleet' && (
       <>

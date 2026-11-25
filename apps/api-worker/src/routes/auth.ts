@@ -8,6 +8,7 @@ import {
   DEV_MOCK_OTP,
   formatMicroUsd,
   MAX_ENERGY_TICKETS,
+  INITIAL_ENERGY_TICKETS,
   ENERGY_RECHARGE_SECONDS,
   MAX_AVATAR_UPLOAD_BYTES,
   ForgotPasswordSchema,
@@ -110,7 +111,7 @@ authRouter.post('/login', async (c) => {
     .bind(usernameOrEmail)
     .first<{ id: string; username: string; email: string; password_hash: string; role: string; status: string }>();
 
-  if (!user || user.status === 'banned') {
+  if (!user || user.status === 'banned' || user.status === 'suspended') {
     await recordFailure();
     return c.json({ error: 'Invalid credentials or account suspended' }, 401);
   }
@@ -158,8 +159,8 @@ authRouter.get('/me', authMiddleware, async (c) => {
 
   // Energy Tickets Auto-Recharge (1 ticket per 3600s up to max_energy_tickets)
   const now = Math.floor(Date.now() / 1000);
-  let energyTickets = user.energy_tickets ?? 6;
-  const maxTickets = user.max_energy_tickets ?? 6;
+  let energyTickets = user.energy_tickets ?? INITIAL_ENERGY_TICKETS;
+  const maxTickets = Math.min(user.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS);
   let lastRecharge = user.last_energy_recharge || now;
 
   if (energyTickets < maxTickets) {
@@ -396,8 +397,8 @@ authRouter.post('/whatsapp/verify-otp', async (c) => {
 
     await c.env.DB.batch([
       c.env.DB.prepare(
-        'INSERT INTO users (id, username, email, password_hash, phone_number, referrer_id, role, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
-      ).bind(userId, username, email, passwordHash, phoneNumber, referrer_id || null, 'player', 'active', now),
+        'INSERT INTO users (id, username, email, password_hash, phone_number, referrer_id, role, status, created_at, energy_tickets, max_energy_tickets, last_energy_recharge) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?9)'
+      ).bind(userId, username, email, passwordHash, phoneNumber, referrer_id || null, 'player', 'active', now, INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS),
       c.env.DB.prepare(
         'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
       ).bind(userId, now),
@@ -460,8 +461,8 @@ authRouter.post('/telegram', async (c) => {
 
     await c.env.DB.batch([
       c.env.DB.prepare(
-        'INSERT INTO users (id, username, email, password_hash, telegram_id, phone_number, referrer_id, role, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)'
-      ).bind(userId, safeUsername, email, passwordHash, telegramIdStr, phone_number || null, referrer_id || null, 'player', 'active', now),
+        'INSERT INTO users (id, username, email, password_hash, telegram_id, phone_number, referrer_id, role, status, created_at, energy_tickets, max_energy_tickets, last_energy_recharge) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?10)'
+      ).bind(userId, safeUsername, email, passwordHash, telegramIdStr, phone_number || null, referrer_id || null, 'player', 'active', now, INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS),
       c.env.DB.prepare(
         'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
       ).bind(userId, now),

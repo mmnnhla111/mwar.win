@@ -5,6 +5,7 @@ import {
   formatMicroUsd,
   EC_COST_PER_PAID_MATCH,
   MAX_ENERGY_TICKETS,
+  ROOM_MODE_ENGINE,
 } from '@mwar/shared';
 import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
@@ -12,6 +13,7 @@ import { authMiddleware } from '../middleware/auth';
 import { applyRewardSplit, claimHeadBounty } from '../utils/reward-split';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { trackQuestAction, getUtcDateKey } from './quests';
+import { loadRooms } from './games';
 
 export const gameRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -35,17 +37,32 @@ async function signEntryToken(secret: string, payload: Record<string, unknown>) 
 gameRouter.post('/enter', authMiddleware, async (c) => {
   const user = c.get('user');
   const body = await c.req.json().catch(() => ({}));
-  const mode = body?.mode === 'standard_100' ? 'standard_100' : body?.mode === 'fast_mini' ? 'fast_mini' : 'mini_30';
+  let mode: string = body?.mode === 'standard_100' ? 'standard_100' : body?.mode === 'fast_mini' ? 'fast_mini' : 'mini_30';
+  let cost = EC_COST_PER_PAID_MATCH;
+  // Admin room registry: the room code decides mode and entry cost (never the client)
+  const roomCode = typeof body?.roomCode === 'string' ? body.roomCode.trim().toUpperCase().slice(0, 16) : '';
+  if (roomCode) {
+    const cfg = (await loadRooms(c, 'fps')).find((r) => r.roomCode === roomCode);
+    if (!cfg || !cfg.isActive) return c.json({ error: 'This room is closed', code: 'ROOM_CLOSED' }, 404);
+    if (cfg.mode === 'solo_bot') return c.json({ error: 'Practice rooms need no entry ticket' }, 400);
+    mode = ROOM_MODE_ENGINE[cfg.mode];
+    cost = cfg.entryCostEc;
+  }
   const now = Math.floor(Date.now() / 1000);
+  // Free room: no EC spent and no entry token, so the match plays without cash payouts
+  if (cost <= 0) {
+    const left0 = await c.env.DB.prepare('SELECT energy_tickets FROM users WHERE id = ?1').bind(user.userId).first<{ energy_tickets: number }>();
+    return c.json({ success: true, free: true, entryToken: null, energyTickets: left0?.energy_tickets ?? 0 });
+  }
   const res = await c.env.DB
     .prepare(
       `UPDATE users
          SET last_energy_recharge = CASE WHEN energy_tickets >= MIN(max_energy_tickets, ?3) THEN ?2 ELSE last_energy_recharge END,
              energy_tickets = energy_tickets - ?4,
              total_matches = total_matches + 1
-       WHERE id = ?1 AND energy_tickets >= ?4`
+       WHERE id = ?1 AND energy_tickets >= ?4 AND status = 'active'`
     )
-    .bind(user.userId, now, MAX_ENERGY_TICKETS, EC_COST_PER_PAID_MATCH)
+    .bind(user.userId, now, MAX_ENERGY_TICKETS, cost)
     .run();
   if ((res.meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'No Energy Tickets left. Play Practice mode or wait for the hourly recharge.', code: 'NO_EC' }, 402);
@@ -70,6 +87,7 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     bty: bountyRow?.bounty_micro_usd ?? 0, // current head bounty (shown in-match, claimed by the killer)
     eid: entryId,
     mode,
+    rc: roomCode || undefined, // the game server only accepts the token in this room
     exp: now + 120,
   });
   return c.json({ success: true, entryToken, energyTickets: left?.energy_tickets ?? 0 });

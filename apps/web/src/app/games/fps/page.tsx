@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FPS_ROOMS, fpsLaunchUrl } from '@mwar/shared';
+import { FPS_ROOMS, fpsLaunchUrl, MAX_ENERGY_TICKETS } from '@mwar/shared';
 import type { FpsRoomFilter, FpsRoomLive, FpsRosterEntry } from '@mwar/shared';
 import { Card, Modal, Spinner, btn } from '../../../components/ui/Card';
 import { Icon } from '../../../components/ui/Icon';
@@ -65,7 +65,7 @@ function Capacity({ room, wide = false }: { room: FpsRoomLive; wide?: boolean })
  */
 export default function FpsLobbyPage() {
   const { boot, patch } = useSession();
-  const { t, tx } = useTranslation();
+  const { t, ts } = useTranslation();
   const [rooms, setRooms] = useState<FpsRoomLive[]>(offlineRooms);
   const [serverOnline, setServerOnline] = useState<boolean | null>(null);
   const [filter, setFilter] = useState<FpsRoomFilter>('all');
@@ -94,7 +94,7 @@ export default function FpsLobbyPage() {
   const visible = rooms.filter((r) => matches(r, filter));
   const room = rooms.find((r) => r.id === selected) || null;
   const ec = boot?.user.energyTickets ?? 0;
-  const ecMax = boot?.user.maxEnergyTickets ?? 6;
+  const ecMax = boot?.user.maxEnergyTickets ?? MAX_ENERGY_TICKETS;
 
   return (
     <div className="space-y-3">
@@ -160,13 +160,13 @@ export default function FpsLobbyPage() {
                 <td className="px-4 py-3.5">
                   <div className="flex items-center gap-2.5">
                     <span className="rounded-lg bg-stone-900 text-[#FFE135] text-[11px] font-extrabold px-2 py-1 tabular-nums">{r.id}</span>
-                    <span className="font-bold text-sm text-stone-900">{tx(`fps.room.${r.id}.name`, r.name)}</span>
+                    <span className="font-bold text-sm text-stone-900">{ts(`fps.room.${r.id}.name`, r.name)}</span>
                   </div>
                 </td>
                 <td className="px-3 py-3.5">
-                  <div className="text-sm font-semibold text-stone-800">{tx(`fps.room.${r.id}.mode`, r.modeLabel)}</div>
+                  <div className="text-sm font-semibold text-stone-800">{ts(`fps.room.${r.id}.mode`, r.modeLabel)}</div>
                   <div className="text-xs text-stone-500 flex items-center gap-1">
-                    <Icon name="map" size={12} /> {r.map}
+                    <Icon name="map" size={12} /> {t(r.mapSize === 'large' ? 'fps.map.large' : 'fps.map.small')}
                   </div>
                 </td>
                 <td className="px-3 py-3.5">
@@ -202,13 +202,13 @@ export default function FpsLobbyPage() {
             <Card className="p-3.5 active:scale-[0.99] transition">
               <div className="flex items-center gap-2">
                 <span className="rounded-lg bg-stone-900 text-[#FFE135] text-[11px] font-extrabold px-2 py-1">{r.id}</span>
-                <span className="font-bold text-sm text-stone-900 truncate flex-1">{tx(`fps.room.${r.id}.name`, r.name)}</span>
+                <span className="font-bold text-sm text-stone-900 truncate flex-1">{ts(`fps.room.${r.id}.name`, r.name)}</span>
                 <StatusBadge room={r} />
               </div>
               <div className="mt-2.5 grid grid-cols-[1fr_auto] gap-3 items-end">
                 <div className="min-w-0">
                   <div className="text-xs text-stone-500 truncate">
-                    {tx(`fps.room.${r.id}.mode`, r.modeLabel)} · {r.map}
+                    {ts(`fps.room.${r.id}.mode`, r.modeLabel)} · {t(r.mapSize === 'large' ? 'fps.map.large' : 'fps.map.small')}
                   </div>
                   <div className="mt-1.5">
                     <Capacity room={r} wide />
@@ -250,7 +250,7 @@ export default function FpsLobbyPage() {
 
 function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: () => void; ec: number }) {
   const router = useRouter();
-  const { t, tx } = useTranslation();
+  const { t, ts } = useTranslation();
   const [roster, setRoster] = useState<FpsRosterEntry[]>([]);
   const [next, setNext] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
@@ -294,16 +294,16 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
       title={
         <span className="flex items-center gap-2">
           <span className="rounded-lg bg-stone-900 text-[#FFE135] text-[11px] font-extrabold px-2 py-1">{room.id}</span>
-          <span className="truncate">{tx(`fps.room.${room.id}.name`, room.name)}</span>
+          <span className="truncate">{ts(`fps.room.${room.id}.name`, room.name)}</span>
         </span>
       }
     >
       <div className="p-5 space-y-4" data-room-detail={room.id}>
         <div className="flex flex-wrap gap-1.5">
           <span className="rounded-full bg-[#E0F2FE] text-sky-800 text-xs font-bold px-2.5 py-1 inline-flex items-center gap-1">
-            <Icon name="map" size={13} /> {room.map}
+            <Icon name="map" size={13} /> {t(room.mapSize === 'large' ? 'fps.map.large' : 'fps.map.small')}
           </span>
-          <span className="rounded-full bg-[#EDE9FE] text-violet-700 text-xs font-bold px-2.5 py-1">{tx(`fps.room.${room.id}.mode`, room.modeLabel)}</span>
+          <span className="rounded-full bg-[#EDE9FE] text-violet-700 text-xs font-bold px-2.5 py-1">{ts(`fps.room.${room.id}.mode`, room.modeLabel)}</span>
           <span className="rounded-full bg-[#FFF6C2] text-stone-900 text-xs font-bold px-2.5 py-1 inline-flex items-center gap-1">
             <Icon name="bolt" size={13} filled /> {room.costEc ? t('fps.entryEc', { n: room.costEc }) : t('fps.free')}
           </span>
@@ -326,7 +326,7 @@ function RoomDetail({ room, onClose, ec }: { room: FpsRoomLive | null; onClose: 
           <ul className="space-y-1">
             {room.rules.map((r, i) => (
               <li key={r} className="text-sm text-stone-700 flex gap-2">
-                <Icon name="check" size={16} className="text-emerald-500 mt-0.5 shrink-0" /> {tx(`fps.room.${room.id}.rule${i + 1}`, r)}
+                <Icon name="check" size={16} className="text-emerald-500 mt-0.5 shrink-0" /> {ts(`fps.room.${room.id}.rule${i + 1}`, r)}
               </li>
             ))}
           </ul>

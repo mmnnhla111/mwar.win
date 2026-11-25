@@ -104,7 +104,10 @@ export const DEV_MOCK_PHONE = '+66812345678';
 
 // Daily Proof-of-Activity & Energy Specs
 export const DAILY_QUESTS_REQUIRED_TO_UNLOCK = 4;
-export const MAX_ENERGY_TICKETS = 6;
+/** Energy Ticket cap (EC); 100 % ad progress = +1 EC, up to this many. */
+export const MAX_ENERGY_TICKETS = 30;
+/** EC granted to a brand-new account. */
+export const INITIAL_ENERGY_TICKETS = 1;
 export const ENERGY_RECHARGE_SECONDS = 3600; // 1 hour per ticket
 export const MAX_AVATAR_UPLOAD_BYTES = 512 * 1024; // 512 KB
 

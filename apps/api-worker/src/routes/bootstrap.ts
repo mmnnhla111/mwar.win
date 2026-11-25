@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { ENERGY_RECHARGE_SECONDS, PROFILE_COVER_IDS, UI_LANG_CODES, formatMicroUsd } from '@mwar/shared';
+import { ENERGY_RECHARGE_SECONDS, INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd } from '@mwar/shared';
 import type { BootstrapResponse, ProfileCoverColor } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { getUtcDateKey } from './quests';
@@ -18,7 +18,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       c.env.DB.prepare(
         `SELECT id, username, display_name, CASE WHEN avatar_url LIKE 'data:%' THEN NULL ELSE avatar_url END AS avatar_url,
                 cover_color, role, status, rank_badge, energy_tickets, max_energy_tickets, last_energy_recharge,
-                energy_progress_pct, created_at, show_nsfw, preferred_lang
+                energy_progress_pct, created_at, show_nsfw, preferred_lang, earnings_visibility
          FROM users WHERE id = ?1`
       ).bind(me.userId),
       c.env.DB.prepare('SELECT balance_micro_usd, bounty_micro_usd, total_earned_micro_usd FROM wallets WHERE user_id = ?1').bind(me.userId),
@@ -36,14 +36,15 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
 
   const u = core[0].results?.[0] as any;
   if (!u || u.status === 'banned') return c.json({ error: 'Unauthorized: account unavailable' }, 401);
+  if (u.status === 'suspended') return c.json({ error: 'This account is suspended. Please contact support.', code: 'SUSPENDED' }, 403);
   const w = (core[1].results?.[0] || {}) as any;
   const remaining = Math.max(0, Number((core[2].results?.[0] as any)?.remaining ?? 0));
   const unreadNotif = Number((core[3].results?.[0] as any)?.n ?? 0);
 
   // Energy Ticket hourly recharge (same rule as /api/auth/me); written only when a ticket was gained
   const now = Math.floor(Date.now() / 1000);
-  let tickets = u.energy_tickets ?? 6;
-  const maxTickets = u.max_energy_tickets ?? 6;
+  let tickets = u.energy_tickets ?? INITIAL_ENERGY_TICKETS;
+  const maxTickets = Math.min(u.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS);
   let last = u.last_energy_recharge || now;
   if (tickets < maxTickets) {
     const gained = Math.floor(Math.max(0, now - last) / ENERGY_RECHARGE_SECONDS);
@@ -70,12 +71,15 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       createdAt: u.created_at,
       showNsfw: u.show_nsfw === 1,
       preferredLang: (UI_LANG_CODES as readonly string[]).includes(u.preferred_lang) ? u.preferred_lang : 'en',
+      earningsVisibility: (EARNINGS_VISIBILITY as readonly string[]).includes(u.earnings_visibility) ? u.earnings_visibility : 'public',
     },
     walletSummary: {
       balanceMicroUsd: Number(w.balance_micro_usd || 0),
       formattedBalance: formatMicroUsd(w.balance_micro_usd || 0),
       bountyMicroUsd: Number(w.bounty_micro_usd || 0),
       totalEarnedMicroUsd: Number(w.total_earned_micro_usd || 0),
+      // The sidebar shows the same privacy-applied value the profile shows to everyone
+      totalEarnings: earningsDisplay(Number(w.total_earned_micro_usd || 0), u.earnings_visibility),
     },
     remainingDailyQuestsCount: remaining,
     unreadNotifCount: unreadNotif,

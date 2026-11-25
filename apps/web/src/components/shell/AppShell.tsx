@@ -9,7 +9,7 @@ import { TopNav } from './TopNav';
 import { LeftSidebar, RightSidebar } from './Sidebars';
 import { BottomNav } from './BottomNav';
 import { isAuthPath, isBarePath, isGamePath } from './nav';
-import { LemonLogo } from '../ui/Icon';
+import { BrandLogoFull, LemonLogo } from '../ui/Icon';
 import { Spinner } from '../ui/Card';
 import { FloatingQuestWidget } from '../FloatingQuestWidget';
 import { DevMockPanel } from '../DevMockPanel';
@@ -21,7 +21,7 @@ const WIDE_PATHS = ['/games/fps', '/admin', '/chat', '/marketplace', '/network',
 function Splash() {
   return (
     <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-4 bg-[#FAF9F5]">
-      <LemonLogo size={56} />
+      <BrandLogoFull height={120} alt="" />
       <Spinner size={22} />
     </div>
   );

@@ -4,6 +4,8 @@ import {
   TelegramOAuthSchema,
   LineOAuthSchema,
   SetUsernameSchema,
+  INITIAL_ENERGY_TICKETS,
+  MAX_ENERGY_TICKETS,
   BackupPasswordSchema,
   OAUTH_PROVIDERS,
   PASSWORD_CHANGE_COOLDOWN_SECONDS,
@@ -189,7 +191,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
       .bind(existing.user_id)
       .first<{ id: string; username: string; role: string; status: string }>();
     if (!u) return c.json({ error: 'Account not found' }, 404);
-    if (u.status === 'banned') return c.json({ error: 'This account is suspended' }, 403);
+    if (u.status === 'banned' || u.status === 'suspended') return c.json({ error: 'This account is suspended', code: 'SUSPENDED' }, 403);
     // Keep the provider profile fresh (cheap single-row write)
     await c.env.DB
       .prepare('UPDATE oauth_accounts SET provider_username = ?1, provider_display_name = ?2, provider_avatar_url = ?3, updated_at = ?4 WHERE provider = ?5 AND provider_user_id = ?6')
@@ -220,9 +222,9 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
     try {
       await c.env.DB.batch([
         c.env.DB.prepare(
-          `INSERT INTO users (id, username, email, password_hash, referrer_id, role, status, created_at, display_name, avatar_url, username_locked, has_password, last_energy_recharge)
-           VALUES (?1, ?2, ?3, ?4, ?5, 'player', 'active', ?6, ?7, ?8, 0, 0, ?6)`
-        ).bind(userId, username, email, passwordHash, referrerId, t, displayName, idn.avatarUrl),
+          `INSERT INTO users (id, username, email, password_hash, referrer_id, role, status, created_at, display_name, avatar_url, username_locked, has_password, last_energy_recharge, energy_tickets, max_energy_tickets)
+           VALUES (?1, ?2, ?3, ?4, ?5, 'player', 'active', ?6, ?7, ?8, 0, 0, ?6, ?9, ?10)`
+        ).bind(userId, username, email, passwordHash, referrerId, t, displayName, idn.avatarUrl, INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS),
         c.env.DB.prepare(
           'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
         ).bind(userId, t),

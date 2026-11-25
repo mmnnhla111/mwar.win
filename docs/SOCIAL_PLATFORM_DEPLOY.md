@@ -133,3 +133,40 @@ Password login stays as a folded "backup password" option on `/login`.
 A provider whose settings are missing shows as "not available yet" on `/login` and the API answers 503 with setup steps.
 Rules: username is generated at sign-up and can be chosen once (then locked); backup password can be changed once per 24 h;
 switching Telegram/LINE in Settings replaces the old link; the last Telegram/LINE link cannot be removed.
+
+## Earnings privacy, EC 1/30, map fix, admin members + game/room registry (migration 0012)
+
+What changes:
+- Head bounty is gone from `/profile` and the right sidebar; both show **Total earnings** with the owner's privacy mode
+  (`public` → `$17,018.00`, `masked` → `$**,***.**`, `hidden` → "Not specified"). The API applies the mode
+  (`/api/social/profile`, `/api/bootstrap`). The in-game HUD is unchanged.
+- New accounts start with **1 EC**; the EC cap is **30** for everyone (the migration raises `max_energy_tickets` to 30).
+- 30P Skirmish now uses the **240 m Metro Block** map; 100P Warzone keeps the 960 m Grand Valley.
+- `/admin` gets **Members** (filters, inspector, EC ±, suspend, list orphans on the marketplace) and **Games & rooms**.
+  Orphan sales are platform revenue (logged to `SYSTEM_PLATFORM`, no wallet credit).
+- `/games` and the `/games/fps` lobby read the registry (`games`, `game_server_rooms`). The game server
+  pulls `GET /api/games/rooms-config` every 60 s and hosts one `arena` room per room code.
+- CORS now allows `PATCH` (earlier, browser PATCH calls such as Settings → 18+ were blocked).
+- Favicon (`/favicon.ico`), app icons, web manifest and the MW$ logo (`/brand/*`).
+
+Deploy (as Agy, in this order):
+1. API worker
+   ```bash
+   cd apps/api-worker
+   npx wrangler d1 migrations apply core_db --remote   # 0012_admin_games_and_earnings_privacy.sql
+   npx wrangler deploy
+   ```
+2. Game server (Ubuntu node)
+   ```bash
+   cd /opt/mwar-node && git pull && pnpm install --frozen-lockfile
+   pnpm --filter @mwar/shared build && pnpm --filter @mwar/game-server build
+   # .env already has API_BASE_URL + NODE_ID from the installer (WORKER_API_URL also works)
+   pm2 restart all     # or: systemctl restart mwar-game-server
+   curl -s http://127.0.0.1:2567/health   # registryRooms should list TH-01, TH-02, TH-03
+   ```
+   Rooms pinned to a node are hosted only by the server whose `NODE_ID` equals that node's id or name;
+   if it matches none, the server hosts every room.
+3. Web: `pnpm run deploy:pages`
+
+Quick check: `/settings` → "Total earnings visibility" switches the sidebar value; sidebar shows `1 / 30 EC` for a
+new account; lobby TH-02 says Metro Block (240 m); `/admin` → Members → "No upline" lists orphans.

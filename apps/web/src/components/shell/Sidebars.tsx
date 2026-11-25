@@ -11,6 +11,8 @@ import { useSession } from '../../lib/session';
 import { getSuggestions } from '../../lib/api';
 import { displayName, formatUsd } from '../../lib/format';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { MAX_ENERGY_TICKETS } from '@mwar/shared';
+import { useEarningsText } from '../settings/EarningsVisibility';
 
 const SHORTCUTS: { href: string; label: string; icon: IconName; tint: string }[] = [
   // label = i18n key
@@ -42,7 +44,7 @@ export function LeftSidebar() {
           <div className="rounded-2xl bg-[#FFFBEA] py-2">
             <div className="text-[11px] font-semibold text-stone-500">{t('side.energy')}</div>
             <div className="text-sm font-extrabold text-stone-900">
-              {u?.energyTickets ?? '–'}/{u?.maxEnergyTickets ?? 6} EC
+              {u?.energyTickets ?? '–'}/{u?.maxEnergyTickets ?? MAX_ENERGY_TICKETS} EC
             </div>
           </div>
           <div className="rounded-2xl bg-[#ECFDF5] py-2">
@@ -95,6 +97,7 @@ let suggestionsCache: { at: number; online: { username: string; userId: string |
 export function RightSidebar() {
   const { boot } = useSession();
   const { t } = useTranslation();
+  const earningsText = useEarningsText();
   const [data, setData] = useState(suggestionsCache);
   const [loading, setLoading] = useState(false);
 
@@ -137,12 +140,12 @@ export function RightSidebar() {
           </span>
           <div className="flex-1">
             <div className="text-sm font-extrabold text-stone-900">
-              {boot?.user.energyTickets ?? '–'} / {boot?.user.maxEnergyTickets ?? 6} EC
+              {boot?.user.energyTickets ?? '–'} / {boot?.user.maxEnergyTickets ?? MAX_ENERGY_TICKETS} EC
             </div>
             <div className="mt-1 h-1.5 rounded-full bg-stone-100 overflow-hidden">
               <div
                 className="h-full rounded-full bg-[#FACC15]"
-                style={{ width: `${Math.round(((boot?.user.energyTickets || 0) / (boot?.user.maxEnergyTickets || 6)) * 100)}%` }}
+                style={{ width: `${Math.round(((boot?.user.energyTickets || 0) / (boot?.user.maxEnergyTickets || MAX_ENERGY_TICKETS)) * 100)}%` }}
               />
             </div>
           </div>
@@ -152,9 +155,9 @@ export function RightSidebar() {
             <div className="text-[11px] text-stone-500 font-semibold">{t('side.balance')}</div>
             <div className="text-sm font-extrabold text-stone-900">{boot ? formatUsd(boot.walletSummary.balanceMicroUsd) : '–'}</div>
           </div>
-          <div className="rounded-2xl bg-[#FFF1F2] px-3 py-2">
-            <div className="text-[11px] text-stone-500 font-semibold">{t('side.headBounty')}</div>
-            <div className="text-sm font-extrabold text-stone-900">{boot ? formatUsd(boot.walletSummary.bountyMicroUsd) : '–'}</div>
+          <div className="rounded-2xl bg-[#FFFBEA] px-3 py-2" data-sidebar-earnings>
+            <div className="text-[11px] text-stone-500 font-semibold">{t('earnings.total')}</div>
+            <div className="text-sm font-extrabold text-stone-900 truncate">{boot ? earningsText(boot.walletSummary.totalEarnings) : '–'}</div>
           </div>
         </div>
       </Card>

@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { LemonLogo } from '../ui/Icon';
+import { BrandLogoFull } from '../ui/Icon';
 import { LanguagePill } from '../i18n/LanguagePicker';
 import { useTranslation } from '../../i18n/I18nProvider';
 
@@ -29,11 +29,8 @@ export function AuthCard({
       <div className="pointer-events-none absolute -bottom-24 -right-16 w-72 h-72 rounded-full bg-[#D1FAE5] blur-3xl opacity-60" />
       <div className="pointer-events-none absolute top-1/3 -right-24 w-56 h-56 rounded-full bg-[#FFE4E6] blur-3xl opacity-60" />
 
-      <Link href="/login" className="relative flex items-center gap-2.5 mb-6" aria-label="mwar.win">
-        <LemonLogo size={46} />
-        <span className="font-extrabold text-2xl tracking-tight text-stone-900">
-          mwar<span className="text-[#E5B800]">.win</span>
-        </span>
+      <Link href="/login" className="relative flex items-center mb-5" aria-label="mwar.win" data-brand-logo>
+        <BrandLogoFull height={112} alt="" />
       </Link>
 
       <div className="relative w-full max-w-[400px] bg-white rounded-[28px] border border-stone-200/80 shadow-[0_8px_40px_rgba(0,0,0,0.06)] p-6 sm:p-8">

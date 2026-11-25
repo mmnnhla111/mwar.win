@@ -103,14 +103,53 @@ export const ReportActionSchema = z.object({
 export const UI_LANG_CODES = ['en', 'th', 'id', 'vi', 'es', 'zh', 'ko', 'ja', 'hi', 'pt'] as const;
 export type UiLang = (typeof UI_LANG_CODES)[number];
 
+// ---------------------------------------------------------------------------
+// Total earnings privacy (public / masked / hidden)
+// ---------------------------------------------------------------------------
+export const EARNINGS_VISIBILITY = ['public', 'masked', 'hidden'] as const;
+export type EarningsVisibility = (typeof EARNINGS_VISIBILITY)[number];
+
+export interface EarningsDisplay {
+  visibility: EarningsVisibility;
+  /** "$17,018.00", "$**,***.**", or null when hidden ("Not specified"). */
+  display: string | null;
+}
+
+/** Micro-USD -> "$17,018.00" (thousands separators, 2 decimals). */
+export function formatUsdGrouped(microUsd: number): string {
+  const cents = Math.floor(Math.max(0, Number(microUsd) || 0) / 10_000);
+  const whole = Math.floor(cents / 100)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `$${whole}.${String(cents % 100).padStart(2, '0')}`;
+}
+
+/** Every digit becomes "*" (symbol and separators stay): "$1,234.50" -> "$*,***.**". */
+export function maskDigits(v: string): string {
+  return v.replace(/[0-9]/g, '*');
+}
+
+/** Apply the owner's privacy mode on the server, so masked/hidden amounts never leave the API. */
+export function earningsDisplay(totalEarnedMicroUsd: number, visibility: string | null | undefined): EarningsDisplay {
+  const vis: EarningsVisibility = (EARNINGS_VISIBILITY as readonly string[]).includes(visibility || '')
+    ? (visibility as EarningsVisibility)
+    : 'public';
+  if (vis === 'hidden') return { visibility: vis, display: null };
+  const s = formatUsdGrouped(totalEarnedMicroUsd);
+  return { visibility: vis, display: vis === 'masked' ? maskDigits(s) : s };
+}
+
 export const SocialSettingsSchema = z
   .object({
     showNsfw: z.boolean().optional(),
     /** Must be true when turning 18+ on (the viewer confirmed they are 18 or older). */
     confirmAdult: z.boolean().optional(),
     preferredLang: z.enum(UI_LANG_CODES).optional(),
+    earningsVisibility: z.enum(EARNINGS_VISIBILITY).optional(),
   })
-  .refine((v) => v.showNsfw !== undefined || v.preferredLang !== undefined, { message: 'Nothing to update' });
+  .refine((v) => v.showNsfw !== undefined || v.preferredLang !== undefined || v.earningsVisibility !== undefined, {
+    message: 'Nothing to update',
+  });
 
 export const ModerationResultSchema = z.object({
   node_name: z.string().trim().min(1).max(64),
@@ -210,7 +249,8 @@ export interface SocialProfile {
   coverColor: ProfileCoverColor;
   totalKills: number;
   totalMatches: number;
-  headBountyMicroUsd: number;
+  /** Lifetime earnings as the owner chose to show them (never the raw amount when masked/hidden). */
+  totalEarnings: EarningsDisplay;
   followersCount: number;
   followingCount: number;
   postsCount: number;
@@ -247,6 +287,8 @@ export interface BootstrapUser {
   showNsfw: boolean;
   /** Saved UI language ('en' is also the default for accounts that never picked one). */
   preferredLang: UiLang;
+  /** How total earnings are shown on the profile and sidebar. */
+  earningsVisibility: EarningsVisibility;
 }
 
 export interface BootstrapWalletSummary {
@@ -254,6 +296,8 @@ export interface BootstrapWalletSummary {
   formattedBalance: string;
   bountyMicroUsd: number;
   totalEarnedMicroUsd: number;
+  /** Total earnings with the owner's privacy mode applied (what the sidebar shows). */
+  totalEarnings: EarningsDisplay;
 }
 
 /** GET /api/bootstrap — everything the shell needs, in one request. */
@@ -284,6 +328,8 @@ export interface FpsRoomDef {
   costEc: number;
   multiplayer: boolean;
   rules: string[];
+  /** From the admin room registry (absent on the built-in fallback list). */
+  maxSpectators?: number;
 }
 
 /** Default seeded rooms: one per core mode, synced with apps/game-server room names. */
@@ -302,15 +348,15 @@ export const FPS_ROOMS: readonly FpsRoomDef[] = [
   },
   {
     id: 'TH-02',
-    name: 'Skirmish 30 — Tactical',
+    name: 'Skirmish 30 — Small Map',
     mode: 'mini_30',
     modeLabel: '30P Skirmish',
-    map: 'Grand Valley (960m)',
-    mapSize: 'large',
+    map: 'Metro Block (240m)',
+    mapSize: 'small',
     capacity: 30,
     costEc: 1,
     multiplayer: true,
-    rules: ['30-player free-for-all on the 960 m map', 'Respawn 3 s after each death', 'Kill bounty paid on every elimination'],
+    rules: ['30-player free-for-all on the 240 m map', 'Respawn 3 s after each death', 'Kill bounty paid on every elimination'],
   },
   {
     id: 'TH-03',
@@ -365,24 +411,10 @@ export interface FpsRoomRosterResponse {
   total: number;
 }
 
-export interface GameDirectoryEntry {
-  id: string;
-  name: string;
-  href: string;
-  tags: string[];
-  totalPlayers: number;
-  onlineNow: number;
-  live: boolean;
-}
-
-export interface GamesResponse {
-  games: GameDirectoryEntry[];
-  updatedAt: number;
-}
-
 /** Build the /game launch URL for a room (spectate=1 keeps the room's mode so the right map loads). */
-export function fpsLaunchUrl(room: Pick<FpsRoomDef, 'id' | 'mode'>, spectate = false): string {
+export function fpsLaunchUrl(room: Pick<FpsRoomDef, 'id' | 'mode'> & { mapSize?: 'large' | 'small' }, spectate = false): string {
   const p = new URLSearchParams({ mode: room.mode, room: room.id });
+  if (room.mapSize) p.set('map', room.mapSize);
   if (spectate) p.set('spectate', '1');
   return `/game?${p.toString()}`;
 }

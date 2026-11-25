@@ -13,6 +13,7 @@ import { memoDrop } from '../../lib/memo';
 import { displayName } from '../../lib/format';
 import { LanguageGrid } from '../../components/i18n/LanguagePicker';
 import { ConnectedAccounts } from '../../components/settings/ConnectedAccounts';
+import { EarningsVisibilityPicker } from '../../components/settings/EarningsVisibility';
 import { useTranslation } from '../../i18n/I18nProvider';
 
 function Toggle({ on, onChange, disabled, label }: { on: boolean; onChange: () => void; disabled?: boolean; label: string }) {
@@ -115,6 +116,12 @@ export default function SettingsPage() {
           </button>
         </div>
         <p className="px-5 pb-5 text-xs text-stone-400">{t('settings.profileHint')}</p>
+      </Card>
+
+      <Card className="p-5" data-settings-earnings>
+        <h2 className="text-sm font-black text-stone-500 uppercase tracking-wider">{t('earnings.visibility')}</h2>
+        <p className="text-sm text-stone-500 mt-1">{t('earnings.visibilityHint')}</p>
+        <EarningsVisibilityPicker />
       </Card>
 
       <ConnectedAccounts />

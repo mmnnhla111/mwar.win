@@ -10,6 +10,7 @@ import { authMiddleware } from '../middleware/auth';
 import { edgeCachedJson, edgeCachePurge } from '../utils/edge-cache';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { buildNetworkTree } from '../utils/mlm-tree';
+import { PLATFORM_ACCOUNT_ID } from '../utils/guards';
 
 export const marketplaceRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -26,7 +27,7 @@ marketplaceRouter.get('/listings', async (c) => {
   return edgeCachedJson(c, 'marketplace-listings', 20, async () => {
     const rows = await c.env.DB
       .prepare(
-        `SELECT m.id, m.seller_id, m.target_user_id, m.price_micro_usd, m.status, m.created_at,
+        `SELECT m.id, m.seller_id, m.target_user_id, m.price_micro_usd, m.status, m.created_at, m.listing_type,
                 u_target.username as target_username, u_target.created_at as target_joined_at,
                 w_target.total_earned_micro_usd as target_total_earned,
                 u_seller.username as seller_username
@@ -42,7 +43,9 @@ marketplaceRouter.get('/listings', async (c) => {
     const listings = (rows.results || []).map((l: any) => ({
       id: l.id,
       sellerId: l.seller_id,
-      sellerUsername: l.seller_username,
+      // Orphan players listed by the admin are sold by the platform
+      sellerUsername: l.listing_type === 'orphan' ? 'mwar.win' : l.seller_username,
+      listingType: l.listing_type === 'orphan' ? 'orphan' : 'player',
       targetUserId: l.target_user_id,
       targetUsername: l.target_username,
       targetJoinedAt: l.target_joined_at,
@@ -130,6 +133,17 @@ marketplaceRouter.post('/buy', async (c) => {
   if (listing.seller_id === buyer.userId) {
     return c.json({ error: 'You cannot buy your own listing' }, 400);
   }
+  if (listing.target_user_id === buyer.userId) {
+    return c.json({ error: 'You cannot buy yourself' }, 400);
+  }
+  // The buyer must not sit inside the target's own downline (that would make a loop in the tree)
+  const loop = await c.env.DB
+    .prepare('SELECT 1 FROM network_trees WHERE ancestor_id = ?1 AND descendant_id = ?2')
+    .bind(listing.target_user_id, buyer.userId)
+    .first();
+  if (loop) {
+    return c.json({ error: 'You cannot buy a player from your own upline chain' }, 400);
+  }
 
   // Check buyer balance
   const buyerWallet = await c.env.DB
@@ -209,12 +223,27 @@ export async function releaseMarketplaceEscrow(env: Env) {
   const now = Math.floor(Date.now() / 1000);
   const due = await env.DB
     .prepare(
-      "SELECT id, seller_id, target_user_id, price_micro_usd FROM marketplace_listings WHERE status = 'sold' AND escrow_released_at IS NULL AND escrow_release_at <= ?1 LIMIT 200"
+      "SELECT id, seller_id, target_user_id, price_micro_usd, listing_type FROM marketplace_listings WHERE status = 'sold' AND escrow_released_at IS NULL AND escrow_release_at <= ?1 LIMIT 200"
     )
     .bind(now)
-    .all<{ id: string; seller_id: string; target_user_id: string; price_micro_usd: number }>();
+    .all<{ id: string; seller_id: string; target_user_id: string; price_micro_usd: number; listing_type: string }>();
   let released = 0;
   for (const l of due.results || []) {
+    // Orphan sale (listed by the admin): the money is platform revenue, never an admin wallet credit
+    if (l.listing_type === 'orphan') {
+      const r = await env.DB.prepare('UPDATE marketplace_listings SET escrow_released_at = ?1 WHERE id = ?2 AND escrow_released_at IS NULL').bind(now, l.id).run();
+      if ((r.meta?.changes ?? 0) !== 1) continue;
+      released++;
+      await logFinancialTransaction(env, {
+        transaction_id: `tx_mktorphan_${l.id.slice(0, 8)}_${now}`,
+        user_id: PLATFORM_ACCOUNT_ID,
+        action_type: 'MARKET_SELL',
+        amount_micro_usd: BigInt(l.price_micro_usd),
+        balance_after_micro_usd: 0n,
+        related_user_id: l.target_user_id,
+      });
+      continue;
+    }
     const res = await env.DB.batch([
       env.DB.prepare('UPDATE marketplace_listings SET escrow_released_at = ?1 WHERE id = ?2 AND escrow_released_at IS NULL').bind(now, l.id),
       env.DB.prepare(

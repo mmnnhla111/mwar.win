@@ -42,6 +42,8 @@ interface I18nValue {
   t: TFunction;
   /** Translate `key` when a dictionary has it, else return `fallback` (server-provided English text). */
   tx: (key: string, fallback: string, params?: TParams) => string;
+  /** Translate admin-editable server text only while it is still the stock English text; edited text shows as typed. */
+  ts: (key: string, serverText: string) => string;
   /** Switch language; saved to localStorage and, when signed in, to the account. */
   setLang: (lang: LangCode) => Promise<void>;
 }
@@ -50,6 +52,7 @@ const I18nCtx = createContext<I18nValue>({
   lang: DEFAULT_LANG,
   t: (k, p) => translate(EN, k, p),
   tx: (k, fb, p) => (EN[k] !== undefined ? translate(EN, k, p) : fb),
+  ts: (_k, v) => v,
   setLang: async () => {},
 });
 
@@ -115,7 +118,8 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     (key: string, fallback: string, params?: TParams) => (dict[key] !== undefined || EN[key] !== undefined ? translate(dict, key, params) : fallback),
     [dict]
   );
-  const value = useMemo(() => ({ lang, t, tx, setLang }), [lang, t, tx, setLang]);
+  const ts = useCallback((key: string, serverText: string) => (EN[key] === serverText ? translate(dict, key) : serverText), [dict]);
+  const value = useMemo(() => ({ lang, t, tx, ts, setLang }), [lang, t, tx, ts, setLang]);
   return <I18nCtx.Provider value={value}>{children}</I18nCtx.Provider>;
 }
 

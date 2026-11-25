@@ -19,8 +19,13 @@ export const SMALL_PLAY_HALF = 112;
 export type MapKind = 'small' | 'large';
 
 /** Mode → map: Warzone (standard_100), 30P Skirmish (mini_30) and Ghost Spectator use the large map. */
+/**
+ * Default map per mode: only the 100P Warzone uses the 960 m Grand Valley. 30P Skirmish, Fast & Mini and
+ * solo practice use the 240 m Metro Block. Rooms from the admin room registry carry their own map choice
+ * (mapSize), which wins over this default.
+ */
 export function mapKindForMode(mode: string | null | undefined): MapKind {
-  return mode === 'standard_100' || mode === 'mini_30' || mode === 'spectator' ? 'large' : 'small';
+  return mode === 'standard_100' ? 'large' : 'small';
 }
 
 export const LARGE_ROAD_LINES = [-270, 0, 270];

@@ -78,17 +78,18 @@ export function Icon({
 }
 
 /** The lemon-badge brand mark. */
+/** mwar.win "MW$" brand mark (public/brand/logo-mark.webp, from Lah's Logo-without-text.png). */
 export function LemonLogo({ size = 34 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 40 40" aria-hidden="true">
-      <circle cx="20" cy="20" r="19" fill="#FFE135" />
-      <ellipse cx="20" cy="21" rx="11" ry="9" fill="#FFF6B7" />
-      <path d="M20 12.5c2.2-3 5.4-3.6 7.5-2.4-1.2 2.4-4 3.6-7.5 2.4z" fill="#34D399" />
-      <circle cx="16" cy="21" r="1.6" fill="#1C1917" />
-      <circle cx="24" cy="21" r="1.6" fill="#1C1917" />
-      <path d="M17.5 25c1.4 1.2 3.6 1.2 5 0" stroke="#1C1917" strokeWidth="1.6" strokeLinecap="round" fill="none" />
-      <circle cx="13.5" cy="24" r="1.4" fill="#FF6B6B" opacity=".55" />
-      <circle cx="26.5" cy="24" r="1.4" fill="#FF6B6B" opacity=".55" />
-    </svg>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src="/brand/logo-mark.webp" width={Math.round(size * 0.89)} height={size} alt="" aria-hidden="true" decoding="async" className="shrink-0 object-contain" style={{ width: Math.round(size * 0.89), height: size }} />
+  );
+}
+
+/** Full logo with "mwar.win · Money War" (public/brand/logo-full.webp, from Logo-with-text.png). */
+export function BrandLogoFull({ height = 96, alt = 'mwar.win — Money War' }: { height?: number; alt?: string }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src="/brand/logo-full.webp" width={Math.round(height * 0.78)} height={height} alt={alt} decoding="async" className="object-contain" style={{ width: Math.round(height * 0.78), height }} />
   );
 }

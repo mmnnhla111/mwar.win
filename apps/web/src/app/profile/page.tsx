@@ -14,13 +14,14 @@ import { useSession } from '../../lib/session';
 import { displayName, formatCount, formatUsd } from '../../lib/format';
 import { memoDrop, memoGet, memoSet } from '../../lib/memo';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { useEarningsText } from '../../components/settings/EarningsVisibility';
 
 type ProfileState = { profile: SocialProfile; posts: SocialPost[]; next: string | null };
 
 
-function Stat({ icon, label, value, tint }: { icon: IconName; label: string; value: string; tint: string }) {
+function Stat({ icon, label, value, tint, ...rest }: { icon: IconName; label: string; value: string; tint: string; 'data-profile-earnings'?: string }) {
   return (
-    <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3 flex items-center gap-3">
+    <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3 flex items-center gap-3" {...rest}>
       <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${tint}`}>
         <Icon name={icon} size={18} />
       </span>
@@ -36,6 +37,7 @@ function ProfileView() {
   const params = useSearchParams();
   const { boot, patch } = useSession();
   const { t, lang } = useTranslation();
+  const earningsText = useEarningsText();
   const username = params.get('u') || boot?.user.username || '';
   const key = `profile:${username}`;
   const [state, setState] = useState<ProfileState | null>(() => memoGet<ProfileState>(key));
@@ -201,7 +203,7 @@ function ProfileView() {
         <div className="grid grid-cols-2 gap-2">
           <Stat icon="games" label={t('profile.matches')} value={formatCount(p.totalMatches)} tint="bg-[#E0F2FE] text-sky-700" />
           <Stat icon="target" label={t('profile.kills')} value={formatCount(p.totalKills)} tint="bg-[#FFE4E6] text-rose-600" />
-          <Stat icon="trophy" label={t('side.headBounty')} value={formatUsd(p.headBountyMicroUsd)} tint="bg-[#FFF6C2] text-[#8A6A00]" />
+          <Stat icon="wallet" label={t('earnings.total')} value={earningsText(p.totalEarnings)} tint="bg-[#FFF6C2] text-[#8A6A00]" data-profile-earnings={p.totalEarnings?.visibility || 'public'} />
           <Stat
             icon="calendar"
             label={t('profile.memberSince')}

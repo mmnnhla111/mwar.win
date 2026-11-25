@@ -9,6 +9,7 @@ import { Icon } from '../ui/Icon';
 import { updateSocialProfile, uploadMedia } from '../../lib/api';
 import { compressImageToWebp } from '../../lib/image';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { EarningsVisibilityPicker } from '../settings/EarningsVisibility';
 
 export const coverStyle = (c: ProfileCoverColor) => {
   const [a, b] = PROFILE_COVER_COLORS[c] || PROFILE_COVER_COLORS.lemon;
@@ -115,6 +116,10 @@ export function EditProfileModal({
           <div className="text-right text-[11px] text-stone-400 mt-1">
             {bio.length}/{SOCIAL_BIO_MAX_CHARS}
           </div>
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-stone-600 mb-1.5 ml-1">{t('earnings.visibility')}</label>
+          <EarningsVisibilityPicker compact onSaved={(v) => onSaved({ totalEarnings: { ...profile.totalEarnings, visibility: v } })} />
         </div>
         {error && <p className="rounded-2xl bg-[#FFE4E6] text-rose-600 text-sm font-semibold px-4 py-2.5">{error}</p>}
         <div className="flex gap-2 justify-end">

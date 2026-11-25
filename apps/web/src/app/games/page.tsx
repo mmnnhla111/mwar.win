@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import type { GamesResponse } from '@mwar/shared';
+import type { GameDirectoryItem, GamesResponse } from '@mwar/shared';
 import { Card } from '../../components/ui/Card';
 import { Icon } from '../../components/ui/Icon';
 import { getGames } from '../../lib/api';
@@ -45,6 +45,95 @@ function FpsThumb() {
   );
 }
 
+const FALLBACK_FPS: GameDirectoryItem = {
+  id: 'fps',
+  slug: 'fps',
+  title: 'MWAR Tactical FPS',
+  subtitle: null,
+  description: null,
+  genreTags: ['3D FPS', 'Play-to-Earn', 'Mobile & PC'],
+  logoUrl: null,
+  coverUrl: null,
+  routePath: '/games/fps',
+  status: 'active',
+  sortOrder: 0,
+  updatedAt: 0,
+  totalPlayers: 0,
+  onlineNow: 0,
+};
+
+const STATUS_STYLE: Record<GameDirectoryItem['status'], { cls: string; dot: string }> = {
+  active: { cls: 'text-emerald-700', dot: 'bg-[#34D399] animate-pulse' },
+  coming_soon: { cls: 'text-violet-700', dot: 'bg-violet-400' },
+  maintenance: { cls: 'text-amber-700', dot: 'bg-amber-400' },
+};
+
+function GameCard({ g, loaded }: { g: GameDirectoryItem; loaded: boolean }) {
+  const { t, ts } = useTranslation();
+  const playable = g.status === 'active';
+  const st = STATUS_STYLE[g.status] || STATUS_STYLE.active;
+  const body = (
+    <Card
+      className={`overflow-hidden h-full transition ${playable ? 'group-hover:-translate-y-0.5 group-hover:shadow-[0_10px_30px_rgba(0,0,0,0.08)]' : 'opacity-90'}`}
+      data-game-card={g.slug}
+      data-game-status={g.status}
+    >
+      <div className="relative h-40 sm:h-44 overflow-hidden bg-stone-100">
+        {g.coverUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={g.coverUrl} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+        ) : (
+          <FpsThumb />
+        )}
+        <span className={`absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-extrabold ${st.cls}`}>
+          <span className={`w-2 h-2 rounded-full ${st.dot}`} /> {t(`games.status.${g.status}`)}
+        </span>
+      </div>
+      <div className="p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {g.logoUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={g.logoUrl} alt="" className="w-9 h-9 rounded-xl object-cover border border-stone-100 shrink-0" loading="lazy" />
+            )}
+            <div className="min-w-0">
+              <h2 className="font-extrabold text-lg text-stone-900 truncate">{g.title}</h2>
+              {g.subtitle && <p className="text-xs text-stone-500 truncate">{ts(`games.sub.${g.slug}`, g.subtitle)}</p>}
+            </div>
+          </div>
+          {playable && <Icon name="chevron" size={18} className="text-stone-400 group-hover:text-stone-900 transition shrink-0" />}
+        </div>
+        {g.genreTags.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {g.genreTags.map((tg) => (
+              <span key={tg} className="rounded-full bg-[#E0F2FE] text-sky-800 px-2.5 py-0.5 text-[11px] font-bold">
+                {tg}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-2xl bg-[#FFFBEA] px-3 py-2">
+            <div className="text-[11px] font-semibold text-stone-500">{t('games.totalPlayers')}</div>
+            <div className="text-sm font-extrabold text-stone-900">{t('games.playersN', { n: loaded ? formatCount(g.totalPlayers) : '–' })}</div>
+          </div>
+          <div className="rounded-2xl bg-[#ECFDF5] px-3 py-2">
+            <div className="text-[11px] font-semibold text-stone-500">{t('games.onlineNow')}</div>
+            <div className="text-sm font-extrabold text-emerald-700">{t('games.onlineN', { n: loaded ? formatCount(g.onlineNow) : '–' })}</div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+  return playable ? (
+    <Link href={g.routePath} className="group">
+      {body}
+    </Link>
+  ) : (
+    <div aria-disabled="true">{body}</div>
+  );
+}
+
 export default function GamesPage() {
   const { t } = useTranslation();
   const [data, setData] = useState<GamesResponse | null>(() => memoGet<GamesResponse>('games', 30_000));
@@ -68,7 +157,7 @@ export default function GamesPage() {
     load();
   }, []);
 
-  const fps = data?.games.find((g) => g.id === 'fps');
+  const games = data?.games?.length ? data.games : null;
 
   return (
     <div className="space-y-4">
@@ -83,39 +172,9 @@ export default function GamesPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Link href="/games/fps" className="group">
-          <Card className="overflow-hidden transition group-hover:-translate-y-0.5 group-hover:shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
-            <div className="relative h-40 sm:h-44 overflow-hidden">
-              <FpsThumb />
-              <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-extrabold text-emerald-700">
-                <span className="w-2 h-2 rounded-full bg-[#34D399] animate-pulse" /> {t('games.live')}
-              </span>
-            </div>
-            <div className="p-4">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="font-extrabold text-lg text-stone-900">MWAR Tactical FPS</h2>
-                <Icon name="chevron" size={18} className="text-stone-400 group-hover:text-stone-900 transition" />
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {(fps?.tags || ['3D FPS', 'Play-to-Earn', 'Mobile & PC']).map((tg) => (
-                  <span key={tg} className="rounded-full bg-[#E0F2FE] text-sky-800 px-2.5 py-0.5 text-[11px] font-bold">
-                    {tg}
-                  </span>
-                ))}
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded-2xl bg-[#FFFBEA] px-3 py-2">
-                  <div className="text-[11px] font-semibold text-stone-500">{t('games.totalPlayers')}</div>
-                  <div className="text-sm font-extrabold text-stone-900">{t('games.playersN', { n: fps ? formatCount(fps.totalPlayers) : '–' })}</div>
-                </div>
-                <div className="rounded-2xl bg-[#ECFDF5] px-3 py-2">
-                  <div className="text-[11px] font-semibold text-stone-500">{t('games.onlineNow')}</div>
-                  <div className="text-sm font-extrabold text-emerald-700">{t('games.onlineN', { n: fps ? formatCount(fps.onlineNow) : '–' })}</div>
-                </div>
-              </div>
-            </div>
-          </Card>
-        </Link>
+        {(games || [FALLBACK_FPS]).map((g) => (
+          <GameCard key={g.id} g={g} loaded={!!games} />
+        ))}
 
         <Card className="overflow-hidden border-dashed bg-white/60 flex flex-col items-center justify-center text-center p-8 min-h-[260px]">
           <span className="w-14 h-14 rounded-2xl bg-[#EDE9FE] text-violet-600 flex items-center justify-center">

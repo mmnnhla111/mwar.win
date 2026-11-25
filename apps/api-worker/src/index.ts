@@ -21,6 +21,7 @@ import { isLocalDev, hasInternalSecret } from './utils/guards';
 import { socialRouter, serveMedia, serveSocialMedia } from './routes/social';
 import { moderationRouter, pruneModerationData } from './routes/moderation';
 import { gamesRouter } from './routes/games';
+import { adminRouter } from './routes/admin';
 import { bootstrapHandler } from './routes/bootstrap';
 import { authMiddleware } from './middleware/auth';
 
@@ -34,7 +35,7 @@ app.use('*', cors({
     if (origin.endsWith('.mwar.win') || origin === 'https://mwar.win') return origin;
     return origin;
   },
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
 }));
@@ -68,6 +69,7 @@ app.route('/api/nodes', nodesRouter);
 app.route('/api/practice', practiceRouter);
 app.route('/api/social', socialRouter);
 app.route('/api/games', gamesRouter);
+app.route('/api/admin', adminRouter);
 // Self-hosted moderation workers (X-Internal-Secret): claim jobs, fetch media, submit batched results
 app.route('/api/moderation', moderationRouter);
 
