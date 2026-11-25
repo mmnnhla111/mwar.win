@@ -22,6 +22,7 @@ MAIL_FROM = "MWAR <no-reply@mwar.win>"
 #   npx wrangler secret put LINE_CHANNEL_SECRET
 TELEGRAM_BOT_USERNAME = "mwar_win_bot"
 LINE_CHANNEL_ID = "2012786569"
+SUPER_ADMIN_USERNAMES = "mmnnhla111"
 
 # 1. Core D1 Database (Users, Wallets, MLM Trees, Market, Withdrawals, Daily Quests)
 [[d1_databases]]

