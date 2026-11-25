@@ -12,6 +12,8 @@ import { getFpsRooms, getFpsRoster } from '../../../lib/api';
 import { useSession } from '../../../lib/session';
 import { useVisibleInterval } from '../../../lib/useVisibleInterval';
 import { RewardedVideoModal } from '../../../game/ui/AdEngine';
+import { formatEc } from '../../../lib/format';
+import { CheerButton } from '../../../components/cheer/CheerModal';
 import { useTranslation } from '../../../i18n/I18nProvider';
 
 const FILTERS: { id: FpsRoomFilter; label: string }[] = [
@@ -112,7 +114,7 @@ export default function FpsLobbyPage() {
             </div>
           </div>
           <span className="inline-flex items-center gap-1 sm:gap-1.5 rounded-full bg-[#FFF6C2] text-stone-900 text-xs sm:text-sm font-extrabold px-2.5 sm:px-3 py-1.5 shrink-0" title={t('fps.energyTickets')}>
-            <Icon name="bolt" size={16} filled /> EC: {ec}/{ecMax}
+            <Icon name="bolt" size={16} filled /> {formatEc(ec, ecMax)}
           </span>
           <button onClick={load} disabled={loading} className="w-9 h-9 rounded-full bg-stone-100 hover:bg-stone-200 flex items-center justify-center text-stone-700 shrink-0" aria-label={t('fps.refreshRooms')} title={t('common.refresh')}>
             <Icon name="refresh" size={17} className={loading ? 'animate-spin' : ''} />
@@ -133,6 +135,10 @@ export default function FpsLobbyPage() {
               ▶ {t('fps.recharge')}
             </button>
           )}
+          <CheerButton
+            targetType="energy"
+            className={`shrink-0 ${ec < ecMax ? '' : 'ml-auto'} inline-flex items-center gap-1 rounded-full bg-[#FFF6C2] hover:bg-[#FFE135] text-[#8A6A00] text-xs font-extrabold px-3 py-1.5`}
+          />
         </div>
       </Card>
 

@@ -11,7 +11,9 @@ import { FeedList } from '../../components/social/FeedList';
 import { getFeed, getProfile, setFollow } from '../../lib/api';
 import { EditProfileModal, coverStyle } from '../../components/social/EditProfileModal';
 import { useSession } from '../../lib/session';
-import { displayName, formatCount, formatUsd } from '../../lib/format';
+import { displayName, formatCount, formatEc, formatUsd } from '../../lib/format';
+import { CheerButton } from '../../components/cheer/CheerModal';
+import { MAX_ENERGY_TICKETS } from '@mwar/shared';
 import { memoDrop, memoGet, memoSet } from '../../lib/memo';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { useEarningsText } from '../../components/settings/EarningsVisibility';
@@ -19,7 +21,7 @@ import { useEarningsText } from '../../components/settings/EarningsVisibility';
 type ProfileState = { profile: SocialProfile; posts: SocialPost[]; next: string | null };
 
 
-function Stat({ icon, label, value, tint, ...rest }: { icon: IconName; label: string; value: string; tint: string; 'data-profile-earnings'?: string }) {
+function Stat({ icon, label, value, tint, ...rest }: { icon: IconName; label: string; value: string; tint: string; 'data-profile-earnings'?: string; 'data-profile-ec'?: boolean }) {
   return (
     <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3 flex items-center gap-3" {...rest}>
       <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${tint}`}>
@@ -165,6 +167,7 @@ function ProfileView() {
                   <button onClick={copyRef} className={btn.primary}>
                     <Icon name="link" size={16} /> {copied ? t('common.copied') : t('profile.copyRef')}
                   </button>
+                  <CheerButton targetType="energy" label={t('cheer.rechargeBtn')} className={btn.soft} />
                 </>
               ) : (
                 <>
@@ -174,6 +177,13 @@ function ProfileView() {
                   <Link href={`/chat?userId=${p.id}&name=${encodeURIComponent(p.username)}`} className={btn.soft}>
                     <Icon name="chat" size={16} /> {t('profile.message')}
                   </Link>
+                  <CheerButton
+                    targetType="profile"
+                    targetId={p.id}
+                    targetName={displayName(p)}
+                    className={`${btn.soft} !bg-[#FFF6C2] !text-[#8A6A00]`}
+                    onCheered={(n) => n !== null && update({ ...state, profile: { ...p, cheerCount: n } })}
+                  />
                 </>
               )}
             </div>
@@ -190,6 +200,9 @@ function ProfileView() {
             </Link>
             <span>
               <b className="text-stone-900">{formatCount(p.postsCount)}</b> <span className="text-stone-500">{t('profile.posts')}</span>
+            </span>
+            <span data-profile-cheers>
+              <b className="text-stone-900">{formatCount(p.cheerCount || 0)}</b> <span className="text-stone-500">{t('cheer.received')}</span>
             </span>
           </div>
         </div>
@@ -210,6 +223,9 @@ function ProfileView() {
             value={new Date(p.memberSince * 1000).toLocaleDateString(lang, { month: 'short', year: 'numeric' })}
             tint="bg-[#D1FAE5] text-emerald-700"
           />
+          {p.isMe && boot && (
+            <Stat icon="bolt" label={t('side.energy')} value={formatEc(boot.user.energyTickets, boot.user.maxEnergyTickets || MAX_ENERGY_TICKETS)} tint="bg-[#FFFBEA] text-[#8A6A00]" data-profile-ec />
+          )}
         </div>
       </Card>
 

@@ -97,7 +97,7 @@ export async function logAdImpression(
 
 /**
  * Credit EC progress to the user's real D1 balance. Every 10 000 bp converts into +1 Energy
- * Ticket (up to MAX_ENERGY_TICKETS = 30). When tickets are already full the progress bar stays capped below 100 %.
+ * Ticket (up to MAX_ENERGY_TICKETS = 300). When tickets are already full the progress bar stays capped below 100 %.
  */
 export async function creditEcProgress(env: Env, userId: string, addBp: number, sourceId: string) {
   for (let attempt = 0; attempt < 3; attempt++) {

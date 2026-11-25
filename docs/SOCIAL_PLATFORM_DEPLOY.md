@@ -170,3 +170,39 @@ Deploy (as Agy, in this order):
 
 Quick check: `/settings` → "Total earnings visibility" switches the sidebar value; sidebar shows `1 / 30 EC` for a
 new account; lobby TH-02 says Metro Block (240 m); `/admin` → Members → "No upline" lists orphans.
+
+## EC cap 300, no passive EC, 55/15/5/5/20 split, "ให้กำลังใจ" Cheer (migration 0013, 2026-11-25)
+
+What changes:
+- **No passive / hourly EC regeneration anywhere.** New accounts start with `1 EC`; after that EC comes only from
+  rewarded videos, banner impressions, Cheer ads or an admin adjustment.
+- EC cap is **300** for everyone; every screen shows `X / 300 EC` (sidebars, profile, XSHOT lobby, admin inspector, HUD).
+- Reward split of every V: **55 %** earner · **15 %** uplines (5/4/3/2/1) · **5 %** earner's head bounty ·
+  **5 %** platform · **20 %** Energy Recharge Reserve Pool (`system_balances.energy_pool_micro_usd`).
+  Missing upline tiers and rounding go to the platform; the sum is always exactly V.
+- **ให้กำลังใจ (Cheer)** button on other players' posts, other players' profiles and the EC panels.
+  Ads: 30 s video `+1 EC`, 15 s video `+50 % EC`, sponsored banner boost (10 s). Limits enforced in D1:
+  45 s cooldown, 15 per user per UTC day, 3 per user per creator per day. Set `CHEER_DISABLED_FORMATS=banner`
+  (Worker var) to hide the banner option when no sponsor is booked.
+- Note: the ad shown in the Cheer modal is the built-in timed sponsor card (same simulation as the existing EC videos)
+  until an ad-network SDK is wired in; the server still times and verifies every view.
+
+Deploy (as Agy, in this order):
+1. API worker
+   ```bash
+   cd apps/api-worker
+   npx wrangler d1 migrations apply core_db --remote   # 0013_energy_cap_cheer_pool.sql
+   npx wrangler deploy
+   ```
+   Check: `npx wrangler d1 execute core_db --remote --command "SELECT * FROM system_balances"` returns the `global` row.
+2. Game server (Ubuntu node): only comments changed, but rebuild so the shared package matches
+   ```bash
+   cd /opt/mwar-node && git pull && pnpm install --frozen-lockfile
+   pnpm --filter @mwar/shared build && pnpm --filter @mwar/game-server build
+   pm2 restart all
+   ```
+3. Web: `pnpm run deploy:pages`
+
+Quick check: a new account shows `1 / 300 EC` and stays at 1 after an hour; open any other player's post →
+ให้กำลังใจ → the modal says `เหลือสิทธิ์วันนี้ 15/15 ครั้ง`; finish the 15 s video → `+50% EC`, counter 14/15.
+`pnpm --filter @mwar/shared test` runs the split unit tests.

@@ -21,3 +21,8 @@ export function formatUsd(microUsd: number): string {
 export function displayName(a: { displayName?: string | null; username: string }): string {
   return a.displayName?.trim() || a.username;
 }
+
+/** Energy Ticket display everywhere: "1 / 300 EC". */
+export function formatEc(tickets: number | null | undefined, max: number): string {
+  return `${tickets ?? '–'} / ${max} EC`;
+}

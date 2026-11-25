@@ -4,7 +4,6 @@ import {
   BatchPayoutItemSchema,
   formatMicroUsd,
   EC_COST_PER_PAID_MATCH,
-  MAX_ENERGY_TICKETS,
   ROOM_MODE_ENGINE,
 } from '@mwar/shared';
 import { z } from 'zod';
@@ -30,8 +29,8 @@ async function signEntryToken(secret: string, payload: Record<string, unknown>) 
 
 /**
  * POST /api/game/enter — spend 1 Energy Ticket (EC) to enter a paid (cash) arena.
- * The decrement is atomic (energy_tickets > 0 guard); if the user was at the 6-ticket cap the hourly
- * recharge clock starts now. Returns a 2-minute signed entry token for the game server: only players
+ * The decrement is atomic (energy_tickets >= cost guard). EC never regenerates over time — it is earned
+ * back only by watching ads / cheering (spec §7.1). Returns a 2-minute signed entry token for the game server: only players
  * who join with a valid token earn Micro-USD (guests / token-less joins play for free, no payouts).
  */
 gameRouter.post('/enter', authMiddleware, async (c) => {
@@ -57,15 +56,14 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
   const res = await c.env.DB
     .prepare(
       `UPDATE users
-         SET last_energy_recharge = CASE WHEN energy_tickets >= MIN(max_energy_tickets, ?3) THEN ?2 ELSE last_energy_recharge END,
-             energy_tickets = energy_tickets - ?4,
+         SET energy_tickets = energy_tickets - ?4,
              total_matches = total_matches + 1
        WHERE id = ?1 AND energy_tickets >= ?4 AND status = 'active'`
     )
-    .bind(user.userId, now, MAX_ENERGY_TICKETS, cost)
+    .bind(user.userId, cost)
     .run();
   if ((res.meta?.changes ?? 0) !== 1) {
-    return c.json({ error: 'No Energy Tickets left. Play Practice mode or wait for the hourly recharge.', code: 'NO_EC' }, 402);
+    return c.json({ error: 'No Energy Tickets left. Watch an ad or Cheer to recharge EC.', code: 'NO_EC' }, 402);
   }
   const entryId = crypto.randomUUID();
   await c.env.DB.prepare('INSERT INTO arena_entries (id, user_id, room_mode, created_at) VALUES (?1, ?2, ?3, ?4)').bind(entryId, user.userId, mode, now).run();
@@ -163,7 +161,7 @@ gameRouter.post('/batch-payout', async (c) => {
     // Track daily quests for player: match played
     await trackQuestAction(c.env.DB, item.userId, 'finish_game_match', 1, dateKey);
 
-    // 100 % reward split of V: 75 % earner · 15 % uplines (5/4/3/2/1) · 5 % head bounty · 5 % platform
+    // 100 % reward split of V: 55 % earner · 15 % uplines (5/4/3/2/1) · 5 % head bounty · 5 % platform · 20 % Energy Pool
     const split = await applyRewardSplit(c.env, {
       earnerId: item.userId,
       grossMicroUsd: item.amountMicroUsd,

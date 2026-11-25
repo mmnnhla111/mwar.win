@@ -220,6 +220,8 @@ export interface SocialPost {
   /** Only sent to the author for rejected posts. */
   moderationReason?: string | null;
   likeCount: number;
+  /** "ให้กำลังใจ" cheers received (ad-backed). */
+  cheerCount?: number;
   commentCount: number;
   createdAt: number;
   likedByMe?: boolean;
@@ -254,6 +256,8 @@ export interface SocialProfile {
   followersCount: number;
   followingCount: number;
   postsCount: number;
+  /** Cheers received on posts + profile. */
+  cheerCount?: number;
   memberSince: number;
   isFollowing?: boolean;
   isMe?: boolean;
@@ -281,7 +285,6 @@ export interface BootstrapUser {
   energyTickets: number;
   maxEnergyTickets: number;
   energyProgressPct: number;
-  secondsToNextRecharge: number;
   createdAt: number;
   /** 18+ content preference (default false). */
   showNsfw: boolean;

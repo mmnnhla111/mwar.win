@@ -1447,7 +1447,7 @@ export default function GamePage() {
         });
         roomInstance.onMessage('player_killed', (data: any) => {
           soundFX.playHitMarker();
-          // Kill value split: 75 % to the shooter (+ the victim's accumulated head bounty)
+          // Kill value split: 55 % to the shooter (+ the victim's accumulated head bounty)
           const bounty = Number(data.bountyClaimedMicroUsd) || 0;
           feed(
             `⚔️ ${data.killerUsername} eliminated ${data.victimUsername} (+${formatMicroUsd(Number(data.rewardMicroUsd) || 0)}${
@@ -2941,7 +2941,7 @@ export default function GamePage() {
           )}
           <span className="w-px h-3 bg-white/15" />
           <span className="text-yellow-300">
-            ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
+            ⚡ {hudStats.energyTickets} / {hudStats.maxEnergyTickets} EC • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
           </span>
           {ecToast && <span className="text-[10px] font-semibold text-yellow-200/70">{ecToast}</span>}
           {hudStats.isGhost && <span className="text-purple-300 animate-pulse">👻 GHOST</span>}
@@ -3375,7 +3375,7 @@ export default function GamePage() {
         <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 ${showLoadout ? 'z-[45]' : 'z-[15]'} pointer-events-auto flex flex-col items-center`}>
           {showLoadout && (
             <div className="mb-1 text-[11px] font-black text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] whitespace-nowrap">
-              ⚡ EC: {hudStats.energyTickets}/{hudStats.maxEnergyTickets} • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
+              ⚡ {hudStats.energyTickets} / {hudStats.maxEnergyTickets} EC • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
               {ecToast && <span className="ml-2 font-semibold text-yellow-200/70">{ecToast}</span>}
             </div>
           )}

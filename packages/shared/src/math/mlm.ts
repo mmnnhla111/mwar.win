@@ -4,6 +4,7 @@ import {
   REWARD_UPLINE_BPS,
   REWARD_BOUNTY_BPS,
   REWARD_PLATFORM_BPS,
+  REWARD_ENERGY_POOL_BPS,
   PLATFORM_FEE_PERCENT,
   NET_POOL_PERCENT,
   MLM_LEVEL_RATES,
@@ -34,7 +35,7 @@ export interface MlmDistributionResult {
 }
 
 /**
- * @deprecated Superseded by {@link calculateRewardSplit} (75/15/5/5). Kept for old tooling only.
+ * @deprecated Superseded by {@link calculateRewardSplit} (55/15/5/5/20). Kept for old tooling only.
  * Calculates 5-Level MLM Payout Distribution in Micro-USD.
  * Guarantees zero floating-point error and exact integer conservation:
  * platformFee + sum(payouts) + platformReserve == grossAmountMicroUsd
@@ -125,12 +126,14 @@ export function calculateMlmDistribution(
 
 export interface RewardSplitResult {
   grossMicroUsd: bigint;
-  /** 75 % — credited to the shooter / earner's wallet. */
+  /** 55 % — credited to the shooter / earner's wallet. */
   earnerMicroUsd: bigint;
   /** 5 % — added to the earner's own accumulated head bounty. */
   bountyMicroUsd: bigint;
   /** 5 % platform / system fee. */
   platformFeeMicroUsd: bigint;
+  /** 20 % — Energy Recharge Reserve Pool (backs EC recharges from ads and cheers). */
+  energyPoolMicroUsd: bigint;
   /** 1–5 % per existing upline level (15 % in total when all 5 levels exist). */
   uplinePayouts: Array<{ depth: 1 | 2 | 3 | 4 | 5; userId: string; bps: bigint; amountMicroUsd: bigint }>;
   /** Upline levels with nobody in them (their share rolls over to the platform). */
@@ -145,9 +148,10 @@ export interface RewardSplitResult {
 
 /**
  * 100 % Revenue / Reward Split of a verified reward value V (kill bounty, chest, ad revenue):
- *   earner 75 % · uplines L1 5 % / L2 4 % / L3 3 % / L4 2 % / L5 1 % · head bounty 5 % · platform 5 %.
- * Integer Micro-USD only. Missing upline levels and rounding remainders go to the platform, so
- * earner + uplines + bounty + platformTotal == V always (throws otherwise).
+ *   earner 55 % · uplines L1 5 % / L2 4 % / L3 3 % / L4 2 % / L5 1 % · head bounty 5 % · platform 5 %
+ *   · Energy Recharge Reserve Pool 20 %.
+ * Each share is floor(V × rate). Missing upline levels and rounding remainders go to the platform, so
+ * earner + uplines + bounty + energyPool + platformTotal == V always (throws otherwise).
  */
 export function calculateRewardSplit(grossAmount: bigint | number | string, uplines: MlmUpline[] = []): RewardSplitResult {
   const gross = toMicroUsdBigInt(grossAmount);
@@ -156,6 +160,7 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
     earnerMicroUsd: 0n,
     bountyMicroUsd: 0n,
     platformFeeMicroUsd: 0n,
+    energyPoolMicroUsd: 0n,
     uplinePayouts: [],
     unclaimedLevels: [],
     platformRolloverMicroUsd: 0n,
@@ -168,6 +173,7 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
   const earner = share(REWARD_EARNER_BPS);
   const bounty = share(REWARD_BOUNTY_BPS);
   const platformFee = share(REWARD_PLATFORM_BPS);
+  const energyPool = share(REWARD_ENERGY_POOL_BPS);
 
   const byDepth = new Map<number, string>();
   for (const u of uplines) if (u.depth >= 1 && u.depth <= 5) byDepth.set(u.depth, u.userId);
@@ -188,9 +194,9 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
   }
 
   // Everything not explicitly allocated (empty upline levels + rounding dust) rolls over to the platform
-  const rollover = gross - earner - bounty - platformFee - uplineAllocated;
+  const rollover = gross - earner - bounty - platformFee - energyPool - uplineAllocated;
   const platformTotal = platformFee + rollover;
-  const total = earner + bounty + uplineAllocated + platformTotal;
+  const total = earner + bounty + energyPool + uplineAllocated + platformTotal;
   if (total !== gross || rollover < 0n) {
     throw new Error(`Reward split invariant failed: distributed ${total} != gross ${gross}`);
   }
@@ -199,6 +205,7 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
     earnerMicroUsd: earner,
     bountyMicroUsd: bounty,
     platformFeeMicroUsd: platformFee,
+    energyPoolMicroUsd: energyPool,
     uplinePayouts,
     unclaimedLevels,
     platformRolloverMicroUsd: rollover,
@@ -207,7 +214,7 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
   };
 }
 
-/** Earner (75 %) and head-bounty (5 %) shares as plain numbers (used by the game server HUD). */
+/** Earner (55 %) and head-bounty (5 %) shares as plain numbers (used by the game server HUD). */
 export function earnerAndBountyShares(grossMicroUsd: number): { earner: number; bounty: number } {
   const r = calculateRewardSplit(Math.max(0, Math.floor(grossMicroUsd)));
   return { earner: Number(r.earnerMicroUsd), bounty: Number(r.bountyMicroUsd) };

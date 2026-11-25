@@ -11,12 +11,13 @@ export const MIN_WITHDRAWAL_MICRO_USD = 10_000_000n; // $10.00 USD minimum withd
 export const WITHDRAWAL_BASE_FEE_MICRO_USD = 500_000n; // $0.50 USD transaction fee
 
 // ============================================================================
-// 100 % Revenue / Reward Split (owner formula, 2026-11-23) — basis points of V (10,000 = 100 %)
-//   75 % earner · 15 % uplines (L1 5 · L2 4 · L3 3 · L4 2 · L5 1) · 5 % earner's head bounty · 5 % platform
+// 100 % Revenue / Reward Split (owner formula, 2026-11-25) — basis points of V (10,000 = 100 %)
+//   55 % earner · 15 % uplines (L1 5 · L2 4 · L3 3 · L4 2 · L5 1) · 5 % earner's head bounty · 5 % platform
+//   · 20 % Energy Recharge Reserve Pool (backs EC recharges from ads and cheers)
 //   Missing upline levels and integer rounding remainders roll over to the platform.
 // ============================================================================
 export const REWARD_SPLIT_TOTAL_BPS = 10_000n;
-export const REWARD_EARNER_BPS = 7_500n; // 75 % credited to the shooter / earner
+export const REWARD_EARNER_BPS = 5_500n; // 55 % credited to the shooter / earner
 export const REWARD_UPLINE_BPS = {
   1: 500n, // Level 1 (Direct upline): 5 %
   2: 400n, // Level 2: 4 %
@@ -26,6 +27,7 @@ export const REWARD_UPLINE_BPS = {
 } as const; // 15 % total
 export const REWARD_BOUNTY_BPS = 500n; // 5 % added to the earner's own head bounty
 export const REWARD_PLATFORM_BPS = 500n; // 5 % platform / system fee
+export const REWARD_ENERGY_POOL_BPS = 2_000n; // 20 % Energy Recharge Reserve Pool (system_balances.energy_pool_micro_usd)
 
 // LEGACY (superseded by the split above; kept only for old tooling): Platform Fee = 5%, Net Pool = 95%
 export const PLATFORM_FEE_PERCENT = 5n;
@@ -105,10 +107,12 @@ export const DEV_MOCK_PHONE = '+66812345678';
 // Daily Proof-of-Activity & Energy Specs
 export const DAILY_QUESTS_REQUIRED_TO_UNLOCK = 4;
 /** Energy Ticket cap (EC); 100 % ad progress = +1 EC, up to this many. */
-export const MAX_ENERGY_TICKETS = 30;
-/** EC granted to a brand-new account. */
+export const MAX_ENERGY_TICKETS = 300;
+/**
+ * EC granted to a brand-new account. After sign-up EC comes ONLY from verified ads (rewarded video,
+ * banner impressions, Cheer) or an admin adjustment — there is no passive / hourly regeneration.
+ */
 export const INITIAL_ENERGY_TICKETS = 1;
-export const ENERGY_RECHARGE_SECONDS = 3600; // 1 hour per ticket
 export const MAX_AVATAR_UPLOAD_BYTES = 512 * 1024; // 512 KB
 
 // ---- Anti-cheat / audit rules (see docs/ECONOMY_AND_SPEC_AUDIT.md) ----------------------------
@@ -162,3 +166,18 @@ export const AD_VIDEO_EC_BP: Record<'video_15s' | 'video_30s', number> = { video
 export const AD_VIDEO_SECONDS: Record<'video_5s' | 'video_15s' | 'video_30s', number> = { video_5s: 5, video_15s: 15, video_30s: 30 };
 /** Anti-abuse cap on EC-recharge rewarded videos per user per UTC day. */
 export const AD_VIDEO_EC_DAILY_CAP = 30;
+
+// ---- "ให้กำลังใจ" Cheer (support a post / creator by watching an ad) ---------------------------
+/** Cheer ad formats: 30 s video = +1 EC, 15 s video = +50 % EC, sponsored banner boost = banner parity. */
+export const CHEER_AD_FORMATS = ['video_30s', 'video_15s', 'banner'] as const;
+export type CheerAdFormat = (typeof CHEER_AD_FORMATS)[number];
+/** Seconds a sponsored banner boost must stay on screen before it can be claimed. */
+export const CHEER_BANNER_SECONDS = 10;
+/** Minimum seconds between two completed cheers of one user. */
+export const CHEER_COOLDOWN_SECONDS = 45;
+/** Completed cheers per user per UTC day. */
+export const CHEER_DAILY_CAP = 15;
+/** Cheers from one user to the same creator (any of their posts or profile) per UTC day. */
+export const CHEER_PER_TARGET_DAILY_CAP = 3;
+export const CHEER_TARGET_TYPES = ['post', 'profile', 'energy'] as const;
+export type CheerTargetType = (typeof CHEER_TARGET_TYPES)[number];

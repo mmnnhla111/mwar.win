@@ -29,7 +29,7 @@ Every ad impression processed by the MWAR platform (via Server-to-Server postbac
 
 | Beneficiary | Split Rate | Basis Points | Calculation Formula |
 |:---|:---:|:---:|:---|
-| **Ad Watcher (Shooter)** | **75%** | 7,500 bps | $\text{watcher} = \lfloor V \times 0.75 \rfloor$ |
+| **Ad Watcher (Shooter)** | **55%** | 5,500 bps | $\text{watcher} = \lfloor V \times 0.55 \rfloor$ |
 | **Level 1 Direct Sponsor** | **5%** | 500 bps | $\text{L1} = \lfloor V \times 0.05 \rfloor$ |
 | **Level 2 Upline** | **4%** | 400 bps | $\text{L2} = \lfloor V \times 0.04 \rfloor$ |
 | **Level 3 Upline** | **3%** | 300 bps | $\text{L3} = \lfloor V \times 0.03 \rfloor$ |
@@ -37,6 +37,7 @@ Every ad impression processed by the MWAR platform (via Server-to-Server postbac
 | **Level 5 Upline** | **1%** | 100 bps | $\text{L5} = \lfloor V \times 0.01 \rfloor$ |
 | **Head Bounty Pool** | **5%** | 500 bps | Added directly to earner's 3D arena death bounty |
 | **Platform System Fee** | **5% + remainder** | 500 bps + rem | Unclaimed uplines & rounding remainders roll to system |
+| **Energy Recharge Reserve Pool** | **20%** | 2,000 bps | $\lfloor V \times 0.20 \rfloor$ → `system_balances.energy_pool_micro_usd` (backs ad / Cheer EC recharges) |
 
 ---
 
@@ -44,7 +45,7 @@ Every ad impression processed by the MWAR platform (via Server-to-Server postbac
 
 All figures reflect realistic programmatic publisher net yields across mobile web and hybrid HTML5/WebAssembly gaming environments.
 
-| Country Name | Code | Tier | Banner eCPM ($) | 5s Video eCPM ($) | 15s Video eCPM ($) | 30s Video eCPM ($) | 30s Single View (`micro_usd`) | 30s Total Coins | 75% Earner Coins |
+| Country Name | Code | Tier | Banner eCPM ($) | 5s Video eCPM ($) | 15s Video eCPM ($) | 30s Video eCPM ($) | 30s Single View (`micro_usd`) | 30s Total Coins | 75% Earner Coins (pre-2026-11-25; now 55%) |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **United States** | `US` | **Tier 1** | **$1.50** | **$6.50** | **$18.00** | **$32.00** | 32,000 µ$ | 320 | **240** |
 | **Australia** | `AU` | **Tier 1** | **$1.30** | **$5.50** | **$15.00** | **$27.00** | 27,000 µ$ | 270 | **202** |

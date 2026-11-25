@@ -9,7 +9,8 @@ import { Avatar } from '../ui/Avatar';
 import { Card } from '../ui/Card';
 import { useSession } from '../../lib/session';
 import { getSuggestions } from '../../lib/api';
-import { displayName, formatUsd } from '../../lib/format';
+import { displayName, formatEc, formatUsd } from '../../lib/format';
+import { CheerButton } from '../cheer/CheerModal';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { MAX_ENERGY_TICKETS } from '@mwar/shared';
 import { useEarningsText } from '../settings/EarningsVisibility';
@@ -44,7 +45,7 @@ export function LeftSidebar() {
           <div className="rounded-2xl bg-[#FFFBEA] py-2">
             <div className="text-[11px] font-semibold text-stone-500">{t('side.energy')}</div>
             <div className="text-sm font-extrabold text-stone-900">
-              {u?.energyTickets ?? '–'}/{u?.maxEnergyTickets ?? MAX_ENERGY_TICKETS} EC
+              {formatEc(u?.energyTickets, u?.maxEnergyTickets ?? MAX_ENERGY_TICKETS)}
             </div>
           </div>
           <div className="rounded-2xl bg-[#ECFDF5] py-2">
@@ -139,8 +140,8 @@ export function RightSidebar() {
             <Icon name="bolt" size={20} filled />
           </span>
           <div className="flex-1">
-            <div className="text-sm font-extrabold text-stone-900">
-              {boot?.user.energyTickets ?? '–'} / {boot?.user.maxEnergyTickets ?? MAX_ENERGY_TICKETS} EC
+            <div className="text-sm font-extrabold text-stone-900" data-sidebar-ec>
+              {formatEc(boot?.user.energyTickets, boot?.user.maxEnergyTickets ?? MAX_ENERGY_TICKETS)}
             </div>
             <div className="mt-1 h-1.5 rounded-full bg-stone-100 overflow-hidden">
               <div
@@ -150,6 +151,13 @@ export function RightSidebar() {
             </div>
           </div>
         </div>
+        {boot && (
+          <CheerButton
+            targetType="energy"
+            label={t('cheer.rechargeBtn')}
+            className="mt-3 w-full flex items-center justify-center gap-1.5 rounded-2xl bg-[#FFE135] hover:bg-[#FACC15] text-stone-900 text-sm font-extrabold py-2 transition"
+          />
+        )}
         <div className="mt-3 grid grid-cols-2 gap-2">
           <div className="rounded-2xl bg-[#ECFDF5] px-3 py-2">
             <div className="text-[11px] text-stone-500 font-semibold">{t('side.balance')}</div>

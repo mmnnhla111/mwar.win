@@ -45,8 +45,8 @@ async function processAdReward(
   if ((ins.meta?.changes ?? 0) === 0) return { success: true, duplicate: true };
   await logAdImpression(env.DB, { userId, provider, country: countryCode, format, purpose: 'monetized', microUsd: grossReward, source: value.source });
 
-  // 1–4. 100 % revenue split of V: 75 % watcher · 15 % uplines (5/4/3/2/1) · 5 % watcher's head
-  //      bounty · 5 % platform (missing upline levels roll over to the platform)
+  // 1–5. 100 % revenue split of V: 55 % watcher · 15 % uplines (5/4/3/2/1) · 5 % watcher's head
+  //      bounty · 5 % platform · 20 % Energy Recharge Pool (missing upline levels roll over to the platform)
   const split = await applyRewardSplit(env, {
     earnerId: userId,
     grossMicroUsd: grossReward,
@@ -69,6 +69,7 @@ async function processAdReward(
       uplines: split.uplinePayouts.length,
       headBounty: formatMicroUsd(split.bountyMicroUsd),
       platform: formatMicroUsd(split.platformTotalMicroUsd),
+      energyPool: formatMicroUsd(split.energyPoolMicroUsd),
     },
   };
 }
@@ -180,7 +181,7 @@ adsRouter.post('/video/start', authMiddleware, async (c) => {
  * Simulated ad view (banner impression or completed rewarded video):
  *  · detects the country (request.cf.country → GLOBAL), values it with P1/P2/P3 and logs the impression
  *  · purpose 'ec_recharge' (default): credits EC % to the real D1 EC balance (no money moves)
- *  · purpose 'monetized': "Monetized Ad Postback Test" — 75 / 15 (5-4-3-2-1) / 5 / 5 split (admin only)
+ *  · purpose 'monetized': "Monetized Ad Postback Test" — 55 / 15 (5-4-3-2-1) / 5 / 5 / 20 split (admin only)
  */
 adsRouter.post('/simulate-view', authMiddleware, async (c) => {
   const user = c.get('user');

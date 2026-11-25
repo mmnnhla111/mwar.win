@@ -9,6 +9,7 @@ import { Card, Spinner } from '../ui/Card';
 import { Icon } from '../ui/Icon';
 import { TAG_STYLE } from './PostComposer';
 import { ReportModal } from './ReportModal';
+import { CheerButton } from '../cheer/CheerModal';
 import { addComment, deletePost, getComments, setPostLike } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { displayName, formatCount, timeAgo } from '../../lib/format';
@@ -210,7 +211,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
         </div>
       )}
 
-      <div className="mx-4 border-t border-stone-100 grid grid-cols-3 py-1">
+      <div className="mx-4 border-t border-stone-100 grid grid-cols-4 py-1">
         <button
           onClick={toggleLike}
           aria-pressed={!!post.likedByMe}
@@ -219,10 +220,25 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
           <Icon name="heart" size={20} filled={!!post.likedByMe} className={post.likedByMe ? 'scale-110 transition' : 'transition'} /> {t('post.like')}
         </button>
         <button onClick={toggleComments} className={`flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold hover:bg-stone-50 ${showComments ? 'text-stone-900' : 'text-stone-500'}`}>
-          <Icon name="comment" size={20} /> {t('post.comment')}
+          <Icon name="comment" size={20} /> <span className="hidden sm:inline">{t('post.comment')}</span>
         </button>
+        {!isMine && !pending && !rejected ? (
+          <CheerButton
+            targetType="post"
+            targetId={post.id}
+            targetName={displayName(post.author)}
+            count={post.cheerCount || 0}
+            compactLabel
+            onCheered={(n) => n !== null && onChange({ ...post, cheerCount: n })}
+            className="flex items-center justify-center gap-1.5 py-2 rounded-xl text-sm font-semibold text-[#B08600] hover:bg-[#FFFBEA]"
+          />
+        ) : (
+          <span className="flex items-center justify-center gap-1.5 py-2 text-sm font-semibold text-stone-400" title={t('cheer.received')} data-cheer-count>
+            <Icon name="cheer" size={18} /> {formatCount(post.cheerCount || 0)}
+          </span>
+        )}
         <button onClick={share} className="flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold text-stone-500 hover:bg-stone-50">
-          <Icon name="share" size={20} /> {copied ? t('common.copied') : t('post.share')}
+          <Icon name="share" size={20} /> <span className="hidden sm:inline">{copied ? t('common.copied') : t('post.share')}</span>
         </button>
       </div>
 

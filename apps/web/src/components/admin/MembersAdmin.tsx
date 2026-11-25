@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { MEMBER_FILTERS, formatUsdGrouped } from '@mwar/shared';
+import { MEMBER_FILTERS, MAX_ENERGY_TICKETS, formatUsdGrouped } from '@mwar/shared';
+import { formatEc } from '../../lib/format';
 import type { AdminMemberDetail, AdminMemberRow, MemberFilter } from '@mwar/shared';
 import { apiFetch } from '../../lib/api';
 import { Card, Modal, Spinner, btn, inputCls } from '../ui/Card';
@@ -185,7 +186,7 @@ export function MembersAdmin() {
                     )}
                   </span>
                   <span className="block text-[11px] text-stone-400 truncate">
-                    @{m.username} · {m.referrerUsername ? t('adminm.uplineIs', { name: m.referrerUsername }) : t('adminm.noUpline')} · {m.energyTickets} EC
+                    @{m.username} · {m.referrerUsername ? t('adminm.uplineIs', { name: m.referrerUsername }) : t('adminm.noUpline')} · {formatEc(m.energyTickets, MAX_ENERGY_TICKETS)}
                   </span>
                 </span>
                 <span className="hidden sm:block text-right shrink-0">
@@ -299,7 +300,7 @@ function MemberInspector({ id, onClose, onChanged }: { id: string; onClose: () =
               {row(t('adminm.downlines'), `${d.directDownlines} / ${d.totalDownlines} (${d.downlinesByDepth.join(' · ')})`)}
               {row(t('adminm.balance'), usd(d.balanceMicroUsd))}
               {row(t('earnings.total'), usd(d.totalEarnedMicroUsd))}
-              {row('EC', `${d.energyTickets}`)}
+              {row('EC', formatEc(d.energyTickets, MAX_ENERGY_TICKETS))}
               {row(t('adminm.stats'), t('adminm.statsValue', { matches: d.totalMatches, kills: d.totalKills }))}
             </div>
 

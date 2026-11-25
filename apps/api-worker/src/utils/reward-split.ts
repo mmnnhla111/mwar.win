@@ -2,18 +2,19 @@ import { calculateRewardSplit, type FinancialLog } from '@mwar/shared';
 import type { Env } from '../types';
 import { getUplines } from './mlm-tree';
 import { logFinancialTransaction, walletBalance } from './audit-logger';
-import { PLATFORM_ACCOUNT_ID } from './guards';
+import { PLATFORM_ACCOUNT_ID, ENERGY_POOL_ACCOUNT_ID } from './guards';
 import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from '../routes/quests';
 
 const rid = () => Math.random().toString(36).substring(2, 7);
 
 /**
- * Applies the 100 % Revenue / Reward Split to a verified reward value V:
- *   75 %  → earner's wallet (immediately)
+ * Applies the 100 % Revenue / Reward Split to a verified reward value V (each share = floor(V × rate)):
+ *   55 %  → earner's wallet (immediately)
  *   15 %  → uplines L1 5 % · L2 4 % · L3 3 % · L4 2 % · L5 1 % (daily proof-of-activity ledger,
  *           paid at midnight if the sponsor completed 4 quests, otherwise forfeited to the platform)
  *    5 %  → earner's own head bounty (wallets.bounty_micro_usd) — claimed by whoever eliminates them
  *    5 %  → platform / system (+ every missing upline level and rounding remainder)
+ *   20 %  → Energy Recharge Reserve Pool (system_balances.energy_pool_micro_usd), backs ad / cheer EC
  */
 export async function applyRewardSplit(
   env: Env,
@@ -32,11 +33,15 @@ export async function applyRewardSplit(
   const earner = Number(split.earnerMicroUsd);
   const bounty = Number(split.bountyMicroUsd);
 
-  // 1. Earner 75 % + head bounty 5 % (one atomic D1 batch)
+  // 1. Earner 55 % + head bounty 5 % + Energy Pool 20 % + platform total (one atomic D1 batch)
   await env.DB.batch([
     env.DB.prepare(
       'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, bounty_micro_usd = bounty_micro_usd + ?2, updated_at = ?3 WHERE user_id = ?4'
     ).bind(earner, bounty, now, opts.earnerId),
+    env.DB.prepare(
+      `INSERT INTO system_balances (id, energy_pool_micro_usd, platform_micro_usd, updated_at) VALUES ('global', ?1, ?2, ?3)
+       ON CONFLICT(id) DO UPDATE SET energy_pool_micro_usd = energy_pool_micro_usd + ?1, platform_micro_usd = platform_micro_usd + ?2, updated_at = ?3`
+    ).bind(Number(split.energyPoolMicroUsd), Number(split.platformTotalMicroUsd), now),
   ]);
 
   // 2. Upline 15 % into the daily grey/green ledger
@@ -44,7 +49,7 @@ export async function applyRewardSplit(
     await recordPendingMlmCommission(env.DB, p.userId, opts.earnerId, p.depth, Number(p.amountMicroUsd), opts.actionType, dateKey);
   }
 
-  // 3. Quests: coins earned count the credited (75 %) amount
+  // 3. Quests: coins earned count the credited (55 %) amount
   const coins = Math.floor(earner / 100);
   if (coins > 0) await trackQuestAction(env.DB, opts.earnerId, 'earn_coins', coins, dateKey).catch(() => {});
 
@@ -73,6 +78,15 @@ export async function applyRewardSplit(
       user_id: PLATFORM_ACCOUNT_ID,
       action_type: 'PLATFORM_FEE',
       amount_micro_usd: split.platformTotalMicroUsd,
+      balance_after_micro_usd: 0n,
+      source_game_id: src,
+      related_user_id: opts.earnerId,
+    },
+    {
+      transaction_id: `${base}_energy`,
+      user_id: ENERGY_POOL_ACCOUNT_ID,
+      action_type: 'ENERGY_POOL_CREDIT',
+      amount_micro_usd: split.energyPoolMicroUsd,
       balance_after_micro_usd: 0n,
       source_game_id: src,
       related_user_id: opts.earnerId,

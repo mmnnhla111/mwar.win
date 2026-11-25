@@ -945,7 +945,7 @@ export class ShootingRoom extends Room<GameState> {
     let unsent = 0;
     this.pendingPayouts = this.pendingPayouts.filter((p) => {
       if (p.userId === player.id && (p.actionType === 'GAME_KILL' || p.actionType === 'CHEST_OPEN')) {
-        unsent += earnerAndBountyShares(p.amountMicroUsd).earner; // only the 75 % was ever credited
+        unsent += earnerAndBountyShares(p.amountMicroUsd).earner; // only the 55 % was ever credited
         return false;
       }
       if (p.userId === player.id && p.actionType === 'BOUNTY_CLAIM') {
@@ -1026,8 +1026,8 @@ export class ShootingRoom extends Room<GameState> {
   private queuePayout(sessionId: string, player: PlayerState, amount: number, actionType: 'GAME_KILL' | 'CHEST_OPEN', metadata: Record<string, unknown>) {
     const m = this.meta.get(sessionId);
     if (!m?.paid || m.flagged || !UUID_RE.test(player.id) || amount <= 0) return 0;
-    // 100 % split of V (applied by the Worker): 75 % to this player · 15 % uplines · 5 % onto this
-    // player's own head bounty · 5 % platform. The HUD shows the 75 % actually credited.
+    // 100 % split of V (applied by the Worker): 55 % to this player · 15 % uplines · 5 % onto this
+    // player's own head bounty · 5 % platform · 20 % Energy Pool. The HUD shows the 55 % actually credited.
     const { earner, bounty } = earnerAndBountyShares(amount);
     m.earned += earner;
     player.sessionEarningsMicroUsd += earner;

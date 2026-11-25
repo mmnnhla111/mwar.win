@@ -9,7 +9,6 @@ import {
   formatMicroUsd,
   MAX_ENERGY_TICKETS,
   INITIAL_ENERGY_TICKETS,
-  ENERGY_RECHARGE_SECONDS,
   MAX_AVATAR_UPLOAD_BYTES,
   ForgotPasswordSchema,
   ResetPasswordSchema,
@@ -157,30 +156,9 @@ authRouter.get('/me', authMiddleware, async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  // Energy Tickets Auto-Recharge (1 ticket per 3600s up to max_energy_tickets)
-  const now = Math.floor(Date.now() / 1000);
-  let energyTickets = user.energy_tickets ?? INITIAL_ENERGY_TICKETS;
-  const maxTickets = Math.min(user.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS);
-  let lastRecharge = user.last_energy_recharge || now;
-
-  if (energyTickets < maxTickets) {
-    const elapsed = Math.max(0, now - lastRecharge);
-    const recharged = Math.floor(elapsed / ENERGY_RECHARGE_SECONDS);
-    if (recharged > 0) {
-      energyTickets = Math.min(maxTickets, energyTickets + recharged);
-      lastRecharge = energyTickets >= maxTickets ? now : (lastRecharge + recharged * ENERGY_RECHARGE_SECONDS);
-      await c.env.DB
-        .prepare('UPDATE users SET energy_tickets = ?1, last_energy_recharge = ?2 WHERE id = ?3')
-        .bind(energyTickets, lastRecharge, authUser.userId)
-        .run();
-      user.energy_tickets = energyTickets;
-      user.last_energy_recharge = lastRecharge;
-    }
-  }
-
-  const secondsToNextRecharge = energyTickets < maxTickets
-    ? Math.max(0, ENERGY_RECHARGE_SECONDS - (now - lastRecharge))
-    : 0;
+  // EC is read as stored: no passive / hourly regeneration (spec §7.1) — only ads, cheers and admin
+  user.energy_tickets = user.energy_tickets ?? INITIAL_ENERGY_TICKETS;
+  user.max_energy_tickets = MAX_ENERGY_TICKETS;
 
   // Downline network count
   const downlineRes = await c.env.DB
@@ -197,7 +175,6 @@ authRouter.get('/me', authMiddleware, async (c) => {
     user: {
       ...user,
       downline_count: downlineRes?.count || 0,
-      seconds_to_next_recharge: secondsToNextRecharge,
     },
     wallet: wallet
       ? {

@@ -39,3 +39,5 @@ export async function walletBalance(db: D1Database, userId: string): Promise<big
 
 /** Platform account id used for platform-fee / reserve audit entries. */
 export const PLATFORM_ACCOUNT_ID = 'SYSTEM_PLATFORM';
+/** Ledger account of the Energy Recharge Reserve Pool (20 % of every reward split). */
+export const ENERGY_POOL_ACCOUNT_ID = 'SYSTEM_ENERGY_POOL';

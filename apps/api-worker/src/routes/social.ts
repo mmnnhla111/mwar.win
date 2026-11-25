@@ -77,7 +77,7 @@ function rowAuthor(r: any): SocialAuthor {
 }
 
 /** Post columns for list queries (media key + moderation fields, never media bytes). */
-const POST_COLS = `p.id, p.body, p.tag, p.image_url, p.media_type, p.media_key, p.content_rating, p.moderation_status, p.like_count, p.comment_count, p.created_at`;
+const POST_COLS = `p.id, p.body, p.tag, p.image_url, p.media_type, p.media_key, p.content_rating, p.moderation_status, p.like_count, p.comment_count, p.cheer_count, p.created_at`;
 
 /** Approved / 18+ media get a public URL; pending and rejected media never do. */
 export function rowPost(r: any, origin: string, withReason = false): SocialPost {
@@ -97,6 +97,7 @@ export function rowPost(r: any, origin: string, withReason = false): SocialPost 
     ...(withReason ? { moderationReason: r.moderation_reason || null } : {}),
     likeCount: r.like_count || 0,
     commentCount: r.comment_count || 0,
+    cheerCount: r.cheer_count || 0,
     createdAt: r.created_at,
   };
 }
@@ -413,7 +414,7 @@ async function loadProfile(c: AppCtx, username: string): Promise<SocialProfile |
     const r = await c.env.DB
       .prepare(
         `SELECT u.id, u.username, u.display_name, u.bio, ${AVATAR_SQL('u')} AS avatar_url, u.cover_color,
-                u.total_kills, u.total_matches, u.followers_count, u.following_count, u.posts_count, u.created_at,
+                u.total_kills, u.total_matches, u.followers_count, u.following_count, u.posts_count, u.cheer_count, u.created_at,
                 u.earnings_visibility, COALESCE(w.total_earned_micro_usd, 0) AS earned
          FROM users u LEFT JOIN wallets w ON w.user_id = u.id
          WHERE u.username = ?1 AND u.status != 'banned'`
@@ -435,6 +436,7 @@ async function loadProfile(c: AppCtx, username: string): Promise<SocialProfile |
       followersCount: r.followers_count || 0,
       followingCount: r.following_count || 0,
       postsCount: r.posts_count || 0,
+      cheerCount: r.cheer_count || 0,
       memberSince: r.created_at || 0,
     };
   });

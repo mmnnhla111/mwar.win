@@ -7,3 +7,4 @@ export * from './maps/largeMap';
 export * from './social';
 export * from './auth';
 export * from './games';
+export * from './cheer';

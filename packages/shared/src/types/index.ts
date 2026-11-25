@@ -110,7 +110,11 @@ export type FinancialActionType =
   /** A victim's head bounty paid out to their killer (informational, the bounty is not wallet balance). */
   | 'BOUNTY_PAYOUT'
   /** Platform / system share of a reward split: 5 % fee + unclaimed upline levels + rounding (informational). */
-  | 'PLATFORM_FEE';
+  | 'PLATFORM_FEE'
+  /** 20 % of a reward split credited to the Energy Recharge Reserve Pool (system ledger, informational). */
+  | 'ENERGY_POOL_CREDIT'
+  /** Ad value drawn from the Energy Recharge Reserve Pool to back an EC recharge (system ledger, informational). */
+  | 'ENERGY_POOL_DRAW';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [

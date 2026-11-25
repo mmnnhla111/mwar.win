@@ -2,7 +2,7 @@
  * MWAR Frontend API Client - Connects directly to local Cloudflare Worker (wrangler dev)
  */
 
-import type { TodayQuestsResponse, DailyMlmSummary } from '@mwar/shared';
+import type { TodayQuestsResponse, DailyMlmSummary, CheerAdFormat, CheerTargetType, CheerStatus, CheerResult } from '@mwar/shared';
 import type {
   BootstrapResponse,
   CursorPage,
@@ -459,4 +459,22 @@ export function getFpsRooms() {
 
 export function getFpsRoster(roomId: string, cursor?: string | null) {
   return apiFetch<FpsRoomRosterResponse>(`/api/games/fps/rooms${qs({ room: roomId, cursor })}`);
+}
+
+// ---- "ให้กำลังใจ" Cheer (ad-backed support + EC recharge) ----------------------------------------
+export function getCheerStatus(targetType: CheerTargetType, targetId?: string | null) {
+  const q = new URLSearchParams({ targetType });
+  if (targetId) q.set('targetId', targetId);
+  return apiFetch<CheerStatus>(`/api/ads/cheer/status?${q}`);
+}
+
+export function startCheer(data: { format: CheerAdFormat; targetType: CheerTargetType; targetId?: string | null }) {
+  return apiFetch<{ success: true; viewId: string; format: CheerAdFormat; durationSeconds: number; startedAt: number; ecBp: number }>('/api/ads/cheer/start', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function completeCheer(viewId: string) {
+  return apiFetch<CheerResult>('/api/ads/cheer', { method: 'POST', body: JSON.stringify({ viewId }) });
 }

@@ -29,19 +29,20 @@ reward or ad-revenue value **V**:
 
 | Share | % of V | Goes to | When |
 |---|---|---|---|
-| Shooter / earner | **75 %** | Earner's wallet | Immediately |
+| Shooter / earner | **55 %** (was 75 % until 2026-11-25) | Earner's wallet | Immediately |
 | Upline L1 (direct) | **5 %** | Daily grey/green ledger, paid at midnight if the sponsor did 4 quests, else forfeited to the platform | Midnight settlement |
 | Upline L2 | **4 %** | Same | Same |
 | Upline L3 | **3 %** | Same | Same |
 | Upline L4 | **2 %** | Same | Same |
 | Upline L5 | **1 %** | Same | Same |
 | Earner's head bounty | **5 %** | `wallets.bounty_micro_usd` of the **earner** (not withdrawable) | Claimed by whoever eliminates them, or by whoever opens their suicide / environmental-death bounty chest |
-| Platform / system fee | **5 %** | Platform ledger (`PLATFORM_FEE` on `SYSTEM_PLATFORM`) | Immediately |
-| **Total** | **100 %** | 75 + (5 + 4 + 3 + 2 + 1) + 5 + 5 | |
+| Platform / system fee | **5 %** | Platform ledger (`PLATFORM_FEE` on `SYSTEM_PLATFORM`, `system_balances.platform_micro_usd`) | Immediately |
+| Energy Recharge Reserve Pool | **20 %** | `system_balances.energy_pool_micro_usd`, ledger `ENERGY_POOL_CREDIT` on `SYSTEM_ENERGY_POOL` | Immediately |
+| **Total** | **100 %** | 55 + (5 + 4 + 3 + 2 + 1) + 5 + 5 + 20 | |
 
 | # | Rule | Status | Where |
 |---|---|---|---|
-| 2.1 | Earner gets **75 %** of V | [x] | `REWARD_EARNER_BPS = 7500n`, `calculateRewardSplit()` in `packages/shared/src/math/mlm.ts`; credited by `applyRewardSplit()` in `api-worker/src/utils/reward-split.ts` |
+| 2.1 | Earner gets **55 %** of V (+ 20 % Energy Pool, 2026-11-25) | [x] | `REWARD_EARNER_BPS = 5500n`, `REWARD_ENERGY_POOL_BPS = 2000n`, `calculateRewardSplit()` in `packages/shared/src/math/mlm.ts`; credited by `applyRewardSplit()` in `api-worker/src/utils/reward-split.ts` |
 | 2.2 | Uplines **L1 5 % · L2 4 % · L3 3 % · L4 2 % · L5 1 %** (15 % total) | [x] | `REWARD_UPLINE_BPS`; amounts go to `daily_mlm_pending_ledger` (MDU unlock rule still applies) |
 | 2.3 | **5 %** onto the earner's own head bounty | [x] | `REWARD_BOUNTY_BPS = 500n`; `wallets.bounty_micro_usd` (migration `0006_head_bounty.sql`), logged as `BOUNTY_ACCRUE` |
 | 2.4 | **5 %** platform / system fee | [x] | `REWARD_PLATFORM_BPS = 500n`, logged as `PLATFORM_FEE` |
@@ -51,7 +52,7 @@ reward or ad-revenue value **V**:
 | 2.8 | Applied to game kills, bounty chests and ad revenue | [x] | `routes/game.ts` (GAME_KILL / CHEST_OPEN), `routes/ads.ts` (AD_WATCH), both via `applyRewardSplit()` |
 | 2.9 | Head bounty is claimed **in full** by the killer; a suicide / environmental death puts it into the bounty chest; an unopened or voided chest leaves it with its owner | [x] | Game server: `queueBountyClaim()`, `spawnDeathChest()`, `returnChestBounty()`; Worker: `BOUNTY_CLAIM` → `claimHeadBounty()` (compare-and-swap, so it can only be claimed once). Logged as `BOUNTY_PAYOUT` (victim) + `BOUNTY_CLAIM` (claimer, inflow) |
 | 2.10 | No bounty claim on collusion kills, by guests, from yourself, or by flagged sessions | [x] | `ShootingRoom.queueBountyClaim()` checks paid seat, flags, ids |
-| 2.11 | In-match HUD shows the credited 75 % and your current head bounty | [x] | `PlayerState.bountyMicroUsd` (seeded from the EC entry token), web HUD "Head Bounty" |
+| 2.11 | In-match HUD shows the credited 55 % and your current head bounty | [x] | `PlayerState.bountyMicroUsd` (seeded from the EC entry token), web HUD "Head Bounty" |
 | 2.12 | The 5-level closure tree is built at signup and re-built when a referral is bought | [x] | `utils/mlm-tree.ts`, `routes/marketplace.ts` |
 | 2.13 | The old 95 % net-pool function is no longer used for money | [x] | `calculateMlmDistribution()` is marked `@deprecated`; no route calls it |
 
@@ -87,12 +88,13 @@ reward or ad-revenue value **V**:
 
 | # | Rule | Status | Where |
 |---|---|---|---|
-| 4.1 | Maximum **6** tickets | [x] | `MAX_ENERGY_TICKETS = 6`; practice claims are capped at it |
-| 4.2 | Recharge **1 ticket per hour** up to the cap | [x] | `routes/auth.ts /me` (`ENERGY_RECHARGE_SECONDS = 3600`) |
+| 4.1 | Maximum **300** tickets (2026-11-25; was 6 → 30), new accounts start with **1** | [x] | `MAX_ENERGY_TICKETS = 300`, `INITIAL_ENERGY_TICKETS = 1`; migration 0013 sets every account's cap to 300 |
+| 4.2 | **No passive / hourly regeneration** (2026-11-25, replaces "1 ticket per hour") | [x] | `ENERGY_RECHARGE_SECONDS` removed; `/api/auth/me` and `/api/bootstrap` only read EC; `/enter` no longer touches `last_energy_recharge` |
 | 4.3 | **1 EC is spent** to enter a paid (cash) arena | [x] *was `[ ]`* (EC was never consumed anywhere) | `POST /api/game/enter`: atomic `energy_tickets >= 1` decrement, `arena_entries` row, `EC_CONSUME` log |
-| 4.4 | When a full (6/6) wallet spends a ticket, the hourly recharge clock starts at that moment | [x] *was `[ ]`* | `CASE WHEN energy_tickets >= max …` in `/enter` |
+| 4.4 | ~~Hourly recharge clock~~ — removed with 4.2 | n/a | |
 | 4.5 | Practice / bot mode pays **zero cash and zero EC** (owner addendum 2026-11-23): bot kills, bot-mode chests → 0 EC, 0 Micro-USD | [x] | Web client no longer claims; `POST /api/practice/claim-ec` returns **410 Gone** |
 | 4.6 | EC recharge comes **from ads only**: passive banner (Practice / Solo Bot + Ghost Spectator) reports 1 impression per 20 s of visible tab → EC % in proportion to the banner's value vs a 30 s video in that country; rewarded video 15 s = +50 %, 30 s = +100 % (1 EC) | [x] | `POST /api/ads/video/start` + `POST /api/ads/simulate-view`; `utils/ad-value.ts` `creditEcProgress` (10 000 bp = 1 EC, `users.energy_progress_bp`, migration 0007); `AD_EC_RECHARGE` log |
+| 4.6b | "ให้กำลังใจ" Cheer ads (30 s = +1 EC, 15 s = +50 %, banner boost): 45 s cooldown, 15 / user / UTC day, 3 / creator / day, enforced in one conditional D1 INSERT | [x] | `routes/cheer.ts`, `cheer_events` (migration 0013), spec §7.4 |
 | 4.6a | Ad EC anti-abuse | [x] | Banner ≥ 18 s server gap per user; videos need a server-side session and the full 15/30 s before credit, credited once; 30 EC videos / user / UTC day |
 | 4.7 | Only paid seats earn money in the arena | [x] *was `[ ]`* | The game server pays only sessions that joined with a valid signed entry token |
 

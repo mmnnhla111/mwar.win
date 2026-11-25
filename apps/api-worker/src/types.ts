@@ -24,6 +24,8 @@ export interface Env {
   LOG_RECEIVER_SECRET?: string;
   /** Secret the ad networks append to S2S postbacks (?secret=...). Required when DEV_MOCK_MODE is off. */
   AD_POSTBACK_SECRET?: string;
+  /** Comma list of Cheer ad formats to switch off (e.g. 'banner' when no sponsor is booked). */
+  CHEER_DISABLED_FORMATS?: string;
   /** Alias accepted for AD_POSTBACK_SECRET. */
   ADS_POSTBACK_SECRET?: string;
   /** Alias accepted for LOG_RECEIVER_SECRET. */

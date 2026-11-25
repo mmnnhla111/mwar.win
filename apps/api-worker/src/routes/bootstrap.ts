@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { ENERGY_RECHARGE_SECONDS, INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd } from '@mwar/shared';
+import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd } from '@mwar/shared';
 import type { BootstrapResponse, ProfileCoverColor } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { getUtcDateKey } from './quests';
@@ -17,7 +17,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
     c.env.DB.batch([
       c.env.DB.prepare(
         `SELECT id, username, display_name, CASE WHEN avatar_url LIKE 'data:%' THEN NULL ELSE avatar_url END AS avatar_url,
-                cover_color, role, status, rank_badge, energy_tickets, max_energy_tickets, last_energy_recharge,
+                cover_color, role, status, rank_badge, energy_tickets, max_energy_tickets,
                 energy_progress_pct, created_at, show_nsfw, preferred_lang, earnings_visibility
          FROM users WHERE id = ?1`
       ).bind(me.userId),
@@ -41,19 +41,10 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
   const remaining = Math.max(0, Number((core[2].results?.[0] as any)?.remaining ?? 0));
   const unreadNotif = Number((core[3].results?.[0] as any)?.n ?? 0);
 
-  // Energy Ticket hourly recharge (same rule as /api/auth/me); written only when a ticket was gained
   const now = Math.floor(Date.now() / 1000);
-  let tickets = u.energy_tickets ?? INITIAL_ENERGY_TICKETS;
-  const maxTickets = Math.min(u.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS);
-  let last = u.last_energy_recharge || now;
-  if (tickets < maxTickets) {
-    const gained = Math.floor(Math.max(0, now - last) / ENERGY_RECHARGE_SECONDS);
-    if (gained > 0) {
-      tickets = Math.min(maxTickets, tickets + gained);
-      last = tickets >= maxTickets ? now : last + gained * ENERGY_RECHARGE_SECONDS;
-      await c.env.DB.prepare('UPDATE users SET energy_tickets = ?1, last_energy_recharge = ?2 WHERE id = ?3').bind(tickets, last, me.userId).run();
-    }
-  }
+  // EC as stored: no passive / hourly regeneration (spec §7.1). Read-only — bootstrap never writes EC.
+  const tickets = u.energy_tickets ?? INITIAL_ENERGY_TICKETS;
+  const maxTickets = MAX_ENERGY_TICKETS;
 
   const body: BootstrapResponse = {
     user: {
@@ -67,7 +58,6 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       energyTickets: tickets,
       maxEnergyTickets: maxTickets,
       energyProgressPct: u.energy_progress_pct ?? 0,
-      secondsToNextRecharge: tickets < maxTickets ? Math.max(0, ENERGY_RECHARGE_SECONDS - (now - last)) : 0,
       createdAt: u.created_at,
       showNsfw: u.show_nsfw === 1,
       preferredLang: (UI_LANG_CODES as readonly string[]).includes(u.preferred_lang) ? u.preferred_lang : 'en',
