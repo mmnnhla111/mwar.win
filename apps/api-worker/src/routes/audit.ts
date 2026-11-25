@@ -1,23 +1,15 @@
 import { Hono } from 'hono';
 import { WithdrawalReviewSchema, formatMicroUsd } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
-import { authMiddleware } from '../middleware/auth';
+import { requireStaff } from '../middleware/staff';
 import { logFinancialTransaction, logReceiverHeaders, walletBalance } from '../utils/audit-logger';
-import type { Context, Next } from 'hono';
 import { isLocalDev } from '../utils/guards';
 
 export const auditRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
-/** Admin / auditor only (local `wrangler dev` keeps the Dev Mock Panel working without a role). */
-async function requireAuditor(c: Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>, next: Next) {
-  if (isLocalDev(c)) return next();
-  // authMiddleware returns a 401 response when the token is missing/invalid; otherwise it sets c.get('user')
-  const denied = await authMiddleware(c, async () => {});
-  if (denied) return denied;
-  const role = c.get('user')?.role;
-  if (role !== 'admin' && role !== 'auditor') return c.json({ error: 'Forbidden: insufficient role privileges' }, 403);
-  return next();
-}
+/** Finance: reading the queue = super_admin / finance_auditor; approving payouts = super_admin (RBAC, migration 0013). */
+const requireFinanceRead = requireStaff('financeRead');
+const requireFinanceWrite = requireStaff('financeWrite');
 
 /**
  * Layer 1 (deterministic): the D1 wallet balance must equal the PostgreSQL 90-day ledger sum
@@ -40,7 +32,7 @@ async function layer1Check(env: Env, userId: string) {
 }
 
 // 1. Get Pending Withdrawals (For Admin / Auditor / Dev UI)
-auditRouter.get('/pending', requireAuditor, async (c) => {
+auditRouter.get('/pending', requireFinanceRead, async (c) => {
   const rows = await c.env.DB
     .prepare(
       `SELECT w.id, w.user_id, w.amount_micro_usd, w.fee_micro_usd, w.crypto_currency,
@@ -65,7 +57,7 @@ auditRouter.get('/pending', requireAuditor, async (c) => {
 });
 
 // 2. Review and Process Withdrawal (Approve or Reject with Refund)
-auditRouter.post('/review', requireAuditor, async (c) => {
+auditRouter.post('/review', requireFinanceWrite, async (c) => {
   const body = await c.req.json().catch(() => null);
 
   const parseResult = WithdrawalReviewSchema.safeParse(body);

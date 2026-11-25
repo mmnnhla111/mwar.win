@@ -128,6 +128,7 @@ export interface AdminMemberRow {
   displayName: string | null;
   status: 'active' | 'suspended' | 'banned';
   role: 'player' | 'admin' | 'auditor';
+  staffRole: import('../platform').StaffRole;
   referrerId: string | null;
   referrerUsername: string | null;
   energyTickets: number;

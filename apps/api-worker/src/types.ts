@@ -15,6 +15,8 @@ export interface Env {
   LOG_QUEUE: Queue<FinancialLog>;
 
   // Environment Variables & Secrets
+  /** Comma-separated usernames that are always super_admin (owner lock-out protection). */
+  SUPER_ADMIN_USERNAMES?: string;
   DEV_MOCK_MODE?: string;
   JWT_SECRET: string;
   INTERNAL_API_SECRET: string;

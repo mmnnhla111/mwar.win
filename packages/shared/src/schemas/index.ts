@@ -107,9 +107,10 @@ export const GameBatchPayoutSchema = z.object({
 export const DirectMessageSendSchema = z.object({
   receiver_id: z.string().uuid(),
   message_text: z.string().max(1000).optional(),
-  media_r2_url: z.string().url().optional(),
-}).refine((data) => data.message_text || data.media_r2_url, {
-  message: 'Must provide either message text or media URL',
+  /** Chat photo / video uploaded with POST /api/chat/media (deleted from R2 after 7 days). */
+  media_key: z.string().regex(/^chat-media\/\d{4}\/\d{2}\/\d{2}\/[0-9a-f-]{36}\.(webp|jpg|mp4)$/).optional(),
+}).refine((data) => data.message_text || data.media_key, {
+  message: 'Must provide either message text or media',
 });
 
 // Daily Quest Schemas

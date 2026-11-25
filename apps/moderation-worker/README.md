@@ -7,7 +7,7 @@ Self-hosted, CPU-only image/video moderation for social posts. Tuned for an Inte
 
 | Result | When | Effect |
 | --- | --- | --- |
-| `reject_prohibited` | Stage 1 (CLIP zero-shot) scores weapons, blood/gore or violence ≥ 0.55, a video is longer than 30 s, or the file can't be decoded | Post becomes `rejected`, R2 object deleted at once, author notified |
+| `reject_prohibited` | Stage 1 (CLIP zero-shot) scores weapons, blood/gore or violence ≥ 0.55, a video is longer than 3 minutes, or the file can't be decoded | Post becomes `rejected`, R2 objects of the whole post deleted at once, author notified (one notification) |
 | `mark_nsfw_18` | Stage 2 (NudeNet v3) finds explicit nudity ≥ 0.55 | Post becomes `nsfw_18`: only shown to users who turned on 18+ in /settings |
 | `approve_safe` | Everything else | Post becomes `approved` (or `nsfw_18` if the author tagged it 18+) |
 
@@ -47,3 +47,12 @@ pm2 logs mwar-nsfw-moderator
 Env knobs (in `/opt/mwar-node/.env`): `MOD_CPU_THREADS` (1-3), `MOD_BATCH_SIZE` (1-20),
 `MOD_REJECT_THRESHOLD`, `MOD_NSFW_THRESHOLD`, `MOD_BACKEND` (`auto` | `openvino` | `onnxruntime`).
 After editing `prompts.json`, re-run `.venv/bin/python prepare_models.py` and `pm2 restart mwar-nsfw-moderator`.
+
+### Multi-media posts and the 480p archive (2026-11-25)
+
+- Each photo / video of a post is its own `scan` job (`media_id` is sent back with the result). The API rejects the
+  whole post when any item is rejected; the post becomes visible to others once no item is pending.
+- Videos up to 3 minutes: 30 frames are sampled evenly over the whole clip. Downloads are capped at `MAX_DOWNLOAD_MB` (48).
+- `transcode_480p` jobs (approved videos older than 30 days, queued by the nightly prune): ffmpeg
+  `-vf scale=-2:480 -c:v libx264 -crf 28 -preset veryfast`, uploaded to the job's `upload_url`; when the 480p copy is not
+  smaller or ffmpeg fails, the worker calls `upload_url?skip=1` and the original stays.

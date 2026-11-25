@@ -8,7 +8,8 @@ import { Avatar } from '../../components/ui/Avatar';
 import { Card, Spinner, btn } from '../../components/ui/Card';
 import { Icon, type IconName } from '../../components/ui/Icon';
 import { FeedList } from '../../components/social/FeedList';
-import { getFeed, getProfile, setFollow } from '../../lib/api';
+import { getFeed, getProfile, setBlock, setFollow } from '../../lib/api';
+import { FollowListModal } from '../../components/social/FollowListModal';
 import { EditProfileModal, coverStyle } from '../../components/social/EditProfileModal';
 import { useSession } from '../../lib/session';
 import { displayName, formatCount, formatEc, formatUsd } from '../../lib/format';
@@ -49,6 +50,8 @@ function ProfileView() {
   const [followBusy, setFollowBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [followList, setFollowList] = useState<'followers' | 'following' | null>(null);
+  const [blockAsk, setBlockAsk] = useState(false);
 
   const load = useCallback(
     async (force = false) => {
@@ -62,8 +65,7 @@ function ProfileView() {
       setError('');
       try {
         const r = await getProfile(username);
-        const mine = (r.posts.mine || []).filter((m) => !r.posts.items.some((x) => x.id === m.id));
-        const s = { profile: r.profile, posts: [...mine, ...r.posts.items], next: r.posts.nextCursor };
+        const s = { profile: r.profile, posts: r.posts.items, next: r.posts.nextCursor };
         memoSet(key, s);
         setState(s);
       } catch (err: any) {
@@ -101,7 +103,7 @@ function ProfileView() {
     setMoreLoading(true);
     try {
       const pg = await getFeed({ author: state.profile.username, cursor: state.next });
-      update({ ...state, posts: [...state.posts, ...pg.items], next: pg.nextCursor });
+      update({ ...state, posts: [...state.posts, ...pg.items.filter((x) => !state.posts.some((y) => y.id === x.id))], next: pg.nextCursor });
     } finally {
       setMoreLoading(false);
     }
@@ -117,6 +119,24 @@ function ProfileView() {
       memoDrop(`profile:${boot?.user.username}`);
     } finally {
       setFollowBusy(false);
+    }
+  };
+
+  const toggleBlock = async () => {
+    if (!state) return;
+    const block = !state.profile.isBlocked;
+    setBlockAsk(false);
+    try {
+      const r = await setBlock(state.profile.id, block);
+      update({
+        ...state,
+        profile: { ...state.profile, isBlocked: r.blocked, isFollowing: r.blocked ? false : state.profile.isFollowing },
+        posts: r.blocked ? [] : state.posts,
+      });
+      memoDrop('feed:');
+      if (!r.blocked) load(true);
+    } catch {
+      /* ignore */
     }
   };
 
@@ -149,13 +169,13 @@ function ProfileView() {
   return (
     <div className="space-y-3 max-w-[640px] mx-auto">
       <Card className="overflow-hidden">
-        <div className="h-36 sm:h-44 relative" style={coverStyle(p.coverColor)}>
-          <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(circle at 20% 30%, #fff 0 2px, transparent 3px), radial-gradient(circle at 70% 60%, #fff 0 2px, transparent 3px)', backgroundSize: '48px 48px' }} />
+        <div className="h-36 sm:h-44 relative" style={coverStyle(p.coverColor, p.coverUrl)} data-profile-cover={p.coverUrl ? 'photo' : 'gradient'}>
+          <div className={`absolute inset-0 opacity-40 ${p.coverUrl ? 'hidden' : ''}`} style={{ backgroundImage: 'radial-gradient(circle at 20% 30%, #fff 0 2px, transparent 3px), radial-gradient(circle at 70% 60%, #fff 0 2px, transparent 3px)', backgroundSize: '48px 48px' }} />
         </div>
         <div className="px-4 sm:px-6 pb-5">
-          <div className="flex items-end justify-between gap-3 -mt-12">
+          <div className="flex flex-col sm:flex-row items-start sm:items-end justify-between gap-3 -mt-12">
             <Avatar src={p.avatarUrl} name={displayName(p)} size={88} ring className="ring-4 relative z-10 shrink-0" />
-            <div className="flex flex-wrap justify-end gap-1.5 sm:gap-2 pb-1">
+            <div className="relative z-10 flex flex-wrap justify-start sm:justify-end gap-1.5 sm:gap-2 pb-1" data-profile-actions>
               {p.isMe ? (
                 <>
                   <button onClick={() => setEditOpen(true)} className={btn.soft}>
@@ -170,6 +190,11 @@ function ProfileView() {
                   <CheerButton targetType="energy" label={t('cheer.rechargeBtn')} className={btn.soft} />
                 </>
               ) : (
+                p.isBlocked ? (
+                  <button onClick={toggleBlock} className={btn.soft} data-unblock>
+                    {t('profile.unblock')}
+                  </button>
+                ) : (
                 <>
                   <button onClick={toggleFollow} disabled={followBusy} className={p.isFollowing ? btn.soft : btn.primary}>
                     <Icon name={p.isFollowing ? 'check' : 'plus'} size={16} /> {p.isFollowing ? t('profile.followingBtn') : t('profile.follow')}
@@ -184,20 +209,35 @@ function ProfileView() {
                     className={`${btn.soft} !bg-[#FFF6C2] !text-[#8A6A00]`}
                     onCheered={(n) => n !== null && update({ ...state, profile: { ...p, cheerCount: n } })}
                   />
+                  <button onClick={() => setBlockAsk(true)} className={`${btn.soft} !text-rose-500`} data-block>
+                    {t('profile.block')}
+                  </button>
                 </>
+                )
               )}
             </div>
           </div>
+          {blockAsk && (
+            <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700 flex items-center gap-2 flex-wrap" role="alertdialog">
+              <span className="flex-1 min-w-[12rem] font-semibold">{t('profile.blockConfirm', { name: displayName(p) })}</span>
+              <button onClick={() => setBlockAsk(false)} className="rounded-full px-3 py-1 text-xs font-bold bg-white border border-stone-200 text-stone-600">
+                {t('common.cancel')}
+              </button>
+              <button onClick={toggleBlock} className="rounded-full px-3 py-1 text-xs font-bold bg-rose-500 text-white" data-confirm-block>
+                {t('profile.block')}
+              </button>
+            </div>
+          )}
           <h1 className="mt-3 text-2xl font-extrabold text-stone-900 tracking-tight">{displayName(p)}</h1>
           <div className="text-sm text-stone-400">@{p.username}</div>
           {p.bio && <p className="mt-2 text-[15px] text-stone-700 whitespace-pre-wrap">{p.bio}</p>}
-          <div className="mt-3 flex gap-4 text-sm">
-            <Link href={`/friends?u=${p.username}&tab=followers`} className="hover:underline">
+          <div className="mt-3 flex gap-x-4 gap-y-1 flex-wrap text-sm">
+            <button onClick={() => setFollowList('followers')} className="hover:underline" data-open-followers>
               <b className="text-stone-900">{formatCount(p.followersCount)}</b> <span className="text-stone-500">{t('profile.followers')}</span>
-            </Link>
-            <Link href={`/friends?u=${p.username}&tab=following`} className="hover:underline">
+            </button>
+            <button onClick={() => setFollowList('following')} className="hover:underline">
               <b className="text-stone-900">{formatCount(p.followingCount)}</b> <span className="text-stone-500">{t('profile.following')}</span>
-            </Link>
+            </button>
             <span>
               <b className="text-stone-900">{formatCount(p.postsCount)}</b> <span className="text-stone-500">{t('profile.posts')}</span>
             </span>
@@ -244,6 +284,8 @@ function ProfileView() {
         empty={<Card className="p-8 text-center text-sm text-stone-500">{t('profile.noPosts')}</Card>}
       />
 
+      {p.isBlocked && <Card className="p-6 text-center text-sm text-stone-500">{t('profile.blockedNote')}</Card>}
+      <FollowListModal username={p.username} type={followList} onClose={() => setFollowList(null)} />
       {p.isMe && (
         <EditProfileModal
           open={editOpen}
@@ -255,7 +297,7 @@ function ProfileView() {
             memoDrop('feed:');
             patch((b) => ({
               ...b,
-              user: { ...b.user, displayName: np.displayName, avatarUrl: np.avatarUrl, coverColor: np.coverColor },
+              user: { ...b.user, displayName: np.displayName, avatarUrl: np.avatarUrl, coverColor: np.coverColor, coverUrl: np.coverUrl ?? null },
             }));
           }}
         />

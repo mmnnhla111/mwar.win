@@ -10,3 +10,15 @@
 
 /favicon.ico
   Cache-Control: public, max-age=86400
+
+# Service worker: always revalidate so a new version is picked up at once
+/sw.js
+  Cache-Control: no-cache
+  Service-Worker-Allowed: /
+
+# Media compression library (reloaded with ?v=<timestamp> after a server-side rejection)
+/vendor/*
+  Cache-Control: public, max-age=3600
+
+/manifest.webmanifest
+  Cache-Control: public, max-age=3600

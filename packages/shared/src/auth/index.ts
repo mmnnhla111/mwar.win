@@ -28,6 +28,8 @@ export const TelegramOAuthSchema = z.object({
   auth_date: z.union([z.number().int().positive(), z.string().regex(/^\d{1,12}$/)]),
   hash: z.string().regex(/^[a-fA-F0-9]{64}$/),
   referral_code: referralCode,
+  /** Sticky referral: the device fingerprint, used when no code came with the sign-up. */
+  device_fp: z.string().regex(/^[a-f0-9]{32,64}$/).optional().nullable(),
   link_to_current_user: z.boolean().optional(),
 });
 export type TelegramOAuthInput = z.infer<typeof TelegramOAuthSchema>;
@@ -37,6 +39,8 @@ export const LineOAuthSchema = z.object({
   code: z.string().min(1).max(512),
   redirect_uri: z.string().url().max(512),
   referral_code: referralCode,
+  /** Sticky referral: the device fingerprint, used when no code came with the sign-up. */
+  device_fp: z.string().regex(/^[a-f0-9]{32,64}$/).optional().nullable(),
   link_to_current_user: z.boolean().optional(),
 });
 export type LineOAuthInput = z.infer<typeof LineOAuthSchema>;

@@ -4,14 +4,14 @@ import type { FinancialLog } from '@mwar/shared';
 import { CHAT_RETENTION_MONTHS } from '@mwar/shared';
 import type { Env } from './types';
 import { authRouter } from './routes/auth';
-import { socialAuthRouter } from './routes/auth-social';
+import { socialAuthRouter, referralRouter } from './routes/auth-social';
 import { networkRouter } from './routes/network';
 import { walletRouter } from './routes/wallet';
 import { marketplaceRouter, releaseMarketplaceEscrow } from './routes/marketplace';
 import { adsRouter } from './routes/ads';
 import { cheerRouter } from './routes/cheer';
 import { gameRouter } from './routes/game';
-import { chatRouter } from './routes/chat';
+import { chatRouter, serveChatMedia, pruneChatMedia } from './routes/chat';
 import { auditRouter } from './routes/audit';
 import { questsRouter, settleDailyMlm, authorizeSettlement, yesterdayUtcDateKey } from './routes/quests';
 
@@ -19,7 +19,7 @@ import { stringifyLog, logReceiverHeaders } from './utils/audit-logger';
 import { nodesRouter } from './routes/nodes';
 import { practiceRouter } from './routes/practice';
 import { isLocalDev, hasInternalSecret } from './utils/guards';
-import { socialRouter, serveMedia, serveSocialMedia } from './routes/social';
+import { socialRouter, serveMedia, serveSocialMedia, serveCover } from './routes/social';
 import { moderationRouter, pruneModerationData } from './routes/moderation';
 import { gamesRouter } from './routes/games';
 import { adminRouter } from './routes/admin';
@@ -65,6 +65,7 @@ app.route('/api/ads/cheer', cheerRouter);
 app.route('/api/ads', adsRouter);
 app.route('/api/game', gameRouter);
 app.route('/api/chat', chatRouter);
+app.route('/api/referral', referralRouter);
 app.route('/api/audit', auditRouter);
 app.route('/api/quests', questsRouter);
 app.route('/api/nodes', nodesRouter);
@@ -79,6 +80,9 @@ app.route('/api/moderation', moderationRouter);
 app.get('/api/bootstrap', authMiddleware, bootstrapHandler);
 // Post photos / videos (approved or 18+ only; pending + rejected media are never served)
 app.get('/api/media/social/:y/:m/:file', serveSocialMedia);
+app.get('/api/media/covers/:y/:m/:file', serveCover);
+// Chat photos / videos (signed links; files are deleted after 7 days)
+app.get('/api/media/chat-media/:y/:m/:d/:file', serveChatMedia);
 // Public, immutable WebP media (avatars + legacy post photos) from R2
 app.get('/api/media/:uid/:file', serveMedia);
 
@@ -107,6 +111,12 @@ app.put('/api/internal/log-archive/:name', async (c) => {
     customMetadata: { sha256: c.req.header('X-Content-Sha256') || '' },
   });
   return c.json({ success: true, key: `audit-archive/${name}`, bytes: body.byteLength });
+});
+
+/** Chat media expiry on demand (the midnight cron runs the same job). */
+app.post('/api/internal/chat-media/prune', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401);
+  return c.json({ success: true, ...(await pruneChatMedia(c.env)) });
 });
 
 // Global Error Handler
@@ -159,5 +169,7 @@ export default {
       .catch((e: unknown) => console.warn('[Cron] chat retention failed', e));
     // Zero-bloat: finished moderation jobs (7 d), expired reset tokens, rejected posts + their R2 media
     await pruneModerationData(env).catch((e: unknown) => console.warn('[Cron] moderation prune failed', e));
+    // Chat photos / videos older than 7 days: R2 files deleted, message text kept
+    await pruneChatMedia(env).catch((e: unknown) => console.warn('[Cron] chat media prune failed', e));
   },
 };

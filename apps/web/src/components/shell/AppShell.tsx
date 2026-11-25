@@ -8,6 +8,8 @@ import { getAuthToken } from '../../lib/api';
 import { TopNav } from './TopNav';
 import { LeftSidebar, RightSidebar } from './Sidebars';
 import { BottomNav } from './BottomNav';
+import { SwipeTabs } from './SwipeTabs';
+import { PwaInstall } from './PwaInstall';
 import { isAuthPath, isBarePath, isGamePath } from './nav';
 import { BrandLogoFull, LemonLogo } from '../ui/Icon';
 import { Spinner } from '../ui/Card';
@@ -100,7 +102,9 @@ function MainFrame({ children }: { children: React.ReactNode }) {
             <LeftSidebar />
           </div>
         </aside>
-        <main className="min-w-0">{children}</main>
+        <main className="min-w-0">
+          <SwipeTabs>{children}</SwipeTabs>
+        </main>
         {!wide && (
           <aside className="hidden md:block">
             <div className="sticky top-[84px] max-h-[calc(100dvh-100px)] overflow-y-auto no-scrollbar">
@@ -111,6 +115,7 @@ function MainFrame({ children }: { children: React.ReactNode }) {
       </div>
       <BottomNav />
       <FloatingQuestWidget />
+      <PwaInstall />
       <DevPanelGate role={boot?.user.role} />
     </div>
   );
@@ -133,6 +138,11 @@ function DevPanelGate({ role }: { role?: string }) {
 
 function ShellSwitch({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || '/';
+  // Any page opened with ?ref= keeps the (valid) code on this device for a later sign-up
+  useEffect(() => {
+    const ref = new URLSearchParams(window.location.search).get('ref');
+    if (ref) import('../../lib/referral').then((m) => m.captureReferral(ref)).catch(() => {});
+  }, []);
   if (isGamePath(pathname)) return <GameFrame>{children}</GameFrame>;
   if (isAuthPath(pathname)) return <AuthFrame>{children}</AuthFrame>;
   if (isBarePath(pathname)) return <div className="min-h-[100dvh] bg-[#FAF9F5]">{children}</div>;

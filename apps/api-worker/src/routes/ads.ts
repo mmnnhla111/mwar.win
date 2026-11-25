@@ -13,6 +13,7 @@ import type { Env, AuthUserPayload } from '../types';
 import { applyRewardSplit } from '../utils/reward-split';
 import { trackQuestAction, getUtcDateKey } from './quests';
 import { isLocalDev, safeEqual } from '../utils/guards';
+import { getStaffRole } from '../middleware/staff';
 import { authMiddleware } from '../middleware/auth';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, parseAdFormat, utcDateKey, type AdValueSource } from '../utils/ad-value';
 
@@ -147,9 +148,10 @@ function cfCountry(c: AdCtx): string {
 }
 
 /** Monetized simulations mint real wallet money: admin / auditor accounts or local `wrangler dev` only. */
-function canSimulateMonetized(c: AdCtx) {
-  const role = c.get('user')?.role;
-  return isLocalDev(c) || role === 'admin' || role === 'auditor';
+async function canSimulateMonetized(c: AdCtx) {
+  if (isLocalDev(c)) return true;
+  if (!c.get('user')) return false;
+  return ['super_admin', 'admin', 'finance_auditor'].includes(await getStaffRole(c));
 }
 
 /** Start a rewarded video (15 s / 30 s). The server credits it only after the full duration. */
@@ -159,7 +161,7 @@ adsRouter.post('/video/start', authMiddleware, async (c) => {
   const format = parseAdFormat(body.format, 'video_30s');
   if (format === 'banner') return c.json({ error: 'Banners do not use a video session' }, 400);
   const purpose = body.purpose === 'monetized' ? 'monetized' : 'ec_recharge';
-  if (purpose === 'monetized' && !canSimulateMonetized(c)) return c.json({ error: 'Monetized ad simulation is limited to admin / auditor accounts' }, 403);
+  if (purpose === 'monetized' && !(await canSimulateMonetized(c))) return c.json({ error: 'Monetized ad simulation is limited to admin / auditor accounts' }, 403);
   const now = Math.floor(Date.now() / 1000);
   if (purpose === 'ec_recharge') {
     const dayStart = Math.floor(Date.parse(`${utcDateKey()}T00:00:00Z`) / 1000);
@@ -188,9 +190,9 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const format = parseAdFormat(body.format, 'banner');
   const purpose: 'ec_recharge' | 'monetized' = body.purpose === 'monetized' ? 'monetized' : 'ec_recharge';
-  if (purpose === 'monetized' && !canSimulateMonetized(c)) return c.json({ error: 'Monetized ad simulation is limited to admin / auditor accounts' }, 403);
+  if (purpose === 'monetized' && !(await canSimulateMonetized(c))) return c.json({ error: 'Monetized ad simulation is limited to admin / auditor accounts' }, 403);
   // Admins may test other countries; everyone else is valued at their real Cloudflare country
-  const country = canSimulateMonetized(c) && typeof body.country === 'string' ? normalizeCountry(body.country) : cfCountry(c);
+  const country = (await canSimulateMonetized(c)) && typeof body.country === 'string' ? normalizeCountry(body.country) : cfCountry(c);
   const now = Math.floor(Date.now() / 1000);
   const provider = 'mwar_simulated';
 

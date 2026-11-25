@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import type { Context, Next } from 'hono';
+import type { Context } from 'hono';
 import type { Env, AuthUserPayload } from '../types';
-import { authMiddleware } from '../middleware/auth';
+import { requireStaff, staffHas } from '../middleware/staff';
 import { isLocalDev, safeEqual } from '../utils/guards';
 import { moderatorInstallScript } from './moderator-installer';
 
@@ -9,16 +9,8 @@ const NODE_ROLES = ['all', 'game', 'logs', 'moderator'];
 
 export const nodesRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
-/** Admin / auditor only (local `wrangler dev` keeps the Dev Mock Panel working without a role). */
-async function requireAdminOrAuditor(c: Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>, next: Next) {
-  if (isLocalDev(c)) return next();
-  // authMiddleware returns a 401 response when the token is missing/invalid; otherwise it sets c.get('user')
-  const denied = await authMiddleware(c, async () => {});
-  if (denied) return denied;
-  const role = c.get('user')?.role;
-  if (role !== 'admin' && role !== 'auditor') return c.json({ error: 'Forbidden: insufficient role privileges' }, 403);
-  return next();
-}
+/** Server fleet: super_admin / admin (local `wrangler dev` without a token stays open for the Dev Mock Panel). */
+const requireAdminOrAuditor = requireStaff('nodes');
 
 /**
  * Validate incoming provisioning or node secret
@@ -534,7 +526,7 @@ nodesRouter.post('/heartbeat', async (c) => {
 // ----------------------------------------------------------------------------
 nodesRouter.get('/', requireAdminOrAuditor, async (c) => {
   // The provisioning key is admin-only (auditors see node telemetry, never the key)
-  const masterKey = c.get('user')?.role === 'admin' || isLocalDev(c) ? c.env.NODE_PROVISION_KEY || '' : '';
+  const masterKey = isLocalDev(c) || (await staffHas(c, 'nodes')) ? c.env.NODE_PROVISION_KEY || '' : '';
 
   const { results } = await c.env.DB
     .prepare(`
@@ -564,7 +556,6 @@ nodesRouter.get('/', requireAdminOrAuditor, async (c) => {
 // 4. Generate 1-Click Provision Command (POST /api/nodes/provision-command) - Protected
 // ----------------------------------------------------------------------------
 nodesRouter.post('/provision-command', requireAdminOrAuditor, async (c) => {
-  if (!isLocalDev(c) && c.get('user')?.role !== 'admin') return c.json({ error: 'Forbidden: admin only' }, 403);
   const body = await c.req.json().catch(() => ({}));
   const role = String(body.role || 'all').toLowerCase();
   if (!NODE_ROLES.includes(role)) return c.json({ error: `role must be one of ${NODE_ROLES.join(', ')}` }, 400);

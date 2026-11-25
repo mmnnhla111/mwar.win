@@ -2,18 +2,37 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { SOCIAL_COMMENT_MAX_CHARS } from '@mwar/shared';
-import type { SocialComment, SocialPost } from '@mwar/shared';
+import { POST_VISIBILITY, SOCIAL_COMMENT_MAX_CHARS, SOCIAL_POST_MAX_CHARS, staffCan } from '@mwar/shared';
+import type { PostVisibility, SocialComment, SocialPost } from '@mwar/shared';
 import { Avatar } from '../ui/Avatar';
 import { Card, Spinner } from '../ui/Card';
 import { Icon } from '../ui/Icon';
-import { TAG_STYLE } from './PostComposer';
+import { TAG_STYLE, VISIBILITY_ICON } from './PostComposer';
+import { MediaCarousel } from './MediaCarousel';
 import { ReportModal } from './ReportModal';
 import { CheerButton } from '../cheer/CheerModal';
-import { addComment, deletePost, getComments, setPostLike } from '../../lib/api';
+import { addComment, deleteComment, deletePost, getComments, setPostLike, updateComment, updatePost } from '../../lib/api';
 import { useSession } from '../../lib/session';
 import { displayName, formatCount, timeAgo } from '../../lib/format';
 import { useTranslation } from '../../i18n/I18nProvider';
+
+/** Post text with #hashtags as links to the hashtag feed. */
+export function RichText({ text }: { text: string }) {
+  const parts = text.split(/(#[\p{L}\p{M}\p{N}_]{1,40})/u);
+  return (
+    <>
+      {parts.map((part, i) =>
+        i % 2 === 1 ? (
+          <Link key={i} href={`/?hashtag=${encodeURIComponent(part.slice(1).toLowerCase())}`} className="font-semibold text-sky-600 hover:underline">
+            {part}
+          </Link>
+        ) : (
+          <React.Fragment key={i}>{part}</React.Fragment>
+        )
+      )}
+    </>
+  );
+}
 
 /** Lemon8-style post card. Comments are fetched only when the drawer is opened (saves D1 reads). */
 export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onChange: (p: SocialPost) => void; onDelete?: (id: string) => void }) {
@@ -30,6 +49,51 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
   const [copied, setCopied] = useState(false);
   const [menu, setMenu] = useState(false);
   const [reporting, setReporting] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editBody, setEditBody] = useState('');
+  const [editVis, setEditVis] = useState<PostVisibility>('public');
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [cmEdit, setCmEdit] = useState<{ id: string; body: string } | null>(null);
+
+  const startEdit = () => {
+    setMenu(false);
+    setEditBody(post.body);
+    setEditVis(post.visibility || 'public');
+    setEditing(true);
+  };
+  const saveEdit = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const r = await updatePost(post.id, { body: editBody.trim(), visibility: editVis });
+      onChange({ ...r.post, localPreviewUrls: post.localPreviewUrls });
+      setEditing(false);
+    } catch {
+      /* keep the editor open */
+    } finally {
+      setSaving(false);
+    }
+  };
+  const saveComment = async () => {
+    if (!cmEdit?.body.trim()) return;
+    try {
+      const r = await updateComment(cmEdit.id, cmEdit.body.trim());
+      setComments((prev) => (prev || []).map((c) => (c.id === cmEdit.id ? { ...c, body: r.body, editedAt: r.editedAt } : c)));
+      setCmEdit(null);
+    } catch {
+      /* ignore */
+    }
+  };
+  const removeComment = async (id: string) => {
+    try {
+      const r = await deleteComment(id);
+      setComments((prev) => (prev || []).filter((c) => c.id !== id));
+      onChange({ ...post, commentCount: r.commentCount });
+    } catch {
+      /* ignore */
+    }
+  };
 
   const toggleLike = async () => {
     if (likeBusy) return;
@@ -96,6 +160,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
 
   const remove = async () => {
     setMenu(false);
+    setConfirmDelete(false);
     try {
       await deletePost(post.id);
       onDelete?.(post.id);
@@ -105,11 +170,17 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
   };
 
   const isMine = !!me && me.id === post.author.id;
-  const canDelete = me && (isMine || me.role === 'admin');
+  const canDelete = !!me && (isMine || staffCan(me.staffRole, 'takedown'));
   const pending = post.moderationStatus === 'pending';
   const rejected = post.moderationStatus === 'rejected';
   const is18 = post.contentRating === 'nsfw_18';
-  const mediaSrc = post.mediaUrl || post.imageUrl || (pending ? post.localPreviewUrl : undefined) || null;
+  // Silent moderation: the author sees their post normally while it is checked (no badge); other
+  // players only ever receive approved / 18+ posts from the API.
+  const media = (post.media || [])
+    .map((m, i) => ({ ...m, url: m.url || post.localPreviewUrls?.[i] || '' }))
+    .filter((m) => !!m.url);
+  const legacySrc = !media.length ? post.mediaUrl || post.imageUrl || post.localPreviewUrl || null : null;
+  const visibility = post.visibility || 'public';
 
   return (
     <Card as="article" className="overflow-hidden">
@@ -127,11 +198,12 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
             <time dateTime={new Date(post.createdAt * 1000).toISOString()}>{timeAgo(post.createdAt, t, lang)}</time>
             <span className={`ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${TAG_STYLE[post.tag]}`}>#{t(`tag.${post.tag}`)}</span>
             {is18 && <span className="rounded-full px-2 py-0.5 text-[10px] font-black bg-rose-100 text-rose-600" title={t('post.nsfwTitle')}>18+</span>}
-            {pending && (
-              <span data-badge="pending" className="rounded-full px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 animate-pulse">
-                {t('post.reviewing')}
+            {visibility !== 'public' && (
+              <span className="text-[11px]" title={t(`visibility.${visibility}`)} data-visibility={visibility}>
+                {VISIBILITY_ICON[visibility]}
               </span>
             )}
+            {post.editedAt ? <span className="text-[10px] text-stone-400">· {t('post.edited')}</span> : null}
           </div>
         </div>
         {me && (
@@ -156,8 +228,13 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
                     <Icon name="shield" size={16} /> {t('report.menu')}
                   </button>
                 )}
+                {isMine && (
+                  <button onClick={startEdit} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-700">
+                    <Icon name="edit" size={16} /> {t('post.edit')}
+                  </button>
+                )}
                 {canDelete && (
-                  <button onClick={remove} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-50 text-sm font-semibold text-rose-500">
+                  <button onClick={() => { setMenu(false); setConfirmDelete(true); }} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-50 text-sm font-semibold text-rose-500">
                     <Icon name="trash" size={16} /> {t('post.delete')}
                   </button>
                 )}
@@ -167,26 +244,64 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
         )}
       </div>
 
-      {post.body && <p className="px-4 pb-3 text-[15px] leading-relaxed text-stone-800 whitespace-pre-wrap break-words">{post.body}</p>}
+      {confirmDelete && (
+        <div className="mx-4 mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700 flex items-center gap-2 flex-wrap" role="alertdialog">
+          <span className="flex-1 min-w-[10rem] font-semibold">{t('post.deleteConfirm')}</span>
+          <button onClick={() => setConfirmDelete(false)} className="rounded-full px-3 py-1 text-xs font-bold bg-white border border-stone-200 text-stone-600">
+            {t('common.cancel')}
+          </button>
+          <button onClick={remove} className="rounded-full px-3 py-1 text-xs font-bold bg-rose-500 text-white" data-confirm-delete>
+            {t('post.delete')}
+          </button>
+        </div>
+      )}
+      {editing ? (
+        <div className="px-4 pb-3 space-y-2" data-post-editor>
+          <textarea
+            value={editBody}
+            onChange={(e) => setEditBody(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS))}
+            rows={3}
+            className="w-full resize-none rounded-2xl bg-stone-50 border border-stone-200 focus:ring-2 focus:ring-yellow-300 outline-none px-3 py-2 text-[15px]"
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            <select value={editVis} onChange={(e) => setEditVis(e.target.value as PostVisibility)} aria-label={t('visibility.label')} className="rounded-full border border-stone-200 bg-white px-3 py-1 text-xs font-bold text-stone-600">
+              {POST_VISIBILITY.map((v) => (
+                <option key={v} value={v}>
+                  {VISIBILITY_ICON[v]} {t(`visibility.${v}`)}
+                </option>
+              ))}
+            </select>
+            <span className="flex-1" />
+            <button onClick={() => setEditing(false)} className="rounded-full px-3 py-1.5 text-xs font-bold bg-white border border-stone-200 text-stone-600">
+              {t('common.cancel')}
+            </button>
+            <button onClick={saveEdit} disabled={saving || (!editBody.trim() && !media.length && !legacySrc)} className="rounded-full px-4 py-1.5 text-xs font-bold bg-[#FFE135] text-stone-900 disabled:opacity-40">
+              {saving ? t('common.saving') : t('common.save')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        post.body && (
+          <p className="px-4 pb-3 text-[15px] leading-relaxed text-stone-800 whitespace-pre-wrap break-words">
+            <RichText text={post.body} />
+          </p>
+        )
+      )}
       {rejected && (
         <div className="mx-4 mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700" data-badge="rejected">
           <b>{t('post.removedTitle')}</b> — {post.moderationReason || t('post.removedReason')}
           <div className="text-xs text-rose-500 mt-0.5">{t('post.removedNote')}</div>
         </div>
       )}
-      {mediaSrc && !rejected && (
-        <div className={`px-4 pb-3 relative ${pending ? 'opacity-70' : ''}`}>
+      {!rejected && media.length > 0 && <MediaCarousel items={media} />}
+      {!rejected && legacySrc && (
+        <div className="px-4 pb-3 relative">
           {post.mediaType === 'video' ? (
-            <video src={mediaSrc} controls playsInline preload="metadata" className="w-full max-h-[520px] rounded-2xl border border-stone-100 bg-stone-900" />
+            <video src={legacySrc} controls playsInline preload="metadata" className="w-full max-h-[520px] rounded-2xl border border-stone-100 bg-stone-900" />
           ) : (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={mediaSrc} alt="" loading="lazy" decoding="async" className="w-full max-h-[520px] object-cover rounded-2xl border border-stone-100 bg-stone-50" />
+            <img src={legacySrc} alt="" loading="lazy" decoding="async" className="w-full max-h-[520px] object-cover rounded-2xl border border-stone-100 bg-stone-50" />
           )}
-        </div>
-      )}
-      {pending && !mediaSrc && (
-        <div className="mx-4 mb-3 h-40 rounded-2xl border border-dashed border-amber-300 bg-amber-50 flex items-center justify-center text-sm font-semibold text-amber-700">
-          {t('post.reviewingOnlyYou')}
         </div>
       )}
       <ReportModal postId={post.id} open={reporting} onClose={() => setReporting(false)} />
@@ -259,9 +374,39 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
                   <Link href={`/profile?u=${cm.author.username}`} className="text-xs font-bold text-stone-900 hover:underline">
                     {displayName(cm.author)}
                   </Link>
-                  <p className="text-sm text-stone-700 whitespace-pre-wrap break-words">{cm.body}</p>
+                  {cmEdit?.id === cm.id ? (
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <input
+                        value={cmEdit.body}
+                        onChange={(e) => setCmEdit({ id: cm.id, body: e.target.value.slice(0, SOCIAL_COMMENT_MAX_CHARS) })}
+                        onKeyDown={(e) => e.key === 'Enter' && saveComment()}
+                        className="min-w-0 flex-1 rounded-full border border-stone-200 px-3 py-1 text-sm outline-none focus:ring-2 focus:ring-yellow-300"
+                        autoFocus
+                      />
+                      <button onClick={saveComment} className="text-xs font-bold text-stone-800">
+                        {t('common.save')}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-stone-700 whitespace-pre-wrap break-words">
+                      <RichText text={cm.body} />
+                    </p>
+                  )}
                 </div>
-                <div className="text-[11px] text-stone-400 mt-0.5 ml-2">{timeAgo(cm.createdAt, t, lang)}</div>
+                <div className="text-[11px] text-stone-400 mt-0.5 ml-2 flex items-center gap-2">
+                  <span>{timeAgo(cm.createdAt, t, lang)}</span>
+                  {cm.editedAt ? <span>· {t('post.edited')}</span> : null}
+                  {me?.id === cm.author.id && cmEdit?.id !== cm.id && (
+                    <button onClick={() => setCmEdit({ id: cm.id, body: cm.body })} className="font-bold hover:text-stone-700">
+                      {t('post.edit')}
+                    </button>
+                  )}
+                  {(me?.id === cm.author.id || isMine || staffCan(me?.staffRole, 'takedown')) && (
+                    <button onClick={() => removeComment(cm.id)} className="font-bold hover:text-rose-500">
+                      {t('post.delete')}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))}

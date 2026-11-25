@@ -104,7 +104,7 @@ export default function SettingsPage() {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className="h-20" style={coverStyle(user?.coverColor || 'lemon')} />
+        <div className="h-20" style={coverStyle(user?.coverColor || 'lemon', user?.coverUrl)} data-settings-cover />
         <div className="px-5 pb-5 -mt-8 flex items-end gap-3 flex-wrap">
           <Avatar src={user?.avatarUrl} name={user ? displayName(user) : '?'} size={68} ring className="ring-4 relative z-10" />
           <div className="min-w-[8rem] flex-1 pb-1">
@@ -166,6 +166,7 @@ export default function SettingsPage() {
                 ...(changes.displayName !== undefined ? { displayName: changes.displayName } : {}),
                 ...(changes.avatarUrl ? { avatarUrl: changes.avatarUrl } : {}),
                 ...(changes.coverColor ? { coverColor: changes.coverColor } : {}),
+                ...(changes.coverUrl !== undefined ? { coverUrl: changes.coverUrl } : {}),
               },
             }));
             memoDrop('profile:');

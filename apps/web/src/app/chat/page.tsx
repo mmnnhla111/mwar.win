@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, uploadChatMedia, MediaGateError } from '../../lib/api';
+import { loadMediaCompress, markMediaLibStale, preloadMediaCompress } from '../../lib/mediaCompress';
+import { Icon } from '../../components/ui/Icon';
 import { QuestChatIcon } from '../../components/icons';
 import { useTranslation } from '../../i18n/I18nProvider';
 
@@ -14,6 +16,33 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mediaRef = useRef<HTMLInputElement>(null);
+  const [attach, setAttach] = useState<{ blob: Blob; url: string; kind: 'image' | 'video' } | null>(null);
+  const [mediaBusy, setMediaBusy] = useState('');
+  const [sendError, setSendError] = useState('');
+
+  useEffect(() => preloadMediaCompress(), []);
+
+  const pickMedia = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    setSendError('');
+    const isVideo = f.type.startsWith('video/');
+    try {
+      const lib = await loadMediaCompress();
+      setMediaBusy(isVideo ? t('composer.compressingVideo', { pct: 0 }) : t('composer.compressing'));
+      const out = isVideo
+        ? await lib.compressVideo(f, { onProgress: (p) => setMediaBusy(t('composer.compressingVideo', { pct: Math.round(p * 100) })) })
+        : await lib.compressImage(f);
+      if (attach) URL.revokeObjectURL(attach.url);
+      setAttach({ blob: out.blob, url: URL.createObjectURL(out.blob), kind: isVideo ? 'video' : 'image' });
+    } catch (err: any) {
+      setSendError(err?.code === 'VIDEO_TOO_LONG' ? t('composer.videoLength') : err?.code === 'VIDEO_NO_ENCODER' ? t('composer.videoNoEncoder') : t('composer.photoFailed'));
+    } finally {
+      setMediaBusy('');
+    }
+  };
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -79,23 +108,33 @@ export default function ChatPage() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || !targetUserId || isSending) return;
+    if ((!inputText.trim() && !attach) || !targetUserId || isSending || mediaBusy) return;
 
     const text = inputText.trim();
-    setInputText('');
     setIsSending(true);
+    setSendError('');
 
     try {
+      let mediaKey: string | undefined;
+      if (attach) mediaKey = (await uploadChatMedia(attach.blob)).mediaKey;
       await apiFetch('/api/chat/messages', {
         method: 'POST',
         body: JSON.stringify({
           receiver_id: targetUserId,
-          message_text: text,
+          ...(text ? { message_text: text } : {}),
+          ...(mediaKey ? { media_key: mediaKey } : {}),
         }),
       });
+      setInputText('');
+      if (attach) URL.revokeObjectURL(attach.url);
+      setAttach(null);
       await loadMessages(targetUserId);
-    } catch (err) {
-      console.error('Failed to send message:', err);
+    } catch (err: any) {
+      if (err instanceof MediaGateError) {
+        markMediaLibStale();
+        setSendError(t('composer.gateFailed'));
+      } else if (err?.code === 'BLOCKED') setSendError(t('chat.blocked'));
+      else setSendError(err?.message || t('chat.sendFailed'));
     } finally {
       setIsSending(false);
     }
@@ -221,7 +260,15 @@ export default function ChatPage() {
                           : 'bg-stone-100 border border-stone-200/80 text-stone-700 rounded-bl-xs'
                       }`}
                     >
-                      <p className="leading-relaxed">{msg.message_text}</p>
+                      {msg.media_url && msg.media_type === 'video' && (
+                        <video src={msg.media_url} controls playsInline preload="metadata" className="mb-1.5 max-h-64 w-full rounded-xl bg-stone-900" data-chat-media="video" />
+                      )}
+                      {msg.media_url && msg.media_type !== 'video' && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={msg.media_url} alt="" loading="lazy" className="mb-1.5 max-h-64 rounded-xl object-cover" data-chat-media="image" />
+                      )}
+                      {msg.media_expired && <p className="mb-1 text-[10px] italic opacity-70" data-chat-media="expired">{t('chat.mediaExpired')}</p>}
+                      {msg.message_text && <p className="leading-relaxed whitespace-pre-wrap break-words">{msg.message_text}</p>}
                       <div className="flex justify-end items-center space-x-1 mt-1 text-[9px] text-stone-600">
                         <span>{new Date(msg.created_at * 1000).toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit' })}</span>
                         {isMe && <span>{msg.is_read ? '✓✓' : '✓'}</span>}
@@ -234,8 +281,49 @@ export default function ChatPage() {
             <div ref={messagesEndRef} />
           </div>
 
+          <p className="px-4 py-1.5 text-[11px] text-stone-500 bg-[#FFFBEA] border-t border-yellow-100" data-chat-media-notice>
+            ⏳ {t('chat.mediaNotice')}
+          </p>
+          {(attach || mediaBusy || sendError) && (
+            <div className="px-3 pt-2 bg-stone-50 border-t border-stone-200/80 flex items-center gap-2">
+              {attach && (
+                <div className="relative w-16 h-16 rounded-xl overflow-hidden border border-stone-200 bg-white shrink-0">
+                  {attach.kind === 'video' ? (
+                    <video src={attach.url} muted playsInline className="w-full h-full object-cover" />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={attach.url} alt="" className="w-full h-full object-cover" />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      URL.revokeObjectURL(attach.url);
+                      setAttach(null);
+                    }}
+                    className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-white/90 flex items-center justify-center"
+                    aria-label={t('composer.remove')}
+                  >
+                    <Icon name="close" size={11} />
+                  </button>
+                </div>
+              )}
+              {mediaBusy && <span className="text-[11px] font-semibold text-stone-500">{mediaBusy}</span>}
+              {sendError && <span className="text-[11px] font-semibold text-rose-500" role="alert">{sendError}</span>}
+            </div>
+          )}
           {/* Input Bar */}
           <form onSubmit={handleSendMessage} className="p-3 border-t border-stone-200/80 bg-stone-50 flex items-center space-x-2">
+            <input ref={mediaRef} type="file" accept="image/*,video/mp4,video/quicktime,video/webm" className="hidden" onChange={pickMedia} />
+            <button
+              type="button"
+              onClick={() => mediaRef.current?.click()}
+              disabled={!targetUserId || !!mediaBusy}
+              className="w-10 h-10 shrink-0 rounded-2xl bg-white border border-stone-200 text-emerald-600 flex items-center justify-center disabled:opacity-40"
+              aria-label={t('composer.media')}
+              data-chat-attach
+            >
+              <Icon name="image" size={18} />
+            </button>
             <input
               type="text"
               placeholder={activeContact ? t('chat.messageTo', { name: activeContact.username }) : t('chat.selectFirst')}
@@ -246,7 +334,7 @@ export default function ChatPage() {
             />
             <button
               type="submit"
-              disabled={!inputText.trim() || !targetUserId || isSending}
+              disabled={(!inputText.trim() && !attach) || !targetUserId || isSending || !!mediaBusy}
               className="bg-gradient-to-r from-[#FFE135] to-[#FACC15] hover:from-[#FACC15] hover:to-[#FACC15] text-stone-900 font-extrabold text-xs px-5 py-2.5 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)] active:scale-95 transition disabled:opacity-50"
             >
               {t('chat.send')}

@@ -10,6 +10,8 @@ import {
   OAUTH_PROVIDERS,
   PASSWORD_CHANGE_COOLDOWN_SECONDS,
   TELEGRAM_AUTH_MAX_AGE_SECONDS,
+  ReferralTouchSchema,
+  DEVICE_FP_RE,
 } from '@mwar/shared';
 import type { AuthProvidersResponse, LinkedAccountsResponse, LinkedProviderAccount, OAuthLoginResponse, OAuthProvider } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
@@ -152,7 +154,7 @@ async function issueToken(c: Ctx, u: { id: string; username: string; role: strin
   return signJwt({ userId: u.id, username: u.username, role: u.role as AuthUserPayload['role'] }, c.env.JWT_SECRET);
 }
 
-async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode?: string | null; link?: boolean }) {
+async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode?: string | null; link?: boolean; deviceFp?: string | null }) {
   const t = now();
   const label = idn.provider === 'telegram' ? 'Telegram' : 'LINE';
   const existing = await c.env.DB
@@ -203,10 +205,21 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
 
   // --- First time: open an account ---
   let referrerId: string | null = null;
+  const deviceFp = opts.deviceFp && DEVICE_FP_RE.test(opts.deviceFp) ? opts.deviceFp : null;
   if (opts.referralCode && opts.referralCode.trim()) {
     const ref = await findReferrer(c, opts.referralCode);
-    if (!ref) return c.json({ error: 'Referral code not found', code: 'REFERRAL_NOT_FOUND' }, 400);
-    referrerId = ref.id;
+    // A code restored from the browser (sent with device_fp) may be stale: fall back to the device record
+    if (!ref && !deviceFp) return c.json({ error: 'Referral code not found', code: 'REFERRAL_NOT_FOUND' }, 400);
+    if (ref) referrerId = ref.id;
+  }
+  if (!referrerId && deviceFp) {
+    // Sticky attribution: the last valid ?ref= this device saw, even without a code in the URL now
+    const att = await c.env.DB
+      .prepare("SELECT a.referrer_id FROM referral_attributions a JOIN users u ON u.id = a.referrer_id WHERE a.device_fp = ?1 AND a.converted_user_id IS NULL AND u.status != 'banned'")
+      .bind(deviceFp)
+      .first<{ referrer_id: string }>()
+      .catch(() => null);
+    if (att) referrerId = att.referrer_id;
   }
 
   const userId = crypto.randomUUID();
@@ -243,7 +256,16 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: { referralCode
   }
   if (!created) return c.json({ error: 'Could not create the account. Please try again.' }, 500);
 
-  if (referrerId) await buildNetworkTree(c.env.DB, userId, referrerId);
+  if (referrerId) {
+    await buildNetworkTree(c.env.DB, userId, referrerId);
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO notifications (id, user_id, actor_id, type, target_id, message_key, created_at)
+         VALUES (?1, ?2, ?3, 'referral_join', ?3, 'notif.referralJoin', ?4)`
+      ).bind(`n${Date.now().toString(36).padStart(9, '0')}${crypto.randomUUID().slice(0, 6).replace(/-/g, '0')}`, referrerId, userId, t),
+      ...(deviceFp ? [c.env.DB.prepare('UPDATE referral_attributions SET converted_user_id = ?1, updated_at = ?2 WHERE device_fp = ?3').bind(userId, t, deviceFp)] : []),
+    ]).catch((e: unknown) => console.warn('[referral] notify failed', e));
+  }
 
   const body: OAuthLoginResponse = {
     success: true,
@@ -276,7 +298,7 @@ socialAuthRouter.post('/oauth/telegram', async (c) => {
       displayName: fullName || null,
       avatarUrl: httpsUrl(d.photo_url),
     },
-    { referralCode: d.referral_code, link: d.link_to_current_user === true }
+    { referralCode: d.referral_code, link: d.link_to_current_user === true, deviceFp: d.device_fp }
   );
 });
 
@@ -332,7 +354,7 @@ socialAuthRouter.post('/oauth/line', async (c) => {
       displayName: (prof.displayName || '').slice(0, 80) || null,
       avatarUrl: httpsUrl(prof.pictureUrl),
     },
-    { referralCode: d.referral_code, link: d.link_to_current_user === true }
+    { referralCode: d.referral_code, link: d.link_to_current_user === true, deviceFp: d.device_fp }
   );
 });
 
@@ -452,4 +474,47 @@ socialAuthRouter.post('/backup-password', authMiddleware, async (c) => {
     passwordChangeAvailableAt: t + PASSWORD_CHANGE_COOLDOWN_SECONDS,
     token: username !== me.username ? await issueToken(c, { id: me.userId, username, role: sec.role }) : undefined,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Sticky referral attribution (/api/referral)
+// The browser keeps the last valid ?ref= in localStorage, a cookie and IndexedDB, and also reports it
+// with a device fingerprint hash so a cleared browser still credits the right sponsor at sign-up.
+// ---------------------------------------------------------------------------
+export const referralRouter = new Hono<AppEnv>();
+
+/** POST /api/referral/touch { device_fp, ref_code } — store / overwrite with a different VALID code. */
+referralRouter.post('/touch', async (c) => {
+  const parsed = ReferralTouchSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ ok: false }, 400);
+  const ref = await findReferrer(c, parsed.data.ref_code);
+  if (!ref) return c.json({ ok: false, valid: false });
+  const me = await currentUser(c).catch(() => null);
+  if (me && me.userId === ref.id) return c.json({ ok: false, valid: true, self: true });
+  const t = now();
+  await c.env.DB
+    .prepare(
+      `INSERT INTO referral_attributions (device_fp, ref_code, referrer_id, first_seen_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(device_fp) DO UPDATE SET ref_code = excluded.ref_code, referrer_id = excluded.referrer_id, updated_at = excluded.updated_at,
+         first_seen_at = CASE WHEN referral_attributions.converted_user_id IS NULL THEN referral_attributions.first_seen_at ELSE excluded.first_seen_at END,
+         converted_user_id = NULL
+       -- Only a DIFFERENT valid code replaces a pending one; after a sign-up the device starts a new attribution
+       WHERE referral_attributions.converted_user_id IS NOT NULL OR referral_attributions.referrer_id <> excluded.referrer_id`
+    )
+    .bind(parsed.data.device_fp, ref.username, ref.id, t)
+    .run();
+  return c.json({ ok: true, valid: true, username: ref.username });
+});
+
+/** GET /api/referral/resolve?device_fp= — the code last stored for this device (not yet converted). */
+referralRouter.get('/resolve', async (c) => {
+  const fp = c.req.query('device_fp') || '';
+  if (!DEVICE_FP_RE.test(fp)) return c.json({ refCode: null });
+  const r = await c.env.DB
+    .prepare(
+      "SELECT u.username FROM referral_attributions a JOIN users u ON u.id = a.referrer_id WHERE a.device_fp = ?1 AND a.converted_user_id IS NULL AND u.status != 'banned'"
+    )
+    .bind(fp)
+    .first<{ username: string }>();
+  return c.json({ refCode: r?.username || null }, 200, { 'Cache-Control': 'private, no-store' });
 });

@@ -206,3 +206,70 @@ Deploy (as Agy, in this order):
 Quick check: a new account shows `1 / 300 EC` and stays at 1 after an hour; open any other player's post →
 ให้กำลังใจ → the modal says `เหลือสิทธิ์วันนี้ 15/15 ครั้ง`; finish the 15 s video → `+50% EC`, counter 14/15.
 `pnpm --filter @mwar/shared test` runs the split unit tests.
+
+## Staff roles, PWA, silent moderation, multi-media posts, chat media, sticky referral (migration 0014 + chat 0003, 2026-11-25)
+
+What changes:
+- **RBAC.** `users.staff_role`: `super_admin`, `admin`, `moderator`, `support`, `finance_auditor`, `user`.
+  The migration maps old roles (admin → admin, auditor → finance_auditor) and makes `mmnnhla111` / display name
+  `P-Pen` (else the earliest account) `super_admin`. Every admin / audit / takedown / node endpoint checks the role
+  from D1 on each request. `/admin` shows only the tabs your role may use; the new tab
+  **ทีมงานและตำแหน่ง (Staff & Roles)** (super_admin only) searches players, assigns roles and shows the audit log.
+  Owner lock-out protection: usernames in the Worker var `SUPER_ADMIN_USERNAMES` (comma separated) are always
+  super_admin, and the last super_admin cannot be demoted.
+  Note: withdrawal approval is now **super_admin only** (finance_auditor is read-only).
+- **Mobile + PWA.** ☰ drawer left of the logo (< 768 px), swipe between the 5 bottom tabs, `public/sw.js`
+  (cache-first for `/_next/static`, fonts, `/brand`; network-first for pages; never `/api`), and an install card
+  (Android install prompt, iPhone Share → Add to Home Screen guide; X hides it for 48 h).
+- **Silent moderation.** The author sees a new photo / video post normally at once (no "pending" badge); other players
+  see it only after every item is approved (or marked 18+). Authors are notified only when a post is rejected.
+- **Posts:** 1–10 mixed photos / videos (reorder + remove before posting, carousel with dots and 1/10 counter, one
+  moderation job per item), audience public / followers / only me (enforced in SQL), edit / delete own posts and
+  comments, `#hashtag` links + hashtag feed, live search for players / posts / hashtags, followers modal, block.
+- **Notifications:** new `notifications` table (old rows copied), bell + `/notifications` page, click opens the post
+  or player, "mark all as read". Still no polling (badge comes with `/api/bootstrap`).
+- **Profile cover photo:** WebP ≤ 250 KB, 1200×400, stored in `ASSETS_BUCKET` at `covers/YYYY/MM/<uuid>.webp`;
+  editable in Edit Profile (on /profile and /settings), falls back to the pastel gradient.
+- **2-layer media limits.** Layer 1 on the device (`/vendor/media-compress/media-compress.js`, loaded only where you
+  attach media): photos ≤ 200 KB, longest edge ≤ 1080 px; videos ≤ 3 min, < 720p MP4. Layer 2 on the API: photo
+  > 300 KB, video > 3 min or above 1280×720 → 422, every upload of that attempt is deleted and the user sees
+  "โพสต์ไม่สำเร็จ โปรดรีเฟรซหน้าจอแล้วโพสต์ใหม่" (the page then reloads the compression library).
+  Approved videos older than 30 days are re-encoded to 480p (CRF 28) by the moderation node at night.
+- **Chat photos / videos** in `MEDIA_BUCKET` under `chat-media/YYYY/MM/DD/<uuid>`, signed links, deleted after
+  7 days by the midnight cron (message text stays). `/chat` shows the 7-day notice.
+- **Sticky referral:** the last valid `?ref=` is kept in localStorage, a cookie, IndexedDB and on the server by an
+  anonymous device hash (`referral_attributions`), and is used at Telegram / LINE sign-up when no code is typed.
+  The sponsor gets a "joined with your referral link" notification.
+
+Deploy (as Agy, in this order):
+1. API worker
+   ```bash
+   cd apps/api-worker
+   npx wrangler d1 migrations apply core_db --remote        # 0014_rbac_pwa_social_upgrade.sql
+   npx wrangler d1 migrations apply chat_2026_11 --remote  # 0003_chat_media_expiry.sql
+   ```
+   In `wrangler.toml` `[vars]` (or Dashboard → Workers → mwar-api-worker → Settings → Variables) add
+   `SUPER_ADMIN_USERNAMES = "mmnnhla111"` (comma separated, no spaces needed), then
+   ```bash
+   npx wrangler deploy
+   ```
+   Check: `npx wrangler d1 execute core_db --remote --command "SELECT username, staff_role FROM users WHERE staff_role != 'user'"`
+   lists the owner as `super_admin`.
+2. R2 safety net for chat uploads that were never sent (Dashboard → R2 → `mwar-media` → Settings → Object lifecycle
+   rules): prefix `chat-media/`, delete objects 8 days after upload.
+3. Moderation node (mini PC): longer videos, per-item results and the 480p re-encode
+   ```bash
+   cd /opt/mwar-node && git pull
+   pm2 restart mwar-nsfw-moderator && curl -s http://127.0.0.1:3100/health
+   ```
+   Optional `MAX_DOWNLOAD_MB` in `/opt/mwar-node/.env` (default 48).
+4. Game server: rebuild so the shared package matches
+   ```bash
+   cd /opt/mwar-node && pnpm install --frozen-lockfile
+   pnpm --filter @mwar/shared build && pnpm --filter @mwar/game-server build && pm2 restart all
+   ```
+5. Web: `pnpm run deploy:pages` (adds `/sw.js`, `/vendor/media-compress/`, `/notifications`, `/post`).
+
+Quick check: sign in as the owner → avatar menu → Admin → tab "ทีมงานและตำแหน่ง" shows you as ผู้ดูแลสูงสุด.
+On a phone: ☰ opens the menu, swiping left on the feed goes to Games. Post 2 photos → you see them at once with a
+1/2 counter; another account sees the post after the moderation node approves it.

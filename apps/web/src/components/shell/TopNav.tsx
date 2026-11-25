@@ -9,6 +9,7 @@ import { useSession } from '../../lib/session';
 import { MAIN_TABS, isTabActive } from './nav';
 import { SearchBox } from './SearchBox';
 import { NotificationsPanel } from './NotificationsPanel';
+import { MobileDrawer } from './MobileDrawer';
 import { displayName } from '../../lib/format';
 import { LanguageMenu } from '../i18n/LanguagePicker';
 import { useTranslation } from '../../i18n/I18nProvider';
@@ -46,6 +47,8 @@ export function TopNav() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [mobileSearch, setMobileSearch] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const closeDrawer = React.useCallback(() => setDrawerOpen(false), []);
   const menuRef = useRef<HTMLDivElement>(null);
   const user = boot?.user;
 
@@ -73,7 +76,17 @@ export function TopNav() {
     <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-stone-200/80">
       <div className="max-w-[1320px] mx-auto h-14 md:h-16 px-3 md:px-4 flex items-center gap-3">
         {/* Left: logo + search */}
-        <div className="flex items-center gap-2.5 md:w-[300px] shrink-0 min-w-0">
+        <div className="flex items-center gap-2 md:gap-2.5 md:w-[300px] shrink-0 min-w-0">
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            className="md:hidden w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-stone-700 hover:bg-stone-100"
+            aria-label={tr('drawer.title')}
+            aria-expanded={drawerOpen}
+            data-drawer-toggle
+          >
+            <Icon name="menu" size={22} />
+          </button>
           <Link href="/" className="flex items-center gap-2 shrink-0" aria-label={tr('nav.homeAria')}>
             <LemonLogo size={34} />
             <span className="font-extrabold text-[17px] tracking-tight text-stone-900">
@@ -143,7 +156,7 @@ export function TopNav() {
                   <Link href="/settings" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
                     <Icon name="edit" size={18} /> {tr('nav.settings')}
                   </Link>
-                  {(user.role === 'admin' || user.role === 'auditor') && (
+                  {(user.staffRole || 'user') !== 'user' && (
                     <Link href="/admin" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
                       <Icon name="shield" size={18} /> {tr('nav.admin')}
                     </Link>
@@ -158,6 +171,7 @@ export function TopNav() {
           )}
         </div>
       </div>
+      <MobileDrawer open={drawerOpen} onClose={closeDrawer} />
       {mobileSearch && (
         <div className="lg:hidden px-3 pb-3">
           <SearchBox autoFocus />

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import type { OAuthLoginResponse, OAuthProvider } from '@mwar/shared';
 import { clearBootstrapCache, getAuthToken, oauthLine, oauthTelegram, setAuthToken } from '../../lib/api';
 import { authErrorKey, callbackUrl, readTelegramResult, rememberRef, takePending } from '../../lib/oauth';
+import { getDeviceFp, storedReferral } from '../../lib/referral';
 import { useSession } from '../../lib/session';
 import { AuthCard, FormError } from './AuthCard';
 import { TelegramIcon, LineIcon } from './ProviderButtons';
@@ -34,6 +35,9 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
       let res: OAuthLoginResponse;
       try {
         if (link && !getAuthToken()) return fail('oauth.err.signInAgain');
+        // Sticky referral: the code chosen on /login, else the one kept on this device; plus the device hash
+        const refCode = link ? null : pending?.ref || (await storedReferral()) || null;
+        const deviceFp = link ? null : await getDeviceFp().catch(() => null);
         if (provider === 'line') {
           const q = new URLSearchParams(window.location.search);
           window.history.replaceState(null, '', window.location.pathname);
@@ -41,12 +45,12 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
           const code = q.get('code');
           // CSRF: the state must be the one we generated before leaving for LINE
           if (!code || !pending || q.get('state') !== pending.state) return fail('oauth.err.state');
-          res = await oauthLine({ code, redirect_uri: callbackUrl('line'), referral_code: link ? null : pending.ref, link_to_current_user: link || undefined });
+          res = await oauthLine({ code, redirect_uri: callbackUrl('line'), referral_code: refCode, device_fp: deviceFp, link_to_current_user: link || undefined });
         } else {
           const data = readTelegramResult();
           window.history.replaceState(null, '', window.location.pathname);
           if (!data) return fail('oauth.err.cancelled');
-          res = await oauthTelegram({ ...data, referral_code: link ? null : pending?.ref || null, link_to_current_user: link || undefined });
+          res = await oauthTelegram({ ...data, referral_code: refCode, device_fp: deviceFp, link_to_current_user: link || undefined });
         }
       } catch (err: any) {
         const key = authErrorKey(err);

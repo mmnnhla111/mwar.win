@@ -9,7 +9,7 @@ import { PostComposer } from '../components/social/PostComposer';
 import { FeedList } from '../components/social/FeedList';
 import { Card } from '../components/ui/Card';
 import { Icon } from '../components/ui/Icon';
-import { getFeed } from '../lib/api';
+import { getFeed, getHashtagFeed } from '../lib/api';
 import { memoGet, memoSet, memoDrop } from '../lib/memo';
 import { useTranslation } from '../i18n/I18nProvider';
 
@@ -20,7 +20,8 @@ function HomeFeed() {
   const { t: tr } = useTranslation();
   const tagParam = params.get('tag');
   const tag = (SOCIAL_POST_TAGS as readonly string[]).includes(tagParam || '') ? (tagParam as SocialPostTag) : null;
-  const key = `feed:${tag || ''}`;
+  const hashtag = (params.get('hashtag') || '').replace(/^#/, '').toLowerCase().slice(0, 40) || null;
+  const key = `feed:${tag || ''}:${hashtag || ''}`;
   const [posts, setPosts] = useState<SocialPost[]>(() => memoGet<FeedState>(key)?.posts || []);
   const [next, setNext] = useState<string | null>(() => memoGet<FeedState>(key)?.next || null);
   const [loading, setLoading] = useState(false);
@@ -39,11 +40,10 @@ function HomeFeed() {
       setLoading(true);
       setError('');
       try {
-        const pg = await getFeed({ cursor: opts.cursor, tag });
+        const pg = hashtag ? await getHashtagFeed(hashtag, opts.cursor) : await getFeed({ cursor: opts.cursor, tag });
         setPosts((prev) => {
-          // First page: my posts still under review / removed sit on top (author-only)
-          const mine = !opts.cursor ? (pg.mine || []).filter((m) => !pg.items.some((x) => x.id === m.id)) : [];
-          const merged = opts.cursor ? [...prev, ...pg.items] : [...mine, ...pg.items];
+          // The API already merges my own posts (any audience, silent moderation) into each page
+          const merged = opts.cursor ? [...prev, ...pg.items.filter((x) => !prev.some((p) => p.id === x.id))] : pg.items;
           memoSet<FeedState>(key, { posts: merged, next: pg.nextCursor });
           return merged;
         });
@@ -55,7 +55,7 @@ function HomeFeed() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [key, tag]
+    [key, tag, hashtag]
   );
 
   useEffect(() => {
@@ -85,7 +85,20 @@ function HomeFeed() {
         <Icon name="chevron" size={18} className="text-stone-400" />
       </Link>
 
-      {!tag && (
+      {hashtag && (
+        <Card className="p-4 flex items-center gap-3" data-hashtag-header>
+          <span className="w-10 h-10 rounded-2xl bg-[#E0F2FE] text-sky-700 font-black flex items-center justify-center">#</span>
+          <div className="flex-1 min-w-0">
+            <div className="font-extrabold text-stone-900 truncate">#{hashtag}</div>
+            <div className="text-xs text-stone-500">{tr('feed.hashtagHint')}</div>
+          </div>
+          <Link href="/" className="rounded-full px-3 py-1.5 text-xs font-bold bg-stone-100 text-stone-700">
+            {tr('feed.forYou')}
+          </Link>
+        </Card>
+      )}
+
+      {!tag && !hashtag && (
         <PostComposer
           onPosted={(p) => {
             memoDrop('feed:');
@@ -98,7 +111,7 @@ function HomeFeed() {
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar flex-1">
           <Link
             href="/"
-            className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${!tag ? 'bg-stone-900 text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'}`}
+            className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${!tag && !hashtag ? 'bg-stone-900 text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'}`}
           >
             {tr('feed.forYou')}
           </Link>

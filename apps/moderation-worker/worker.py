@@ -13,7 +13,7 @@ Content policy (2-stage cascade, prohibited content is checked FIRST):
            -> reject_prohibited, stage 1, Stage 2 skipped. (Drugs are deliberately not scanned.)
   Stage 2  NudeNet v3 (only for media that passed Stage 1). Explicit nudity >= 0.55
            -> mark_nsfw_18 (allowed, age-gated), else approve_safe.
-  Video    ffmpeg keyframes (0.5 fps, 320 px, <= 30 frames); Stage 1 over all frames with early exit,
+  Video    ffmpeg frames (30 spread over the clip, 320 px; clips up to 3 min); Stage 1 over all frames with early exit,
            then Stage 2 with early exit. Videos longer than 30 s are rejected.
 
 Queue: POST /api/moderation/claim (<= 15 jobs) -> process -> ONE POST /api/moderation/results.
@@ -64,7 +64,10 @@ BACKEND = os.environ.get("MOD_BACKEND", "auto").lower()  # auto | openvino | onn
 REJECT_THRESHOLD = float(os.environ.get("MOD_REJECT_THRESHOLD", "0.55"))
 NSFW_THRESHOLD = float(os.environ.get("MOD_NSFW_THRESHOLD", "0.55"))
 TMP_ROOT = os.environ.get("MOD_TMP_DIR", "/tmp/mwar-mod")
-VIDEO_MAX_SECONDS = 30.5
+VIDEO_MAX_SECONDS = 180.5  # Layer-2 gate: videos up to 3 minutes
+MAX_DOWNLOAD_BYTES = int(os.environ.get("MAX_DOWNLOAD_MB", "48")) * 1024 * 1024
+VIDEO_SAMPLE_FRAMES = 30
+TRANSCODE_CRF = 28
 BUSY_PAUSE = 2.0
 IDLE_BACKOFF = (15, 30, 60, 120)
 EXPLICIT_LABELS = {
@@ -287,12 +290,14 @@ class Pipeline:
 
         dur = probe_duration(path)
         if dur is not None and dur > VIDEO_MAX_SECONDS:
-            return {"action": "reject_prohibited", "reason": "Video longer than 30 seconds", "score": 1.0, "stage_stopped": 1}
+            return {"action": "reject_prohibited", "reason": "Video longer than 3 minutes", "score": 1.0, "stage_stopped": 1}
+        # Sample up to 30 frames spread evenly over the whole clip (a 3-minute video = one every 6 s)
+        fps = VIDEO_SAMPLE_FRAMES / max(1.0, dur or 60.0)
         frames_dir = os.path.join(workdir, "frames")
         os.makedirs(frames_dir, exist_ok=True)
         subprocess.run(
             ["ffmpeg", "-nostdin", "-loglevel", "error", "-threads", str(THREADS), "-y", "-i", path,
-             "-vf", "fps=0.5,scale=320:-1", "-vframes", "30", os.path.join(frames_dir, "frame_%03d.jpg")],
+             "-vf", f"fps={fps:.4f},scale=320:-1", "-vframes", str(VIDEO_SAMPLE_FRAMES), os.path.join(frames_dir, "frame_%03d.jpg")],
             check=True,
             timeout=120,
         )
@@ -348,9 +353,18 @@ class Api:
             with open(dest, "wb") as f:
                 for chunk in r.iter_content(64 * 1024):
                     size += len(chunk)
-                    if size > 6 * 1024 * 1024:
-                        raise ValueError("media larger than 6 MB")
+                    if size > MAX_DOWNLOAD_BYTES:
+                        raise ValueError(f"media larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB")
                     f.write(chunk)
+
+    def upload_transcoded(self, job: dict, path: str | None) -> None:
+        url = job["upload_url"]
+        if path is None:
+            r = self.s.post(f"{url}?skip=1", timeout=30)
+        else:
+            with open(path, "rb") as f:
+                r = self.s.post(url, data=f, headers={"Content-Type": "video/mp4"}, timeout=300)
+        r.raise_for_status()
 
     def submit(self, results: list) -> dict:
         last = None
@@ -363,6 +377,44 @@ class Api:
                 last = e
                 time.sleep(2 * (attempt + 1))
         raise RuntimeError(f"submit failed: {last}")
+
+
+def transcode_job(api: Api, job: dict) -> None:
+    """Archive an approved video older than 30 days: re-encode to 480p (CRF 28) and replace the R2 file."""
+    workdir = os.path.join(TMP_ROOT, str(job["job_id"]))
+    os.makedirs(workdir, exist_ok=True)
+    try:
+        src = os.path.join(workdir, "in.mp4")
+        out = os.path.join(workdir, "out.mp4")
+        try:
+            api.download(job, src)
+        except Exception as e:  # noqa: BLE001
+            log.warning("transcode %s download failed: %s", job["job_id"], e)
+            bump("errors")
+            return
+        try:
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-loglevel", "error", "-threads", str(THREADS), "-y", "-i", src,
+                 "-vf", "scale=-2:480", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(job.get("crf", TRANSCODE_CRF)),
+                 "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out],
+                check=True,
+                timeout=900,
+            )
+            # Keep the original if the 480p copy is not smaller
+            if os.path.getsize(out) >= os.path.getsize(src):
+                api.upload_transcoded(job, None)
+            else:
+                api.upload_transcoded(job, out)
+            bump("transcoded")
+        except Exception as e:  # noqa: BLE001
+            log.warning("transcode %s failed: %s", job["job_id"], e)
+            bump("errors")
+            try:
+                api.upload_transcoded(job, None)
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def process_job(pipe: Pipeline, api: Api, job: dict):
@@ -386,6 +438,8 @@ def process_job(pipe: Pipeline, api: Api, job: dict):
             bump("errors")
             res = {"action": "reject_prohibited", "reason": "Unreadable or corrupted media", "score": 0.0, "stage_stopped": 1}
         res.update({"job_id": job["job_id"], "post_id": job["post_id"]})
+        if job.get("media_id"):
+            res["media_id"] = job["media_id"]
         return res
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -468,6 +522,9 @@ def main() -> int:
         for job in jobs:
             if not RUNNING:
                 break
+            if job.get("job_type") == "transcode_480p":
+                transcode_job(api, job)
+                continue
             res = process_job(pipe, api, job)
             if res:
                 results.append(res)

@@ -1,20 +1,32 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { PROFILE_COVER_COLORS, PROFILE_COVER_IDS, SOCIAL_BIO_MAX_CHARS, SOCIAL_DISPLAY_NAME_MAX_CHARS } from '@mwar/shared';
+import { COVER_MAX_BYTES, COVER_MAX_HEIGHT, COVER_MAX_WIDTH, PROFILE_COVER_COLORS, PROFILE_COVER_IDS, SOCIAL_BIO_MAX_CHARS, SOCIAL_DISPLAY_NAME_MAX_CHARS } from '@mwar/shared';
 import type { ProfileCoverColor, SocialProfile } from '@mwar/shared';
 import { Avatar } from '../ui/Avatar';
 import { Modal, btn, inputCls } from '../ui/Card';
 import { Icon } from '../ui/Icon';
-import { updateSocialProfile, uploadMedia } from '../../lib/api';
+import { updateSocialProfile, uploadCover, uploadMedia } from '../../lib/api';
+import { loadMediaCompress, preloadMediaCompress } from '../../lib/mediaCompress';
 import { compressImageToWebp } from '../../lib/image';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { EarningsVisibilityPicker } from '../settings/EarningsVisibility';
 
-export const coverStyle = (c: ProfileCoverColor) => {
+/** Cover photo when there is one, on top of the pastel gradient (also the fallback while it loads / fails). */
+export const coverStyle = (c: ProfileCoverColor, url?: string | null): React.CSSProperties => {
   const [a, b] = PROFILE_COVER_COLORS[c] || PROFILE_COVER_COLORS.lemon;
-  return { background: `linear-gradient(135deg, ${a} 0%, ${b} 100%)` };
+  const grad = `linear-gradient(135deg, ${a} 0%, ${b} 100%)`;
+  return url
+    ? { backgroundImage: `url("${url.replace(/"/g, '%22')}"), ${grad}`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    : { background: grad };
 };
+
+/** Pick + compress a cover photo on the device: WebP, 1200x400 (centre crop), <= 250 KB. */
+export async function compressCover(f: File): Promise<Blob> {
+  const lib = await loadMediaCompress();
+  const out = await lib.compressImage(f, { maxWidth: COVER_MAX_WIDTH, maxHeight: COVER_MAX_HEIGHT, crop: 'cover', maxBytes: COVER_MAX_BYTES - 2048, forceWebp: true });
+  return out.blob;
+}
 
 /** Edit display name, bio, avatar and pastel cover (used on /profile and /settings). */
 export function EditProfileModal({
@@ -33,6 +45,10 @@ export function EditProfileModal({
   const [bio, setBio] = useState(profile.bio || '');
   const [cover, setCover] = useState<ProfileCoverColor>(profile.coverColor);
   const [avatar, setAvatar] = useState<{ blob: Blob; url: string } | null>(null);
+  // null = unchanged, 'remove' = back to the gradient
+  const [coverPhoto, setCoverPhoto] = useState<{ blob: Blob; url: string } | 'remove' | null>(null);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const coverRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
@@ -43,9 +59,28 @@ export function EditProfileModal({
       setBio(profile.bio || '');
       setCover(profile.coverColor);
       setAvatar(null);
+      setCoverPhoto(null);
       setError('');
+      preloadMediaCompress();
     }
   }, [open, profile]);
+
+  const pickCover = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    setCoverBusy(true);
+    setError('');
+    try {
+      const blob = await compressCover(f);
+      setCoverPhoto({ blob, url: URL.createObjectURL(blob) });
+    } catch (err: any) {
+      setError(err?.message || t('composer.photoFailed'));
+    } finally {
+      setCoverBusy(false);
+    }
+  };
+  const coverPreview = coverPhoto === 'remove' ? null : coverPhoto?.url || profile.coverUrl;
 
   const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -65,8 +100,9 @@ export function EditProfileModal({
     setError('');
     try {
       const avatarUrl = avatar ? await uploadMedia(avatar.blob) : undefined;
-      await updateSocialProfile({ displayName: name.trim(), bio: bio.trim(), coverColor: cover, ...(avatarUrl ? { avatarUrl } : {}) });
-      onSaved({ displayName: name.trim() || null, bio: bio.trim() || null, coverColor: cover, ...(avatarUrl ? { avatarUrl } : {}) });
+      const coverUrl = coverPhoto === 'remove' ? null : coverPhoto ? await uploadCover(coverPhoto.blob) : undefined;
+      await updateSocialProfile({ displayName: name.trim(), bio: bio.trim(), coverColor: cover, ...(avatarUrl ? { avatarUrl } : {}), ...(coverUrl !== undefined ? { coverUrl } : {}) });
+      onSaved({ displayName: name.trim() || null, bio: bio.trim() || null, coverColor: cover, ...(avatarUrl ? { avatarUrl } : {}), ...(coverUrl !== undefined ? { coverUrl } : {}) });
       onClose();
     } catch (err: any) {
       setError(err?.message || t('settings.saveFailed'));
@@ -79,7 +115,19 @@ export function EditProfileModal({
     <Modal open={open} onClose={onClose} title={t('profile.edit')}>
       <div className="p-5 space-y-4">
         <div className="rounded-3xl overflow-hidden border border-stone-100">
-          <div className="h-20" style={coverStyle(cover)} />
+          <div className="h-24 relative" style={coverStyle(cover, coverPreview)} data-cover-preview={coverPreview ? 'photo' : 'gradient'}>
+            <input ref={coverRef} type="file" accept="image/*" className="hidden" onChange={pickCover} />
+            <div className="absolute top-2 right-2 flex gap-1.5">
+              <button onClick={() => coverRef.current?.click()} disabled={coverBusy} className="rounded-full bg-white/90 px-3 py-1 text-xs font-bold text-stone-700 shadow" data-cover-pick>
+                {coverBusy ? t('composer.compressing') : t('profile.coverPhoto')}
+              </button>
+              {coverPreview && (
+                <button onClick={() => setCoverPhoto('remove')} className="rounded-full bg-white/90 px-2.5 py-1 text-xs font-bold text-rose-500 shadow" aria-label={t('profile.coverRemove')}>
+                  <Icon name="close" size={12} />
+                </button>
+              )}
+            </div>
+          </div>
           <div className="px-4 pb-4 -mt-8 flex items-end gap-3">
             <Avatar src={avatar?.url || profile.avatarUrl} name={name || profile.username} size={68} ring className="ring-4 relative z-10" />
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pick} />
@@ -90,6 +138,7 @@ export function EditProfileModal({
         </div>
         <div>
           <label className="block text-xs font-bold text-stone-600 mb-1.5 ml-1">{t('profile.cover')}</label>
+          <p className="text-[11px] text-stone-400 mb-1.5 ml-1">{t('profile.coverHint')}</p>
           <div className="flex gap-2 flex-wrap">
             {PROFILE_COVER_IDS.map((c) => (
               <button

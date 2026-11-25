@@ -1,8 +1,9 @@
 import type { Context } from 'hono';
-import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd } from '@mwar/shared';
+import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd, normalizeStaffRole } from '@mwar/shared';
 import type { BootstrapResponse, ProfileCoverColor } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { getUtcDateKey } from './quests';
+import { isEnvSuperAdmin } from '../middleware/staff';
 
 /**
  * GET /api/bootstrap — the whole app shell in ONE request:
@@ -18,7 +19,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       c.env.DB.prepare(
         `SELECT id, username, display_name, CASE WHEN avatar_url LIKE 'data:%' THEN NULL ELSE avatar_url END AS avatar_url,
                 cover_color, role, status, rank_badge, energy_tickets, max_energy_tickets,
-                energy_progress_pct, created_at, show_nsfw, preferred_lang, earnings_visibility
+                energy_progress_pct, created_at, show_nsfw, preferred_lang, earnings_visibility, staff_role, cover_url
          FROM users WHERE id = ?1`
       ).bind(me.userId),
       c.env.DB.prepare('SELECT balance_micro_usd, bounty_micro_usd, total_earned_micro_usd FROM wallets WHERE user_id = ?1').bind(me.userId),
@@ -26,7 +27,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
         `SELECT (SELECT COUNT(*) FROM daily_quest_definitions)
               - (SELECT COUNT(*) FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2 AND is_claimed = 1) AS remaining`
       ).bind(me.userId, dateKey),
-      c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_notifications WHERE user_id = ?1 AND is_read = 0').bind(me.userId),
+      c.env.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ?1 AND is_read = 0').bind(me.userId),
     ]),
     c.env.CHAT_DB.prepare('SELECT COUNT(*) AS n FROM direct_messages WHERE receiver_id = ?1 AND is_read = 0')
       .bind(me.userId)
@@ -41,6 +42,13 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
   const remaining = Math.max(0, Number((core[2].results?.[0] as any)?.remaining ?? 0));
   const unreadNotif = Number((core[3].results?.[0] as any)?.n ?? 0);
 
+  // Owner lock-out protection: SUPER_ADMIN_USERNAMES are always super_admin (written once, then a no-op)
+  let staffRole = normalizeStaffRole(u.staff_role);
+  if (staffRole !== 'super_admin' && isEnvSuperAdmin(c.env, u.username)) {
+    staffRole = 'super_admin';
+    await c.env.DB.prepare("UPDATE users SET staff_role = 'super_admin' WHERE id = ?1").bind(me.userId).run();
+  }
+
   const now = Math.floor(Date.now() / 1000);
   // EC as stored: no passive / hourly regeneration (spec §7.1). Read-only — bootstrap never writes EC.
   const tickets = u.energy_tickets ?? INITIAL_ENERGY_TICKETS;
@@ -54,6 +62,8 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       avatarUrl: u.avatar_url || null,
       coverColor: ((PROFILE_COVER_IDS as string[]).includes(u.cover_color) ? u.cover_color : 'lemon') as ProfileCoverColor,
       role: u.role,
+      staffRole,
+      coverUrl: u.cover_url || null,
       rankBadge: u.rank_badge || null,
       energyTickets: tickets,
       maxEnergyTickets: maxTickets,

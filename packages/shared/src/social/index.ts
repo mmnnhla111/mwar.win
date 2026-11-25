@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { POST_MEDIA_MAX_ITEMS, POST_VISIBILITY } from '../platform';
+import type { NotificationType, PostMediaItem, PostVisibility, StaffRole } from '../platform';
 
 /**
  * Social platform + multi-game hub contracts shared by apps/api-worker and apps/web.
@@ -68,7 +70,21 @@ export const SocialPostCreateSchema = z.object({
   tag: z.enum(SOCIAL_POST_TAGS).default('General'),
   /** Author self-tags the post as 18+ (always hidden from viewers with 18+ off). */
   nsfw: z.boolean().default(false),
+  /** Who can see it: everyone, followers only, or only me. */
+  visibility: z.enum(POST_VISIBILITY).default('public'),
+  /** Staged uploads (POST /api/social/uploads), in display order: 0–10 photos / videos. */
+  uploads: z.array(z.string().regex(/^u[a-z0-9]{8,40}$/)).max(POST_MEDIA_MAX_ITEMS).default([]),
+  /** One id per posting attempt: a Layer-2 rejection purges every upload of the attempt. */
+  attemptId: z.string().regex(/^[a-z0-9]{8,40}$/i).optional(),
 });
+
+/** PATCH /api/social/posts/:id — the author edits text and / or audience. */
+export const SocialPostUpdateSchema = z
+  .object({
+    body: z.string().trim().max(SOCIAL_POST_MAX_CHARS).optional(),
+    visibility: z.enum(POST_VISIBILITY).optional(),
+  })
+  .refine((v) => v.body !== undefined || v.visibility !== undefined, { message: 'Nothing to update' });
 
 // ---------------------------------------------------------------------------
 // Content policy: moderation + reports + settings
@@ -159,6 +175,8 @@ export const ModerationResultSchema = z.object({
         job_id: z.string().min(4).max(64),
         post_id: z.string().min(4).max(64),
         action: z.enum(['approve_safe', 'mark_nsfw_18', 'reject_prohibited']),
+        /** Item of a multi-media post (jobs claimed after migration 0013). */
+        media_id: z.string().min(4).max(64).optional(),
         reason: z.string().max(200).optional(),
         score: z.number().min(0).max(1).default(0),
         stage_stopped: z.number().int().min(0).max(2).default(2),
@@ -189,6 +207,13 @@ export const SocialProfileUpdateSchema = z.object({
   displayName: z.string().trim().max(SOCIAL_DISPLAY_NAME_MAX_CHARS).optional(),
   bio: z.string().trim().max(SOCIAL_BIO_MAX_CHARS).optional(),
   avatarUrl: mediaUrl.optional(),
+  /** Uploaded cover photo (POST /api/social/cover) or null to go back to the pastel gradient. */
+  coverUrl: z
+    .string()
+    .max(300)
+    .refine((v) => /^https?:\/\/[^\s/]+\/api\/media\/covers\/\d{4}\/\d{2}\/[0-9a-f-]{36}\.webp$/i.test(v), 'Invalid cover URL')
+    .nullable()
+    .optional(),
   coverColor: z.enum(PROFILE_COVER_IDS as [ProfileCoverColor, ...ProfileCoverColor[]]).optional(),
 });
 
@@ -212,6 +237,11 @@ export interface SocialPost {
   tag: SocialPostTag;
   /** Approved photo URL (legacy name kept for photos). */
   imageUrl: string | null;
+  /** 0–10 photos / videos in order (carousel). */
+  media: PostMediaItem[];
+  visibility: PostVisibility;
+  /** Set when the author edited the text. */
+  editedAt?: number | null;
   mediaType: SocialMediaType;
   /** Public media URL (photo or video); null while the media is pending or after removal. */
   mediaUrl: string | null;
@@ -227,6 +257,8 @@ export interface SocialPost {
   likedByMe?: boolean;
   /** Client-only: object URL of the just-uploaded file, shown to the author while pending. */
   localPreviewUrl?: string;
+  /** Client-only: object URLs of the just-uploaded files, in order. */
+  localPreviewUrls?: string[];
 }
 
 export interface SocialComment {
@@ -235,6 +267,7 @@ export interface SocialComment {
   author: SocialAuthor;
   body: string;
   createdAt: number;
+  editedAt?: number | null;
 }
 
 export interface CursorPage<T> {
@@ -249,6 +282,8 @@ export interface SocialProfile {
   bio: string | null;
   avatarUrl: string | null;
   coverColor: ProfileCoverColor;
+  /** Uploaded cover photo (falls back to the pastel gradient). */
+  coverUrl: string | null;
   totalKills: number;
   totalMatches: number;
   /** Lifetime earnings as the owner chose to show them (never the raw amount when masked/hidden). */
@@ -261,16 +296,22 @@ export interface SocialProfile {
   memberSince: number;
   isFollowing?: boolean;
   isMe?: boolean;
+  /** I blocked this player. */
+  isBlocked?: boolean;
 }
 
 export interface SocialNotification {
   id: string;
-  type: 'like' | 'comment' | 'follow' | 'moderation';
-  actor: SocialAuthor;
+  type: NotificationType;
+  actor: SocialAuthor | null;
+  /** Post / user the notification points at (click-through). */
+  targetId: string | null;
   postId: string | null;
+  messageKey: string | null;
+  payload: Record<string, string | number> | null;
   isRead: boolean;
   createdAt: number;
-  /** moderation notices: why the media was removed. */
+  /** post_rejected: why the media was removed. */
   reason?: string | null;
 }
 
@@ -281,6 +322,9 @@ export interface BootstrapUser {
   avatarUrl: string | null;
   coverColor: ProfileCoverColor;
   role: 'player' | 'admin' | 'auditor';
+  /** Staff role (RBAC); 'user' for players. */
+  staffRole: StaffRole;
+  coverUrl: string | null;
   rankBadge: string | null;
   energyTickets: number;
   maxEnergyTickets: number;

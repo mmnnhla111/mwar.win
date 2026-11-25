@@ -2,7 +2,10 @@
 
 import React, { useEffect, useState } from 'react';
 import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
-import { formatMicroUsd } from '@mwar/shared';
+import { formatMicroUsd, staffCan } from '@mwar/shared';
+import type { StaffPermission } from '@mwar/shared';
+import { StaffRolesAdmin } from '../../components/admin/StaffRolesAdmin';
+import { useSession } from '../../lib/session';
 import { TakedownQueue } from '../../components/admin/TakedownQueue';
 import { MembersAdmin } from '../../components/admin/MembersAdmin';
 import { GamesAdmin } from '../../components/admin/GamesAdmin';
@@ -10,7 +13,21 @@ import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function AdminAuditPage() {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'fleet' | 'members' | 'games' | 'takedown'>('fleet');
+  const { boot } = useSession();
+  const staffRole = boot?.user.staffRole || 'user';
+  const can = (p: StaffPermission) => staffCan(staffRole, p);
+  // Each tab mirrors an API permission (the API enforces it; this only hides what you cannot use)
+  const TABS = ([
+    ['fleet', '🖥️', 'admin.tab.fleet', 'nodes'],
+    ['finance', '💸', 'admin.tab.finance', 'financeRead'],
+    ['members', '👥', 'admin.tab.members', 'membersRead'],
+    ['games', '🎮', 'admin.tab.games', 'games'],
+    ['takedown', '🚩', 'takedown.title', 'takedown'],
+    ['staff', '🪪', 'admin.tab.staff', 'staff'],
+  ] as const).filter(([, , , perm]) => can(perm));
+  type TabId = (typeof TABS)[number][0];
+  const [tabState, setTab] = useState<TabId | null>(null);
+  const tab: TabId | undefined = tabState && TABS.some(([id]) => id === tabState) ? tabState : TABS[0]?.[0];
   const [pendingList, setPendingList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
@@ -53,9 +70,10 @@ export default function AdminAuditPage() {
   };
 
   useEffect(() => {
-    loadPending();
-    loadNodes();
-  }, []);
+    if (tab === 'finance' && loading && !pendingList.length) loadPending();
+    if (tab === 'fleet' && nodesLoading && !nodes.length) loadNodes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
   // No background polling: use the Refresh Nodes button
 
   const handleReview = async (withdrawalId: string, action: 'approve' | 'reject') => {
@@ -138,7 +156,7 @@ export default function AdminAuditPage() {
 
         <div className="flex items-center space-x-2 text-xs font-bold text-amber-700 bg-stone-50 px-3.5 py-1.5 rounded-2xl border border-stone-200/80">
           <span className="w-2 h-2 rounded-full bg-[#FFE135] animate-ping" />
-          <span>{t('admin.auditorMode')}</span>
+          <span data-staff-role={staffRole}>{t(`staff.role.${staffRole}`)}</span>
         </div>
       </div>
 
@@ -150,12 +168,7 @@ export default function AdminAuditPage() {
       )}
 
       <div className="flex gap-2 overflow-x-auto" role="tablist">
-        {([
-          ['fleet', '🖥️', 'admin.tab.fleet'],
-          ['members', '👥', 'admin.tab.members'],
-          ['games', '🎮', 'admin.tab.games'],
-          ['takedown', '🚩', 'takedown.title'],
-        ] as const).map(([id, icon, label]) => (
+        {TABS.map(([id, icon, label]) => (
           <button
             key={id}
             role="tab"
@@ -171,6 +184,8 @@ export default function AdminAuditPage() {
         ))}
       </div>
 
+      {!tab && <div className="bg-white border border-stone-200/80 rounded-3xl p-10 text-center text-sm text-stone-500" data-admin-denied>{t('admin.noAccess')}</div>}
+      {tab === 'staff' && <StaffRolesAdmin />}
       {tab === 'takedown' && <TakedownQueue />}
       {tab === 'members' && <MembersAdmin />}
       {tab === 'games' && <GamesAdmin />}
@@ -491,6 +506,11 @@ export default function AdminAuditPage() {
         </div>
       </div>
 
+      </>
+      )}
+
+      {tab === 'finance' && (
+      <>
       {/* 4. Pending Cashouts Review Table */}
       <div className="bg-white border border-stone-200/80 rounded-3xl overflow-hidden shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="p-4 sm:p-5 border-b border-stone-200/80 flex justify-between items-center">
@@ -543,6 +563,8 @@ export default function AdminAuditPage() {
                       </span>
                     </td>
                     <td className="p-3.5 text-right space-x-2">
+                      {can('financeWrite') ? (
+                      <>
                       <button
                         onClick={() => handleReview(item.id, 'approve')}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1 rounded-xl text-xs transition active:scale-95"
@@ -555,6 +577,10 @@ export default function AdminAuditPage() {
                       >
                         {t('admin.reject')}
                       </button>
+                      </>
+                      ) : (
+                        <span className="text-[10px] font-bold text-stone-400">{t('admin.readOnly')}</span>
+                      )}
                     </td>
                   </tr>
                 ))}

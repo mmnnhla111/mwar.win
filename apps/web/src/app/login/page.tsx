@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import type { AuthProvidersResponse, OAuthProvider } from '@mwar/shared';
 import { apiFetch, setAuthToken, clearBootstrapCache, getAuthProviders, checkReferralCode } from '../../lib/api';
 import { startLine, startTelegram, rememberRef, recalledRef } from '../../lib/oauth';
+import { restoreReferral } from '../../lib/referral';
 import { useSession } from '../../lib/session';
 import { AuthCard, FieldLabel, FormError } from '../../components/auth/AuthCard';
 import { ProviderButton } from '../../components/auth/ProviderButtons';
@@ -37,17 +38,20 @@ export default function LoginPage() {
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const fromUrl = (q.get('ref') || '').trim().slice(0, 64);
-    if (fromUrl) {
-      setRef(fromUrl);
+    const kept = recalledRef();
+    if (fromUrl || kept) {
+      setRef(fromUrl || kept);
       setRefFromLink(true);
-      rememberRef(fromUrl);
-    } else {
-      const kept = recalledRef();
-      if (kept) {
-        setRef(kept);
-        setRefFromLink(true);
-      }
+      if (fromUrl) rememberRef(fromUrl);
     }
+    // Sticky referral: URL → cookie → IndexedDB → localStorage → server (device hash)
+    restoreReferral()
+      .then((code) => {
+        if (!code) return;
+        setRef((cur) => (cur && cur.toLowerCase() !== code.toLowerCase() && !fromUrl ? cur : code));
+        setRefFromLink(true);
+      })
+      .catch(() => {});
     if (q.get('mode') === 'password') setPwOpen(true);
     getAuthProviders()
       .then(setProviders)

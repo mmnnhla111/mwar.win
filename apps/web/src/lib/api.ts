@@ -21,6 +21,11 @@ import type {
   AuthProvidersResponse,
   OAuthLoginResponse,
   LinkedAccountsResponse,
+  PostVisibility,
+  StagedUpload,
+  StaffMember,
+  StaffAuditEntry,
+  StaffRole,
 } from '@mwar/shared';
 
 export const API_BASE_URL =
@@ -298,11 +303,11 @@ export function checkReferralCode(code: string) {
   return apiFetch<{ valid: boolean; username: string | null }>(`/api/auth/referral?code=${encodeURIComponent(code)}`);
 }
 
-export function oauthTelegram(payload: Record<string, unknown>) {
+export function oauthTelegram(payload: Record<string, unknown> & { device_fp?: string | null }) {
   return apiFetch<OAuthLoginResponse>('/api/auth/oauth/telegram', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-export function oauthLine(payload: { code: string; redirect_uri: string; referral_code?: string | null; link_to_current_user?: boolean }) {
+export function oauthLine(payload: { code: string; redirect_uri: string; referral_code?: string | null; device_fp?: string | null; link_to_current_user?: boolean }) {
   return apiFetch<OAuthLoginResponse>('/api/auth/oauth/line', { method: 'POST', body: JSON.stringify(payload) });
 }
 
@@ -340,23 +345,79 @@ export function getFeed(opts: { cursor?: string | null; tag?: string | null; aut
   return apiFetch<CursorPage<SocialPost> & { mine?: SocialPost[] }>(`/api/social/feed${qs({ cursor: opts.cursor, tag: opts.tag, author: opts.author })}`);
 }
 
+/** Layer-2 rejection: the compression library is reloaded and the user is asked to refresh and post again. */
+export class MediaGateError extends Error {
+  code = 'MEDIA_GATE';
+}
+
 /**
- * Create a post. Text-only posts are JSON; a photo (compressed WebP <= 150 KB) or video
- * (MP4 / WebM <= 30 s, <= 5 MB) is sent in the same multipart request and starts "pending".
+ * Stage ONE compressed photo / video for a post (Layer-2 gate on the API). Any rejection purges the
+ * whole attempt on the server and throws MediaGateError.
  */
-export function createPost(data: { body: string; tag: SocialPostTag; nsfw?: boolean; media?: Blob | null; mediaName?: string }) {
-  if (data.media) {
-    const fd = new FormData();
-    fd.set('body', data.body);
-    fd.set('tag', data.tag);
-    fd.set('nsfw', data.nsfw ? 'true' : 'false');
-    fd.set('media', data.media, data.mediaName || 'media');
-    return apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', { method: 'POST', body: fd });
-  }
-  return apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', {
+export async function uploadPostMedia(file: Blob, attemptId: string, meta: { width?: number | null; height?: number | null; name?: string } = {}): Promise<StagedUpload> {
+  const fd = new FormData();
+  fd.set('attemptId', attemptId);
+  if (meta.width) fd.set('width', String(meta.width));
+  if (meta.height) fd.set('height', String(meta.height));
+  fd.set('file', file, meta.name || (file.type === 'video/mp4' ? 'media.mp4' : 'media.webp'));
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/social/uploads?attemptId=${encodeURIComponent(attemptId)}`, {
     method: 'POST',
-    body: JSON.stringify({ body: data.body, tag: data.tag, nsfw: !!data.nsfw }),
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
   });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 422 || data?.code === 'MEDIA_GATE') throw new MediaGateError(data?.error || 'MEDIA_GATE');
+  if (!res.ok) throw new Error(data?.error || `Upload failed (${res.status})`);
+  return data as StagedUpload;
+}
+
+/** Drop every staged upload of a cancelled posting attempt. */
+export function cancelUploads(attemptId: string) {
+  return apiFetch<{ success: boolean }>(`/api/social/uploads/${encodeURIComponent(attemptId)}`, { method: 'DELETE' }).catch(() => null);
+}
+
+/** Create a post (JSON) from text + staged uploads in display order. */
+export async function createPost(data: { body: string; tag: SocialPostTag; nsfw?: boolean; visibility?: PostVisibility; uploads?: string[]; attemptId?: string }) {
+  try {
+    return await apiFetch<{ success: boolean; post: SocialPost }>('/api/social/posts', {
+      method: 'POST',
+      body: JSON.stringify({ body: data.body, tag: data.tag, nsfw: !!data.nsfw, visibility: data.visibility || 'public', uploads: data.uploads || [], attemptId: data.attemptId }),
+    });
+  } catch (e: any) {
+    if (/refresh the screen/i.test(e?.message || '')) throw new MediaGateError(e.message);
+    throw e;
+  }
+}
+
+export function updatePost(id: string, data: { body?: string; visibility?: PostVisibility }) {
+  return apiFetch<{ success: boolean; post: SocialPost }>(`/api/social/posts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
+}
+
+export function getPost(id: string) {
+  return apiFetch<{ post: SocialPost }>(`/api/social/posts/${encodeURIComponent(id)}`);
+}
+
+export function getHashtagFeed(hashtag: string, cursor?: string | null) {
+  return apiFetch<CursorPage<SocialPost>>(`/api/social/feed${qs({ hashtag, cursor })}`);
+}
+
+export function updateComment(id: string, body: string) {
+  return apiFetch<{ success: boolean; body: string; editedAt: number }>(`/api/social/comments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ body }) });
+}
+
+export function deleteComment(id: string) {
+  return apiFetch<{ success: boolean; commentCount: number }>(`/api/social/comments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function setBlock(userId: string, block: boolean) {
+  return apiFetch<{ success: boolean; blocked: boolean }>('/api/social/block', { method: 'POST', body: JSON.stringify({ userId, block }) });
+}
+
+/** Upload a compressed WebP cover (<= 250 KB, max 1200x400); returns its URL (save it with updateSocialProfile). */
+export async function uploadCover(blob: Blob): Promise<string> {
+  const res = await apiFetch<{ success: boolean; url: string }>('/api/social/cover', { method: 'POST', headers: { 'Content-Type': 'image/webp' }, body: blob });
+  return res.url;
 }
 
 // Content policy: 18+ setting, reports, admin takedown queue
@@ -405,7 +466,7 @@ export function getProfile(username?: string | null) {
   return apiFetch<{ profile: SocialProfile; posts: CursorPage<SocialPost> & { mine?: SocialPost[] } }>(`/api/social/profile${qs({ u: username })}`);
 }
 
-export function updateSocialProfile(data: { displayName?: string; bio?: string; avatarUrl?: string; coverColor?: ProfileCoverColor }) {
+export function updateSocialProfile(data: { displayName?: string; bio?: string; avatarUrl?: string; coverColor?: ProfileCoverColor; coverUrl?: string | null }) {
   return apiFetch<{ success: boolean }>('/api/social/profile', { method: 'POST', body: JSON.stringify(data) });
 }
 
@@ -420,9 +481,11 @@ export function getFollows(username: string, type: 'followers' | 'following', cu
   return apiFetch<CursorPage<SocialAuthor>>(`/api/social/follows${qs({ u: username, type, cursor })}`);
 }
 
-export function searchUsers(q: string) {
-  return apiFetch<{ users: SocialAuthor[] }>(`/api/social/search${qs({ q })}`);
+export type SearchResult = { users: SocialAuthor[]; posts: SocialPost[]; hashtags: { tag: string; count: number }[] };
+export function searchAll(q: string) {
+  return apiFetch<SearchResult>(`/api/social/search${qs({ q })}`);
 }
+export const searchUsers = searchAll;
 
 export function getSuggestions() {
   return apiFetch<{ online: { username: string; userId: string | null; roomId: string }[]; newest: SocialAuthor[] }>('/api/social/suggestions');
@@ -432,8 +495,9 @@ export function getNotifications(cursor?: string | null) {
   return apiFetch<CursorPage<SocialNotification>>(`/api/social/notifications${qs({ cursor })}`);
 }
 
-export function markNotificationsRead() {
-  return apiFetch<{ success: boolean }>('/api/social/notifications/read', { method: 'POST' });
+/** Mark one notification (id) or all of them read; returns the unread count left. */
+export function markNotificationsRead(id?: string) {
+  return apiFetch<{ success: boolean; unread: number }>('/api/social/notifications/read', { method: 'POST', body: JSON.stringify(id ? { id } : {}) });
 }
 
 /** Upload an already-compressed WebP avatar (<= 120 KB) to R2; returns its immutable URL. */
@@ -477,4 +541,43 @@ export function startCheer(data: { format: CheerAdFormat; targetType: CheerTarge
 
 export function completeCheer(viewId: string) {
   return apiFetch<CheerResult>('/api/ads/cheer', { method: 'POST', body: JSON.stringify({ viewId }) });
+}
+
+// ---------------------------------------------------------------------------
+// Staff & roles (super_admin)
+// ---------------------------------------------------------------------------
+export function getStaff(q?: string) {
+  return apiFetch<{ items: StaffMember[] }>(`/api/admin/staff${qs({ q })}`);
+}
+export function setStaffRole(userId: string, staffRole: StaffRole) {
+  return apiFetch<{ success: boolean; member: StaffMember }>('/api/admin/staff', { method: 'PATCH', body: JSON.stringify({ userId, staffRole }) });
+}
+export function getStaffAudit() {
+  return apiFetch<{ items: StaffAuditEntry[] }>('/api/admin/staff/audit');
+}
+
+// ---------------------------------------------------------------------------
+// Chat media (deleted after 7 days)
+// ---------------------------------------------------------------------------
+export async function uploadChatMedia(blob: Blob): Promise<{ mediaKey: string; mediaType: 'image' | 'video'; url: string }> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/media`, {
+    method: 'POST',
+    headers: { 'Content-Type': blob.type || 'application/octet-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: blob,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 422) throw new MediaGateError(data?.error || 'MEDIA_GATE');
+  if (!res.ok) throw new Error(data?.error || `Upload failed (${res.status})`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Sticky referral
+// ---------------------------------------------------------------------------
+export function referralTouch(deviceFp: string, refCode: string) {
+  return apiFetch<{ ok: boolean; valid?: boolean; self?: boolean; username?: string }>('/api/referral/touch', { method: 'POST', body: JSON.stringify({ device_fp: deviceFp, ref_code: refCode }) }).catch(() => null);
+}
+export function referralResolve(deviceFp: string) {
+  return apiFetch<{ refCode: string | null }>(`/api/referral/resolve${qs({ device_fp: deviceFp })}`).catch(() => ({ refCode: null }));
 }
