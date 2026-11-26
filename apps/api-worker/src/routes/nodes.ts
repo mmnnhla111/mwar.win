@@ -104,7 +104,7 @@ apt-get install -f -y -o DPkg::Lock::Timeout=120 2>/dev/null || true
 # --- 1. System Dependencies ---
 echo "[1/7] Installing base system utilities..."
 apt-get -o DPkg::Lock::Timeout=120 update -y
-apt-get -o DPkg::Lock::Timeout=120 install -y curl git build-essential ufw software-properties-common jq unzip tar
+apt-get -o DPkg::Lock::Timeout=120 install -y curl git ca-certificates gnupg build-essential ufw software-properties-common jq unzip tar
 
 # --- 2. Database Services (PostgreSQL 16 & Redis) ---
 if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
@@ -122,23 +122,44 @@ if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
 
   echo "      Configuring database 'game_audit_logs' & user 'log_writer' (idempotent)..."
   if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='log_writer'" 2>/dev/null | grep -q 1; then
-    sudo -u postgres psql -c "CREATE USER log_writer WITH PASSWORD 'local_dev_password_2026';" || true
+    sudo -u postgres psql -c "CREATE USER log_writer WITH PASSWORD 'local_dev_password_2026';"
   else
-    sudo -u postgres psql -c "ALTER USER log_writer WITH PASSWORD 'local_dev_password_2026';" || true
+    sudo -u postgres psql -c "ALTER USER log_writer WITH PASSWORD 'local_dev_password_2026';"
   fi
 
   if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='game_audit_logs'" 2>/dev/null | grep -q 1; then
-    sudo -u postgres psql -c "CREATE DATABASE game_audit_logs OWNER log_writer;" || true
+    sudo -u postgres psql -c "CREATE DATABASE game_audit_logs OWNER log_writer;"
   else
     echo "      Database 'game_audit_logs' already exists."
-    sudo -u postgres psql -c "ALTER DATABASE game_audit_logs OWNER TO log_writer;" || true
+    sudo -u postgres psql -c "ALTER DATABASE game_audit_logs OWNER TO log_writer;"
   fi
 
-  sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE game_audit_logs TO log_writer;" || true
+  echo "      Reassigning full schema, table, and sequence ownership to 'log_writer'..."
+  sudo -u postgres psql -d game_audit_logs -v ON_ERROR_STOP=1 -c "
+    ALTER DATABASE game_audit_logs OWNER TO log_writer;
+    ALTER SCHEMA public OWNER TO log_writer;
+    GRANT ALL PRIVILEGES ON DATABASE game_audit_logs TO log_writer;
+    GRANT ALL PRIVILEGES ON SCHEMA public TO log_writer;
+    DO \$\$
+    DECLARE r RECORD;
+    BEGIN
+      FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+        EXECUTE format('ALTER TABLE public.%I OWNER TO log_writer', r.tablename);
+      END LOOP;
+      FOR r IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public' LOOP
+        EXECUTE format('ALTER SEQUENCE public.%I OWNER TO log_writer', r.sequence_name);
+      END LOOP;
+    END \$\$;
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO log_writer;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO log_writer;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO log_writer;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO log_writer;
+  "
 
-  echo "      Applying financial logs schema..."
-  sudo -u postgres psql -d game_audit_logs -c "
-    CREATE TABLE IF NOT EXISTS logs_2026_11 (
+  CUR_MONTH_TABLE="logs_$(date -u +%Y_%m)"
+  echo "      Ensuring partition table '\${CUR_MONTH_TABLE}' as log_writer..."
+  PGPASSWORD='local_dev_password_2026' psql -h localhost -U log_writer -d game_audit_logs -v ON_ERROR_STOP=1 -c "
+    CREATE TABLE IF NOT EXISTS \${CUR_MONTH_TABLE} (
       id BIGSERIAL PRIMARY KEY,
       transaction_id VARCHAR(64) UNIQUE NOT NULL,
       user_id VARCHAR(36) NOT NULL,
@@ -148,13 +169,12 @@ if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
       source_game_id VARCHAR(64),
       related_user_id VARCHAR(36),
       mlm_level INT CHECK (mlm_level BETWEEN 1 AND 5),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_logs_user_date ON logs_2026_11(user_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_logs_action ON logs_2026_11(action_type);
-    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO log_writer;
-    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO log_writer;
-  " || true
+    CREATE INDEX IF NOT EXISTS idx_\${CUR_MONTH_TABLE}_user_date ON \${CUR_MONTH_TABLE}(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_\${CUR_MONTH_TABLE}_action ON \${CUR_MONTH_TABLE}(action_type);
+  "
 fi
 
 # --- 3. Node.js 20 LTS, pnpm & PM2 ---
@@ -198,10 +218,10 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 echo "      Node.js version: $(node -v), npm version: $(npm -v)"
-echo "      Installing pnpm & pm2 globally..."
-npm install -g pnpm pm2 || true
+echo "      Installing pnpm@12.21.0 & pm2 globally..."
+npm install -g pnpm@12.21.0 pm2 || true
 if ! command -v pnpm >/dev/null 2>&1; then
-  corepack enable 2>/dev/null || npm install -g pnpm
+  corepack enable 2>/dev/null || npm install -g pnpm@12.21.0
 fi
 
 # --- 4. Cloudflare Tunnel Client (cloudflared) ---
@@ -231,7 +251,7 @@ else
 fi
 
 cd /opt/mwar-node
-pnpm install
+pnpm install --frozen-lockfile || pnpm install
 
 echo "      Building packages & services..."
 pnpm --filter @mwar/shared build
@@ -245,7 +265,7 @@ if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
 fi
 
 # --- 6. Configuration & Environment ---
-echo "[6/7] Writing environment configuration (/opt/mwar-node/.env)..."
+echo "[6/7] Writing environment configuration (/opt/mwar-node/.env) & symlinks..."
 cat << 'ENVEOF' > /opt/mwar-node/.env
 NODE_ENV=production
 NODE_ID=${nodeName}
@@ -254,6 +274,7 @@ PORT=2567
 GAME_PORT=2567
 LOG_PORT=3000
 API_BASE_URL=${apiBaseUrl}
+WORKER_API_URL=${apiBaseUrl}
 INTERNAL_API_SECRET=${internalSecret}
 LOG_RECEIVER_SECRET=${logReceiverSecret}
 LOG_INGEST_SECRET=${logReceiverSecret}
@@ -261,6 +282,8 @@ DATABASE_URL=postgresql://log_writer:local_dev_password_2026@localhost:5432/game
 REDIS_URL=redis://127.0.0.1:6379
 ENVEOF
 chmod 600 /opt/mwar-node/.env
+ln -sf /opt/mwar-node/.env /opt/mwar-node/apps/game-server/.env
+ln -sf /opt/mwar-node/.env /opt/mwar-node/apps/log-receiver/.env
 
 # Background Heartbeat Daemon (reports CPU, RAM, active rooms every 30s)
 cat << 'HEARTEOF' > /opt/mwar-node/heartbeat.sh
@@ -322,6 +345,7 @@ cat << ECOSYSTEM_GAME >> /opt/mwar-node/ecosystem.config.cjs
         GAME_PORT: 2567,
         REDIS_URL: "redis://127.0.0.1:6379",
         API_BASE_URL: "${apiBaseUrl}",
+        WORKER_API_URL: "${apiBaseUrl}",
         INTERNAL_API_SECRET: "${internalSecret}",
         LOG_RECEIVER_SECRET: "${logReceiverSecret}",
         NODE_ID: "${nodeName}",
@@ -347,6 +371,7 @@ cat << ECOSYSTEM_LOGS >> /opt/mwar-node/ecosystem.config.cjs
         LOG_PORT: 3000,
         DATABASE_URL: "postgresql://log_writer:local_dev_password_2026@localhost:5432/game_audit_logs",
         API_BASE_URL: "${apiBaseUrl}",
+        WORKER_API_URL: "${apiBaseUrl}",
         INTERNAL_API_SECRET: "${internalSecret}",
         LOG_RECEIVER_SECRET: "${logReceiverSecret}",
         LOG_INGEST_SECRET: "${logReceiverSecret}",
@@ -381,7 +406,7 @@ ECOSYSTEM_TAIL
 
 echo "      Starting services via PM2 ecosystem..."
 pm2 delete all 2>/dev/null || true
-pm2 start /opt/mwar-node/ecosystem.config.cjs
+pm2 start /opt/mwar-node/ecosystem.config.cjs --update-env
 pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 pm2 save || true
 
@@ -394,16 +419,16 @@ systemctl enable cloudflared || true
 systemctl restart cloudflared || true
 ` : '# No tunnel token specified; skip cloudflared service'}
 
-# --- Mandatory Health Verification ---
-echo "      Waiting 5 seconds for service warm-up and health verification..."
+# --- Mandatory Post-Install Self-Test ---
+echo "      Waiting 5 seconds for service warm-up and running post-install self-tests..."
 sleep 5
 
 VERIFY_FAILED=0
 
 if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
-  echo "      Checking mwar-game-server on http://127.0.0.1:2567/health..."
+  echo "      [Self-Test] Checking mwar-game-server on http://127.0.0.1:2567/health..."
   if curl -fsS http://127.0.0.1:2567/health >/dev/null 2>&1; then
-    echo "      ✅ mwar-game-server is HEALTHY (port 2567 responding)"
+    echo "      ✅ mwar-game-server is HEALTHY (port 2567 responding 200 OK)"
   else
     echo "      ❌ mwar-game-server FAILED healthcheck on port 2567!" >&2
     VERIFY_FAILED=1
@@ -411,11 +436,21 @@ if [ "${role}" = "all" ] || [ "${role}" = "game" ]; then
 fi
 
 if [ "${role}" = "all" ] || [ "${role}" = "logs" ]; then
-  echo "      Checking mwar-log-receiver on http://127.0.0.1:3000/health..."
-  if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
-    echo "      ✅ mwar-log-receiver is HEALTHY (port 3000 responding)"
+  CUR_MONTH_TABLE="logs_$(date -u +%Y_%m)"
+  echo "      [Self-Test] Checking PostgreSQL connection as log_writer & partition \${CUR_MONTH_TABLE}..."
+  if PGPASSWORD='local_dev_password_2026' psql -h localhost -U log_writer -d game_audit_logs -tAc "SELECT COUNT(*) FROM \${CUR_MONTH_TABLE};" >/dev/null 2>&1; then
+    echo "      ✅ PostgreSQL log_writer ownership & \${CUR_MONTH_TABLE} partition verified"
   else
-    echo "      ❌ mwar-log-receiver FAILED healthcheck on port 3000!" >&2
+    echo "      ❌ PostgreSQL log_writer check FAILED on \${CUR_MONTH_TABLE}!" >&2
+    VERIFY_FAILED=1
+  fi
+
+  echo "      [Self-Test] Checking mwar-log-receiver on http://127.0.0.1:3000/health..."
+  LOG_HEALTH=$(curl -fsS http://127.0.0.1:3000/health 2>/dev/null || echo "")
+  if echo "\${LOG_HEALTH}" | grep -q '"status":"ok"' && echo "\${LOG_HEALTH}" | grep -q '"isDbConnected":true'; then
+    echo "      ✅ mwar-log-receiver is HEALTHY (port 3000 responding 200 OK, isDbConnected: true)"
+  else
+    echo "      ❌ mwar-log-receiver FAILED healthcheck or DB connection! Response: \${LOG_HEALTH}" >&2
     VERIFY_FAILED=1
   fi
 fi
@@ -447,9 +482,9 @@ curl -s -X POST "${apiBaseUrl}/api/nodes/heartbeat" \\
 echo ""
 echo "=================================================================="
 echo "  🎉 SUCCESS: NODE ${nodeName} PROVISIONED AND ONLINE!"
-echo "  Colyseus Game Server : ws://localhost:2567"
-echo "  PostgreSQL Log Server: http://localhost:3000"
-echo "  Heartbeat Monitor    : Active every 30s -> https://api.mwar.win"
+echo "  Colyseus Game Server : ws://localhost:2567 (200 OK)"
+echo "  PostgreSQL Log Server: http://localhost:3000 (isDbConnected: true)"
+echo "  Heartbeat Monitor    : Active every 180s -> https://api.mwar.win"
 echo "  PM2 Auto-Boot        : Configured for system reboots"
 echo "=================================================================="
 echo ""

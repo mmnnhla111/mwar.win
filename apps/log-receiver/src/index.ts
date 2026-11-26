@@ -98,19 +98,42 @@ export async function ensureTable(client: Q, table: string) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-    CREATE INDEX IF NOT EXISTS idx_${table}_user_date ON ${table}(user_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_${table}_action ON ${table}(action_type);
-    CREATE OR REPLACE FUNCTION mwar_logs_immutable() RETURNS trigger AS $$
-    BEGIN
-      RAISE EXCEPTION 'Financial audit logs are immutable (% blocked)', TG_OP;
-    END;
-    $$ LANGUAGE plpgsql;
-    DROP TRIGGER IF EXISTS ${table}_no_update ON ${table};
-    CREATE TRIGGER ${table}_no_update BEFORE UPDATE OR DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION mwar_logs_immutable();
-    DROP TRIGGER IF EXISTS ${table}_no_truncate ON ${table};
-    CREATE TRIGGER ${table}_no_truncate BEFORE TRUNCATE ON ${table} FOR EACH STATEMENT EXECUTE FUNCTION mwar_logs_immutable();
   `);
+
+  // Check if received_at column is already present before running ALTER TABLE (avoids owner errors on pre-created tables)
+  const colRes = await client.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'received_at'`,
+    [table]
+  );
+  if (colRes.rowCount === 0) {
+    await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`);
+  }
+
+  try {
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_${table}_user_date ON ${table}(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_${table}_action ON ${table}(action_type);
+      CREATE OR REPLACE FUNCTION mwar_logs_immutable() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'Financial audit logs are immutable (% blocked)', TG_OP;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    const trigRes = await client.query(
+      `SELECT tgname FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname IN ($2, $3)`,
+      [table, `${table}_no_update`, `${table}_no_truncate`]
+    );
+    const existing = new Set((trigRes.rows || []).map((r: any) => r.tgname));
+    if (!existing.has(`${table}_no_update`)) {
+      await client.query(`CREATE TRIGGER ${table}_no_update BEFORE UPDATE OR DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION mwar_logs_immutable();`);
+    }
+    if (!existing.has(`${table}_no_truncate`)) {
+      await client.query(`CREATE TRIGGER ${table}_no_truncate BEFORE TRUNCATE ON ${table} FOR EACH STATEMENT EXECUTE FUNCTION mwar_logs_immutable();`);
+    }
+  } catch (ddlErr: any) {
+    // Do not block log ingestion if triggers/indexes already exist under another owner
+    console.warn(`[Log Receiver] Non-fatal DDL warning on ${table}: ${ddlErr.message}`);
+  }
   ensuredTables.add(table);
 }
 
