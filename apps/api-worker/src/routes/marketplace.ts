@@ -11,6 +11,7 @@ import { edgeCachedJson, edgeCachePurge } from '../utils/edge-cache';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { buildNetworkTree } from '../utils/mlm-tree';
 import { PLATFORM_ACCOUNT_ID } from '../utils/guards';
+import { ledgerAfterUpdate } from '../utils/ledger';
 
 export const marketplaceRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -178,6 +179,7 @@ marketplaceRouter.post('/buy', async (c) => {
       c.env.DB.prepare(
         'UPDATE wallets SET balance_micro_usd = balance_micro_usd - ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
       ).bind(listing.price_micro_usd, now, buyer.userId),
+      ledgerAfterUpdate(c.env.DB, buyer.userId, -listing.price_micro_usd, 'MARKET_BUY', listing.id, now),
     ]);
   } catch {
     return c.json({ error: 'Insufficient funds to purchase listing', required: listing.price_micro_usd }, 400);
@@ -249,6 +251,7 @@ export async function releaseMarketplaceEscrow(env: Env) {
       env.DB.prepare(
         'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
       ).bind(l.price_micro_usd, now, l.seller_id),
+      ledgerAfterUpdate(env.DB, l.seller_id, l.price_micro_usd, 'MARKET_SELL', l.id, now),
     ]);
     if ((res[1].meta?.changes ?? 0) !== 1) continue;
     released++;

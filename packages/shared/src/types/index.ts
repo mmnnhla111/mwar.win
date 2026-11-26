@@ -56,7 +56,7 @@ export interface MarketplaceListing {
   created_at: number;
 }
 
-export type WithdrawalStatus = 'pending' | 'ai_verifying' | 'approved' | 'rejected';
+export type WithdrawalStatus = 'pending' | 'ai_verifying' | 'approved' | 'flagged_review' | 'rejected';
 
 export interface WithdrawalRequest {
   id: string;
@@ -114,7 +114,9 @@ export type FinancialActionType =
   /** 20 % of a reward split credited to the Energy Recharge Reserve Pool (system ledger, informational). */
   | 'ENERGY_POOL_CREDIT'
   /** Ad value drawn from the Energy Recharge Reserve Pool to back an EC recharge (system ledger, informational). */
-  | 'ENERGY_POOL_DRAW';
+  | 'ENERGY_POOL_DRAW'
+  /** A cashout paid out by super_admin (informational: the wallet was debited at request time). */
+  | 'CASHOUT_APPROVED';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [

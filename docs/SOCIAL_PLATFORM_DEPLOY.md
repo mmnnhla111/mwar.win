@@ -401,3 +401,22 @@ npx wrangler deploy
 cd ../web && pnpm run deploy:pages
 ```
 Deploy the Worker and Pages together: an old web build without `lastActiveAt` gets `idle_paused` from the new API.
+
+## Cashout ($10 minimum) + 3-layer anti-cheat audit (2026-11-26)
+
+Migration **0019** (`0019_withdrawals_and_anticheat_audit.sql`; 0018 is the anti-AFK banner gate). It rebuilds
+`withdrawal_requests` (new statuses incl. `flagged_review`, payout methods, fee/net, score, audit report)
+and adds `anticheat_flags`, `wallet_ledger`, `combat_events`, `user_device_links`.
+
+1. `npx wrangler d1 migrations apply core_db --remote` (from `apps/api-worker`).
+   - The migration seeds one `OPENING_BALANCE` ledger row per wallet, so Layer 1 reconciles from the
+     moment it runs: any later balance change that bypasses the code (manual SQL) shows as a mismatch.
+2. Deploy the Worker (`pnpm --filter api-worker deploy`), then the Pages site (`apps/web` build + deploy).
+3. Redeploy the game server so payouts carry session `hits` / `headshots` (Layer 2 headshot ratio).
+4. Optional: set `LOG_RECEIVER_URL` for the PostgreSQL cross-check in Layer 1 (otherwise "not configured").
+
+Flow: the player's request debits the wallet atomically (ledgered) and is audited at once.
+Clean (score ≥ 0.7, no flags) → `pending`, waiting for super_admin to send the payout and press Approve.
+Anything else → `flagged_review`; approving it needs a written reason. Reject always refunds
+(optionally keeping Layer-3 collusive earnings for the platform). finance_auditor is read-only.
+There is no automatic payout.

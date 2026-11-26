@@ -1032,7 +1032,10 @@ export class ShootingRoom extends Room<GameState> {
     m.earned += earner;
     player.sessionEarningsMicroUsd += earner;
     player.bountyMicroUsd += bounty;
-    this.pendingPayouts.push({ userId: player.id, amountMicroUsd: amount, actionType, gameId: this.gameId, metadata });
+    // Layer 2 telemetry for the cashout audit: the shooter's session hit / headshot totals so far
+    const sm = this.meta.get(sessionId);
+    const telemetry = sm ? { hits: sm.hits, headshots: sm.headshots } : {};
+    this.pendingPayouts.push({ userId: player.id, amountMicroUsd: amount, actionType, gameId: this.gameId, metadata: { ...metadata, ...telemetry } });
     return earner;
   }
 

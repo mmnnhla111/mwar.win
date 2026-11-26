@@ -130,20 +130,19 @@ export function DevMockPanel({ onAuthSuccess, onRefreshData }: DevMockPanelProps
   const handleSimulateAiAudit = async (targetState: 'approved' | 'rejected') => {
     try {
       setAiStatus('Fetching pending cashouts...');
-      const pendingRes = await apiFetch('/api/audit/pending');
+      const pendingRes = await apiFetch('/api/audit/withdrawals?status=open');
       const pendingList = pendingRes.withdrawals || [];
       if (pendingList.length === 0) {
         setAiStatus('No pending cashouts to review. Please request a cashout first.');
         return;
       }
       const target = pendingList[0];
-      const res = await apiFetch('/api/audit/dev/simulate-ai-review', {
+      await apiFetch('/api/audit/review', {
         method: 'POST',
         body: JSON.stringify({
-          withdrawalId: target.id,
-          targetState,
-          aiScore: targetState === 'approved' ? 0.99 : 0.42,
-          reason: targetState === 'approved' ? 'Clean audit log match' : 'Suspicious kill frequency',
+          withdrawal_id: target.id,
+          action: targetState === 'approved' ? 'approve' : 'reject',
+          reason: targetState === 'approved' ? 'Dev panel: clean audit log match' : 'Dev panel: suspicious kill frequency',
         }),
       });
       setAiStatus(`Simulated ${targetState.toUpperCase()} on withdrawal ${target.id.slice(0, 8)}`);

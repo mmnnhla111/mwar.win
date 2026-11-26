@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
-import { formatMicroUsd, staffCan } from '@mwar/shared';
+import { staffCan } from '@mwar/shared';
 import type { StaffPermission } from '@mwar/shared';
 import { StaffRolesAdmin } from '../../components/admin/StaffRolesAdmin';
 import { useSession } from '../../lib/session';
@@ -10,6 +10,7 @@ import { TakedownQueue } from '../../components/admin/TakedownQueue';
 import { MembersAdmin } from '../../components/admin/MembersAdmin';
 import { GamesAdmin } from '../../components/admin/GamesAdmin';
 import { AdNetworksAdmin } from '../../components/admin/AdNetworksAdmin';
+import { CashoutReviewAdmin } from '../../components/admin/CashoutReviewAdmin';
 import { useTranslation } from '../../i18n/I18nProvider';
 
 export default function AdminAuditPage() {
@@ -30,8 +31,6 @@ export default function AdminAuditPage() {
   type TabId = (typeof TABS)[number][0];
   const [tabState, setTab] = useState<TabId | null>(null);
   const tab: TabId | undefined = tabState && TABS.some(([id]) => id === tabState) ? tabState : TABS[0]?.[0];
-  const [pendingList, setPendingList] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
 
   // Server Nodes State
@@ -43,18 +42,6 @@ export default function AdminAuditPage() {
   const [tunnelTokenInput, setTunnelTokenInput] = useState('');
   const [copied, setCopied] = useState(false);
   const [updatingNodeId, setUpdatingNodeId] = useState<string | null>(null);
-
-  const loadPending = async () => {
-    setLoading(true);
-    try {
-      const res = await apiFetch('/api/audit/pending');
-      setPendingList(res.withdrawals || []);
-    } catch (err: any) {
-      setActionMsg(t('takedown.loadFailed', { error: err.message }));
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const loadNodes = async () => {
     setNodesLoading(true);
@@ -72,29 +59,10 @@ export default function AdminAuditPage() {
   };
 
   useEffect(() => {
-    if (tab === 'finance' && loading && !pendingList.length) loadPending();
     if (tab === 'fleet' && nodesLoading && !nodes.length) loadNodes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
   // No background polling: use the Refresh Nodes button
-
-  const handleReview = async (withdrawalId: string, action: 'approve' | 'reject') => {
-    setActionMsg('');
-    try {
-      const res = await apiFetch('/api/audit/review', {
-        method: 'POST',
-        body: JSON.stringify({
-          withdrawal_id: withdrawalId,
-          action,
-          reason: action === 'approve' ? 'Audit verified clean by administrator' : 'Suspicious kill/chest activity',
-        }),
-      });
-      setActionMsg(t('admin.reviewDone', { action: action === 'approve' ? t('admin.approve') : t('admin.reject'), id: res.withdrawalId.slice(0, 8) }));
-      await loadPending();
-    } catch (err: any) {
-      setActionMsg(t('common.errorWith', { error: err.message }));
-    }
-  };
 
   const handleCapacityChange = async (nodeId: string, mini: number, fast: number) => {
     setUpdatingNodeId(nodeId);
@@ -512,88 +480,7 @@ export default function AdminAuditPage() {
       </>
       )}
 
-      {tab === 'finance' && (
-      <>
-      {/* 4. Pending Cashouts Review Table */}
-      <div className="bg-white border border-stone-200/80 rounded-3xl overflow-hidden shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
-        <div className="p-4 sm:p-5 border-b border-stone-200/80 flex justify-between items-center">
-          <span className="text-sm font-extrabold text-stone-900">{t('admin.pendingReviews', { n: pendingList.length })}</span>
-          <button
-            onClick={loadPending}
-            className="text-xs text-amber-700 hover:text-amber-700 font-bold bg-stone-100 px-3 py-1 rounded-xl border border-stone-200/80"
-          >
-            {t('admin.refreshQueue')}
-          </button>
-        </div>
-
-        {loading ? (
-          <div className="p-12 text-center text-xs text-stone-500 animate-pulse">{t('admin.scanning')}</div>
-        ) : pendingList.length === 0 ? (
-          <div className="p-12 text-center text-xs text-stone-500">
-            ✅ {t('admin.queueClear')}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-stone-50 text-stone-500 font-bold border-b border-stone-200/80 uppercase text-[10px] tracking-wider">
-                <tr>
-                  <th className="p-3.5">{t('admin.col.id')}</th>
-                  <th className="p-3.5">{t('admin.col.user')}</th>
-                  <th className="p-3.5">{t('wallet.col.amount')}</th>
-                  <th className="p-3.5">{t('admin.col.currency')}</th>
-                  <th className="p-3.5">{t('admin.col.score')}</th>
-                  <th className="p-3.5 text-right">{t('admin.col.actions')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-100 text-stone-700">
-                {pendingList.map((item) => (
-                  <tr key={item.id} className="hover:bg-stone-50 transition">
-                    <td className="p-3.5 font-mono text-stone-600 font-bold">
-                      {item.id.slice(0, 8)}...
-                    </td>
-                    <td className="p-3.5 font-bold text-stone-900">
-                      {item.user_id?.slice(0, 8)}...
-                    </td>
-                    <td className="p-3.5 text-emerald-600 font-extrabold font-mono">
-                      {formatMicroUsd(item.amount_micro_usd)}
-                    </td>
-                    <td className="p-3.5 text-stone-600 font-bold">
-                      {item.crypto_currency}
-                    </td>
-                    <td className="p-3.5">
-                      <span className="bg-emerald-50 text-emerald-600 border border-emerald-200 px-2 py-0.5 rounded-full font-mono font-bold text-[10px]">
-                        0.98 (CLEAN)
-                      </span>
-                    </td>
-                    <td className="p-3.5 text-right space-x-2">
-                      {can('financeWrite') ? (
-                      <>
-                      <button
-                        onClick={() => handleReview(item.id, 'approve')}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1 rounded-xl text-xs transition active:scale-95"
-                      >
-                        {t('admin.approve')}
-                      </button>
-                      <button
-                        onClick={() => handleReview(item.id, 'reject')}
-                        className="bg-rose-600 hover:bg-rose-500 text-white font-bold px-3 py-1 rounded-xl text-xs transition active:scale-95"
-                      >
-                        {t('admin.reject')}
-                      </button>
-                      </>
-                      ) : (
-                        <span className="text-[10px] font-bold text-stone-400">{t('admin.readOnly')}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      </>
-      )}
+      {tab === 'finance' && <CashoutReviewAdmin />}
     </div>
   );
 }

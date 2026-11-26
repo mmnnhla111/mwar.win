@@ -12,6 +12,7 @@ import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { applyRewardSplit, claimHeadBounty } from '../utils/reward-split';
+import { ledgerClampedDebit, recordDeviceLink } from '../utils/ledger';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { trackQuestAction, getUtcDateKey } from './quests';
 import { loadRooms } from './games';
@@ -55,6 +56,8 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     const left0 = await c.env.DB.prepare('SELECT energy_tickets FROM users WHERE id = ?1').bind(user.userId).first<{ energy_tickets: number }>();
     return c.json({ success: true, free: true, entryToken: null, energyTickets: left0?.energy_tickets ?? 0 });
   }
+  // Layer 3: remember this account's hashed IP (collusion graph); never blocks the entry
+  c.executionCtx.waitUntil(recordDeviceLink(c.env.DB, c.env.JWT_SECRET, user.userId, c.req.header('CF-Connecting-IP')));
   const res = await c.env.DB
     .prepare(
       `UPDATE users
@@ -137,6 +140,7 @@ gameRouter.post('/batch-payout', async (c) => {
     if (item.actionType === 'AFK_FORFEIT') {
       // 30-minute AFK kick: claw back the round's already-flushed earnings (never below 0)
       statements.push(
+        ledgerClampedDebit(c.env.DB, item.userId, item.amountMicroUsd, 'AFK_FORFEIT', gameId, now),
         c.env.DB.prepare(
           'UPDATE wallets SET balance_micro_usd = MAX(0, balance_micro_usd - ?1), total_earned_micro_usd = MAX(0, total_earned_micro_usd - ?1), updated_at = ?2 WHERE user_id = ?3'
         ).bind(item.amountMicroUsd, now, item.userId)
@@ -173,6 +177,28 @@ gameRouter.post('/batch-payout', async (c) => {
       dateKey,
     });
     earnerCredited += Number(split.earnerMicroUsd);
+    // Layer 2/3 telemetry (victim, shooter's session hits / headshots) for the cashout audit
+    if (item.actionType === 'GAME_KILL' || item.actionType === 'CHEST_OPEN') {
+      const md = (item.metadata || {}) as Record<string, unknown>;
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null);
+      statements.push(
+        c.env.DB.prepare(
+          `INSERT INTO combat_events (id, user_id, game_id, action_type, victim_id, gross_micro_usd, earner_micro_usd, session_hits, session_headshots, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+        ).bind(
+          `ce_${crypto.randomUUID()}`,
+          item.userId,
+          gameId.slice(0, 80),
+          item.actionType,
+          typeof md.victimId === 'string' ? md.victimId.slice(0, 64) : null,
+          item.amountMicroUsd,
+          Number(split.earnerMicroUsd),
+          num(md.hits),
+          num(md.headshots),
+          now
+        )
+      );
+    }
   }
 
   for (const [uid, kills] of killsByUser) {

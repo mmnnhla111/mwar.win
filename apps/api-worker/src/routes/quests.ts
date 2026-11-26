@@ -12,6 +12,7 @@ import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { isLocalDev, safeEqual } from '../utils/guards';
+import { ledgerAfterUpdate } from '../utils/ledger';
 
 export const questsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -497,6 +498,7 @@ export async function settleDailyMlm(
           env.DB.prepare(
             'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
           ).bind(totalToSettle, now, u.user_id),
+          ledgerAfterUpdate(env.DB, u.user_id, totalToSettle, 'MLM_COMMISSION', dateKey, now),
           env.DB.prepare(
             "UPDATE daily_mlm_pending_ledger SET status = 'settled_paid' WHERE user_id = ?1 AND date_key = ?2 AND status IN ('pending_grey', 'unlocked_green')"
           ).bind(u.user_id, dateKey),

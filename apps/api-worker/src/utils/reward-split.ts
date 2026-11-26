@@ -3,6 +3,7 @@ import type { Env } from '../types';
 import { getUplines } from './mlm-tree';
 import { logFinancialTransaction, walletBalance } from './audit-logger';
 import { PLATFORM_ACCOUNT_ID, ENERGY_POOL_ACCOUNT_ID } from './guards';
+import { ledgerAfterUpdate } from './ledger';
 import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from '../routes/quests';
 
 const rid = () => Math.random().toString(36).substring(2, 7);
@@ -38,6 +39,7 @@ export async function applyRewardSplit(
     env.DB.prepare(
       'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, bounty_micro_usd = bounty_micro_usd + ?2, updated_at = ?3 WHERE user_id = ?4'
     ).bind(earner, bounty, now, opts.earnerId),
+    ledgerAfterUpdate(env.DB, opts.earnerId, earner, opts.actionType, opts.sourceId ?? null, now),
     env.DB.prepare(
       `INSERT INTO system_balances (id, energy_pool_micro_usd, platform_micro_usd, updated_at) VALUES ('global', ?1, ?2, ?3)
        ON CONFLICT(id) DO UPDATE SET energy_pool_micro_usd = energy_pool_micro_usd + ?1, platform_micro_usd = platform_micro_usd + ?2, updated_at = ?3`
@@ -119,11 +121,12 @@ export async function claimHeadBounty(env: Env, claimerId: string, victimId: str
   const now = Math.floor(Date.now() / 1000);
   const cas = await env.DB.prepare('UPDATE wallets SET bounty_micro_usd = 0, updated_at = ?3 WHERE user_id = ?1 AND bounty_micro_usd = ?2').bind(victimId, amount, now).run();
   if ((cas.meta?.changes ?? 0) !== 1) return 0; // claimed concurrently
-  await env.DB.prepare(
-    'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-  )
-    .bind(amount, now, claimerId)
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(
+      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
+    ).bind(amount, now, claimerId),
+    ledgerAfterUpdate(env.DB, claimerId, amount, 'BOUNTY_CLAIM', `${victimId}:${sourceId ?? ''}`, now),
+  ]);
   const base = `tx_bounty_${victimId.slice(0, 6)}_${claimerId.slice(0, 6)}_${now}_${rid()}`;
   const src = sourceId ? sourceId.slice(0, 64) : null;
   await logFinancialTransaction(env, {

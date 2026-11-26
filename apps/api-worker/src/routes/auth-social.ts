@@ -24,6 +24,7 @@ import { buildNetworkTree } from '../utils/mlm-tree';
 import { authMiddleware } from '../middleware/auth';
 import { edgeCachedJson } from '../utils/edge-cache';
 import { safeEqual } from '../utils/guards';
+import { recordDeviceLink } from '../utils/ledger';
 
 /**
  * Telegram Login + LINE Login: the only way to open an account.
@@ -220,6 +221,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: CompleteOpts):
       .prepare('UPDATE oauth_accounts SET provider_username = ?1, provider_display_name = ?2, provider_avatar_url = ?3, updated_at = ?4 WHERE provider = ?5 AND provider_user_id = ?6')
       .bind(idn.username, idn.displayName, idn.avatarUrl, t, idn.provider, idn.providerUserId)
       .run();
+    c.executionCtx.waitUntil(recordDeviceLink(c.env.DB, c.env.JWT_SECRET, u.id, c.req.header('CF-Connecting-IP'), opts.deviceFp));
     const body: OAuthLoginResponse = { success: true, token: await issueToken(c, u), isNewUser: false, user: { id: u.id, username: u.username } };
     return c.json({ ...body, ...extra });
   }
@@ -288,6 +290,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: CompleteOpts):
     ]).catch((e: unknown) => console.warn('[referral] notify failed', e));
   }
 
+  c.executionCtx.waitUntil(recordDeviceLink(c.env.DB, c.env.JWT_SECRET, userId, c.req.header('CF-Connecting-IP'), opts.deviceFp));
   const body: OAuthLoginResponse = {
     success: true,
     token: await issueToken(c, { id: userId, username, role: 'player' }),
