@@ -5,6 +5,8 @@ import {
   formatMicroUsd,
   EC_COST_PER_PAID_MATCH,
   ROOM_MODE_ENGINE,
+  EXP_PER_MATCH,
+  EXP_PER_KILL,
 } from '@mwar/shared';
 import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
@@ -56,11 +58,12 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
   const res = await c.env.DB
     .prepare(
       `UPDATE users
-         SET energy_tickets = energy_tickets - ?4,
-             total_matches = total_matches + 1
-       WHERE id = ?1 AND energy_tickets >= ?4 AND status = 'active'`
+         SET energy_tickets = energy_tickets - ?2,
+             total_matches = total_matches + 1,
+             exp = COALESCE(exp, 0) + ?3
+       WHERE id = ?1 AND energy_tickets >= ?2 AND status = 'active'`
     )
-    .bind(user.userId, cost)
+    .bind(user.userId, cost, EXP_PER_MATCH)
     .run();
   if ((res.meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'No Energy Tickets left. Watch an ad or Cheer to recharge EC.', code: 'NO_EC' }, 402);
@@ -173,7 +176,7 @@ gameRouter.post('/batch-payout', async (c) => {
   }
 
   for (const [uid, kills] of killsByUser) {
-    statements.push(c.env.DB.prepare('UPDATE users SET total_kills = total_kills + ?1 WHERE id = ?2').bind(kills, uid));
+    statements.push(c.env.DB.prepare('UPDATE users SET total_kills = total_kills + ?1, exp = COALESCE(exp, 0) + ?3 WHERE id = ?2').bind(kills, uid, kills * EXP_PER_KILL));
   }
 
   // Atomic batch commit in Cloudflare D1

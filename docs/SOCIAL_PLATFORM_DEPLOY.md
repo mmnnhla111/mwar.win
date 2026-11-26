@@ -340,3 +340,42 @@ as a small "ใช้การล็อกอินผ่านเว็บ (ก
 Quick check on a phone: Login → "เข้าสู่ระบบด้วย Telegram" opens the Telegram app at @mwar_win_bot → Start →
 the bot answers "✅ ยืนยันตัวตนสำเร็จ!" with "🚀 เข้าสู่ระบบ mwar.win" (tap it, or just switch back: the waiting
 card signs you in within ~3 s). "เข้าสู่ระบบด้วย LINE" → LINE app → back to the site signs you in even if a new tab opened.
+
+## Ranks (EXP), ฿ / ¢ header, daily mission MLM lock, iPhone Telegram login (migration 0017, 2026-11-26)
+
+What changes for players:
+- **Rank**: EXP = 20 per paid match entered + 5 per kill (existing totals are backfilled by 0017).
+  Bronze I 0 · II 100 · III 200 · Silver I 300 · II 450 · III 600 · Gold I 900 · II 1200 · III 1600 ·
+  Platinum I 2000 · II 2500 · III 3000+. Icons load from `/assets/ranks/<id>.png` (`bronze_1` … `platinum_3`);
+  until those PNGs exist a CSS medal is shown, so nothing breaks.
+- **Header strip** (every page except /game): rank badge + name, `฿` game coins (`users.coins`, not
+  withdrawable), `¢` cash balance (`balance_micro_usd / 10 000`), "Locked 🔒 / Unlocked 🔓 n/5" and
+  "ลูกข่ายทั้งหมด: N คน · ตรง N". Tapping Locked opens the daily missions drawer.
+- **Daily missions** (reset 00:00 UTC = 07:00 ICT): community message, check-in, 200 coins, 3D match,
+  ghost spectate 90 s. The ad-watch quest is switched off (`is_active = 0`); ads still recharge EC.
+  Claimed rewards are now ฿ coins only (no wallet cash).
+- **MLM lock**: 4 of 5 done → that day's 5-level upline share is paid at settlement. Fewer → the upline is
+  bypassed and its share goes to `system_balances.platform_micro_usd` (logged as MLM_FORFEIT,
+  related `SYSTEM_PLATFORM`). Finishing the 4th mission later the same day still unlocks that day's share.
+- **iPhone Telegram login**: the waiting tab polls every 1.5 s and right away when the tab comes back
+  (focus / visibility / pageshow). If the bot button opens the link inside Telegram's in-app browser,
+  the page no longer signs in there: it shows "เปิดด้วย Safari / Open in Safari" (x-safari-https link,
+  iOS 17+), a system-browser fallback link and "เข้าสู่ระบบในหน้านี้แทน". Switching back to Safari / the
+  PWA signs in automatically.
+
+Steps for Agy:
+1. Pull `main`, then D1 (remote):
+   ```bash
+   cd apps/api-worker
+   npx wrangler d1 migrations apply core_db --remote        # 0017_ranks_daily_missions.sql
+   npx wrangler deploy
+   ```
+   Check: `npx wrangler d1 execute core_db --remote --command "SELECT quest_id, is_active FROM daily_quest_definitions"`
+   → 5 rows `1`, `Q_WATCH_AD` `0`.
+2. Rank icons: put the 12 PNGs (square, ≥ 96×96, transparent) in `apps/web/public/assets/ranks/`
+   named exactly `bronze_1.png bronze_2.png bronze_3.png silver_1.png … platinum_3.png`. Optional.
+3. Web: `pnpm run deploy:pages`.
+4. No new secrets. `Ads/` stays local; `apps/web/public/sw.js` Monetag lines are unchanged.
+
+Quick check: log in → header shows "Bronze I · ฿ 0 · 0 ¢ · Locked 🔒 0/5". Claim check-in in the drawer → ฿ +60.
+New API: `GET /api/social/network-lock`, `GET /api/social/bootstrap` (same as `/api/bootstrap`).

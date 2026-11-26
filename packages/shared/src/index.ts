@@ -10,3 +10,4 @@ export * from './games';
 export * from './cheer';
 export * from './platform';
 export * from './ad-networks';
+export * from './ranks';

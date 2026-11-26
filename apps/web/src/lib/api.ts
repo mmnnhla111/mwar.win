@@ -150,6 +150,8 @@ export async function claimQuest(questId: string, dateKey?: string) {
     success: boolean;
     questId: string;
     rewardCoins: number;
+    /** ฿ game coins after the claim (missions never pay cash). */
+    coinsBalance?: number;
     rewardMicroUsd: number;
     formattedReward: string;
   }>('/api/quests/claim', {
@@ -222,7 +224,7 @@ export async function updateNodeCapacity(nodeId: string, data: { room_capacity_m
 // ---------------------------------------------------------------------------
 
 export const BOOTSTRAP_FRESH_MS = 60_000;
-const BOOT_STORAGE_KEY = 'mwar_bootstrap_v1';
+const BOOT_STORAGE_KEY = 'mwar_bootstrap_v2'; // v2: rank, coins, cents, network lock
 type BootEntry = { at: number; data: BootstrapResponse };
 let bootMem: BootEntry | null = null;
 let bootInflight: Promise<BootstrapResponse> | null = null;

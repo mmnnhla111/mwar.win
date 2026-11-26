@@ -124,7 +124,59 @@ export async function initTelegramBot(opts: { ref?: string | null; purpose?: OAu
   const deviceFp = purpose === 'login' ? await getDeviceFp().catch(() => null) : null;
   const r = await telegramBotInit({ purpose, referral_code: purpose === 'login' ? opts.ref || null : null, device_fp: deviceFp });
   rememberRedirectAfter(purpose === 'login' ? null : '/settings?linked=telegram');
+  markTelegramWait(r.state);
   return r;
+}
+
+// ---- iPhone: which browser is waiting for the bot? ------------------------------------------------
+const TG_WAIT_KEY = 'mwar_tg_wait';
+const TG_WAIT_TTL_MS = 10 * 60 * 1000;
+
+/** Remember (in this browser's storage) that this tab is waiting for a Telegram bot approval. */
+export function markTelegramWait(state: string) {
+  try {
+    localStorage.setItem(TG_WAIT_KEY, JSON.stringify({ state, at: Date.now() }));
+  } catch {
+    /* storage blocked */
+  }
+}
+export function clearTelegramWait() {
+  try {
+    localStorage.removeItem(TG_WAIT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+/**
+ * True when THIS browser storage started a bot sign-in in the last 10 min. When the bot's button opens
+ * /auth/callback/telegram?token= somewhere without the mark (Telegram's in-app browser, Safari View
+ * Controller, another browser), that page is not where the player is waiting.
+ */
+export function hasTelegramWait(): boolean {
+  try {
+    const v = JSON.parse(localStorage.getItem(TG_WAIT_KEY) || 'null');
+    return !!v && typeof v.at === 'number' && Date.now() - v.at < TG_WAIT_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+export function isIos(ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''): boolean {
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  // iPadOS 13+ reports a Mac UA; touch points give it away
+  return typeof navigator !== 'undefined' && /Macintosh/.test(ua) && (navigator as any).maxTouchPoints > 1;
+}
+
+/** iOS in-app browser (Telegram, LINE, Facebook… WKWebView): no "Safari/" token, or an app marker. */
+export function isIosInAppBrowser(ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''): boolean {
+  if (!isIos(ua)) return false;
+  if (/Telegram|TelegramBot|Line\/|FBAN|FBAV|Instagram/i.test(ua)) return true;
+  return !/Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
+
+/** `x-safari-https://…` opens the URL in Safari from an in-app browser on iOS 17+. */
+export function safariUrl(url: string): string {
+  return url.replace(/^https:\/\//, 'x-safari-https://');
 }
 
 /**

@@ -6,8 +6,7 @@ import {
   QuestProgressSchema,
   QuestClaimSchema,
   formatMicroUsd,
-  microUsdToCoins,
-  MICRO_USD_PER_COIN,
+  DAILY_MISSION_QUEST_IDS,
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
@@ -21,10 +20,50 @@ export function getUtcDateKey(date = new Date()): string {
   return date.toISOString().split('T')[0];
 }
 
+/**
+ * Completed ACTIVE missions for a user/day. Only the 5 active missions count (migration 0017 sets
+ * Q_WATCH_AD inactive), so 4 of 5 unlock the 5-level upline share.
+ */
+export const ACTIVE_COMPLETED_SQL = `SELECT COUNT(*) AS completed_count
+  FROM user_daily_quests uq JOIN daily_quest_definitions d ON d.quest_id = uq.quest_id AND d.is_active = 1
+  WHERE uq.user_id = ?1 AND uq.date_key = ?2 AND uq.is_completed = 1`;
+
+/**
+ * Mirrors today's mission state into user_missions (one row per user per UTC day). user_daily_quests
+ * stays the source of truth; this summary is what the header lock badge and admin read.
+ */
+export async function syncUserMissions(db: D1Database, userId: string, dateKey = getUtcDateKey()): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  const id = `um_${userId}_${dateKey}`;
+  const row = await db
+    .prepare(
+      `INSERT INTO user_missions (id, user_id, date_str, checkin_done, community_done, match_done, spectate_done, coins_done,
+                                  ads_watched, unlock_status, created_at, updated_at)
+       SELECT ?3, ?1, ?2,
+              COALESCE(MAX(CASE WHEN quest_id = 'Q_DAILY_CHECKIN' AND is_completed = 1 THEN 1 END), 0),
+              COALESCE(MAX(CASE WHEN quest_id = 'Q_COMMUNITY' AND is_completed = 1 THEN 1 END), 0),
+              COALESCE(MAX(CASE WHEN quest_id = 'Q_PLAY_MATCH' AND is_completed = 1 THEN 1 END), 0),
+              COALESCE(MAX(CASE WHEN quest_id = 'Q_SPECTATE' AND is_completed = 1 THEN 1 END), 0),
+              COALESCE(MAX(CASE WHEN quest_id = 'Q_EARN_COINS' AND is_completed = 1 THEN 1 END), 0),
+              COALESCE(MAX(CASE WHEN quest_id = 'Q_WATCH_AD' THEN current_count END), 0),
+              CASE WHEN (${ACTIVE_COMPLETED_SQL}) >= ?5 THEN 1 ELSE 0 END,
+              ?4, ?4
+       FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2
+       ON CONFLICT(user_id, date_str) DO UPDATE SET
+         checkin_done = excluded.checkin_done, community_done = excluded.community_done, match_done = excluded.match_done,
+         spectate_done = excluded.spectate_done, coins_done = excluded.coins_done, ads_watched = excluded.ads_watched,
+         unlock_status = excluded.unlock_status, updated_at = excluded.updated_at
+       RETURNING unlock_status`
+    )
+    .bind(userId, dateKey, id, now, DAILY_QUESTS_REQUIRED_TO_UNLOCK)
+    .first<{ unlock_status: number }>();
+  return row?.unlock_status === 1;
+}
+
 // Helper: Check if user has unlocked daily MLM for a given date
 export async function isUserMlmUnlocked(db: D1Database, userId: string, dateKey: string): Promise<boolean> {
   const result = await db
-    .prepare('SELECT COUNT(*) as completed_count FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2 AND is_completed = 1')
+    .prepare(ACTIVE_COMPLETED_SQL)
     .bind(userId, dateKey)
     .first<{ completed_count: number }>();
   return (result?.completed_count || 0) >= DAILY_QUESTS_REQUIRED_TO_UNLOCK;
@@ -121,11 +160,11 @@ export async function updateQuestProgress(
 
   // 3. Check if user now qualifies for MLM Unlock (>= 4 quests)
   const completedCountRes = await db
-    .prepare('SELECT COUNT(*) as count FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2 AND is_completed = 1')
+    .prepare(ACTIVE_COMPLETED_SQL)
     .bind(userId, dateKey)
-    .first<{ count: number }>();
+    .first<{ completed_count: number }>();
 
-  const totalCompleted = completedCountRes?.count || 0;
+  const totalCompleted = completedCountRes?.completed_count || 0;
   let justUnlockedMlm = false;
 
   if (totalCompleted >= DAILY_QUESTS_REQUIRED_TO_UNLOCK) {
@@ -141,6 +180,9 @@ export async function updateQuestProgress(
       justUnlockedMlm = true;
     }
   }
+
+  // Keep the per-day mission summary in step (never blocks the quest update itself)
+  await syncUserMissions(db, userId, dateKey).catch((e) => console.error('syncUserMissions', e));
 
   return {
     current: newCount,
@@ -160,7 +202,7 @@ questsRouter.get('/today', authMiddleware, async (c) => {
 
   // Fetch all quest definitions
   const defs = await c.env.DB
-    .prepare('SELECT quest_id, title, description, target_count, action_type, reward_coins FROM daily_quest_definitions ORDER BY quest_id ASC')
+    .prepare('SELECT quest_id, title, description, target_count, action_type, reward_coins FROM daily_quest_definitions WHERE is_active = 1 ORDER BY quest_id ASC')
     .all<{
       quest_id: string;
       title: string;
@@ -170,7 +212,9 @@ questsRouter.get('/today', authMiddleware, async (c) => {
       reward_coins: number;
     }>();
 
-  const questList = defs.results || [];
+  const order = DAILY_MISSION_QUEST_IDS as readonly string[];
+  const rank = (id: string) => (order.includes(id) ? order.indexOf(id) : order.length);
+  const questList = (defs.results || []).sort((a, b) => rank(a.quest_id) - rank(b.quest_id));
 
   // Ensure user rows exist for this date
   const userRows = await c.env.DB
@@ -310,39 +354,33 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
   }
 
   const def = await c.env.DB
-    .prepare('SELECT reward_coins FROM daily_quest_definitions WHERE quest_id = ?1')
+    .prepare('SELECT reward_coins, is_active FROM daily_quest_definitions WHERE quest_id = ?1')
     .bind(questId)
-    .first<{ reward_coins: number }>();
+    .first<{ reward_coins: number; is_active: number }>();
+  if (!def || def.is_active !== 1) return c.json({ error: 'This quest is not part of today\'s missions' }, 400);
 
-  const rewardCoins = def?.reward_coins || 50;
-  const rewardMicroUsd = rewardCoins * Number(MICRO_USD_PER_COIN); // 1 Coin = 100 Micro-USD
-
-  // Credit reward to wallet balance & mark claimed — the credit only applies if this request flipped
-  // is_claimed 0 → 1 (changes() guard), so parallel double-claims pay once.
-  const now = Math.floor(Date.now() / 1000);
+  // Mission rewards are ฿ game coins only (users.coins, not withdrawable) — never wallet cash.
+  // The coin credit only applies if this request flipped is_claimed 0 → 1 (changes() guard),
+  // so parallel double-claims pay once.
+  const rewardCoins = Math.max(0, Math.floor(def.reward_coins || 0));
   const res = await c.env.DB.batch([
     c.env.DB.prepare('UPDATE user_daily_quests SET is_claimed = 1 WHERE id = ?1 AND is_claimed = 0').bind(userQuest.id),
-    c.env.DB.prepare(
-      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
-    ).bind(rewardMicroUsd, now, authUser.userId),
+    c.env.DB.prepare('UPDATE users SET coins = COALESCE(coins, 0) + ?1 WHERE id = ?2 AND changes() = 1').bind(rewardCoins, authUser.userId),
+    c.env.DB.prepare('SELECT COALESCE(coins, 0) AS coins FROM users WHERE id = ?1').bind(authUser.userId),
   ]);
   if ((res[1].meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'Quest reward already claimed' }, 400);
   }
-  await logFinancialTransaction(c.env, {
-    transaction_id: `tx_quest_${questId}_${dateKey}_${authUser.userId.slice(0, 8)}`,
-    user_id: authUser.userId,
-    action_type: 'QUEST_REWARD',
-    amount_micro_usd: BigInt(rewardMicroUsd),
-    balance_after_micro_usd: await walletBalance(c.env.DB, authUser.userId),
-  });
+  const coinsBalance = Number((res[2].results?.[0] as any)?.coins ?? 0);
 
   return c.json({
     success: true,
     questId,
     rewardCoins,
-    rewardMicroUsd,
-    formattedReward: formatMicroUsd(rewardMicroUsd),
+    coinsBalance,
+    /** Kept for older clients: no cash is paid any more. */
+    rewardMicroUsd: 0,
+    formattedReward: `฿ ${rewardCoins.toLocaleString('en-US')}`,
   });
 });
 
@@ -362,11 +400,11 @@ export async function getDailyMlmSummary(db: D1Database, userId: string, dateKey
     .first<{ pending_grey: number; unlocked_green: number; forfeited: number; settled_paid: number }>();
 
   const completedCountRes = await db
-    .prepare('SELECT COUNT(*) as count FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2 AND is_completed = 1')
+    .prepare(ACTIVE_COMPLETED_SQL)
     .bind(userId, dateKey)
-    .first<{ count: number }>();
+    .first<{ completed_count: number }>();
 
-  const completedQuestsCount = completedCountRes?.count || 0;
+  const completedQuestsCount = completedCountRes?.completed_count || 0;
   const isUnlocked = completedQuestsCount >= DAILY_QUESTS_REQUIRED_TO_UNLOCK;
   const pendingGreyMicroUsd = ledgerRes?.pending_grey || 0;
   const unlockedGreenMicroUsd = ledgerRes?.unlocked_green || 0;
@@ -487,12 +525,16 @@ export async function settleDailyMlm(
       const totalToBurn = sumRes?.total || 0;
 
       if (totalToBurn > 0) {
-        await env.DB
-          .prepare(
+        // A locked upline is bypassed: the share goes to the platform balance (not to the locked sponsor)
+        await env.DB.batch([
+          env.DB.prepare(
             "UPDATE daily_mlm_pending_ledger SET status = 'forfeited_burned' WHERE user_id = ?1 AND date_key = ?2 AND status = 'pending_grey'"
-          )
-          .bind(u.user_id, dateKey)
-          .run();
+          ).bind(u.user_id, dateKey),
+          env.DB.prepare(
+            `INSERT INTO system_balances (id, energy_pool_micro_usd, platform_micro_usd, updated_at) VALUES ('global', 0, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET platform_micro_usd = platform_micro_usd + ?1, updated_at = ?2`
+          ).bind(totalToBurn, now),
+        ]);
 
         await logFinancialTransaction(env, {
           transaction_id: `tx_mlm_forfeit_${dateKey}_${u.user_id.substring(0, 6)}_${Date.now()}`,
@@ -500,7 +542,7 @@ export async function settleDailyMlm(
           action_type: 'MLM_FORFEIT',
           amount_micro_usd: BigInt(totalToBurn),
           balance_after_micro_usd: await walletBalance(env.DB, u.user_id),
-          related_user_id: 'SYSTEM_RESERVE_BURN',
+          related_user_id: 'SYSTEM_PLATFORM',
         });
 
         forfeitedUsersCount++;

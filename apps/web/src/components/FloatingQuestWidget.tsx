@@ -12,7 +12,7 @@ import { useTranslation } from '../i18n/I18nProvider';
 
 const SIZE = 52;
 const EDGE = 12;
-const TOP_MIN = 76; // below the navbar
+const TOP_MIN = 116; // below the navbar + status strip
 const BOTTOM_MIN = 88; // above the mobile bottom nav
 const DRAG_THRESHOLD = 6;
 const STORAGE_KEY = 'mwar_quest_fab_v1';
@@ -47,6 +47,12 @@ const QUEST_ICON: Record<string, IconName> = {
   earn_coins: 'coin',
 };
 
+const OPEN_EVENT = 'mwar:open-daily-quests';
+/** Opens the daily missions drawer from anywhere (e.g. the header "Locked 🔒" chip). */
+export function openDailyQuests() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(OPEN_EVENT));
+}
+
 // Today's quests stay cached for the session once the popup has been opened
 let questCache: TodayQuestsResponse | null = null;
 
@@ -76,6 +82,15 @@ export function FloatingQuestWidget() {
     onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    const onOpen = () => {
+      questCache = null; // always show fresh progress when opened from the header
+      setOpen(true);
+    };
+    window.addEventListener(OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_EVENT, onOpen);
   }, []);
 
   // New UTC day: the cached "0 left" is stale, ask the server once
@@ -203,7 +218,13 @@ function QuestModal({
 
   const syncBadge = (d: TodayQuestsResponse) => {
     const left = d.quests.filter((q) => !q.isClaimed).length;
-    patch((b) => ({ ...b, remainingDailyQuestsCount: left }));
+    patch((b) => ({
+      ...b,
+      remainingDailyQuestsCount: left,
+      network: b.network
+        ? { ...b.network, unlocked: d.isMlmUnlocked, completedMissions: d.completedQuests, totalMissions: d.totalQuests, requiredMissions: d.requiredToUnlock }
+        : b.network,
+    }));
     return left;
   };
 
@@ -233,6 +254,8 @@ function QuestModal({
     try {
       const r = await claimQuest(q.questId);
       setToast(t('quest.claimedToast', { n: r.rewardCoins }));
+      const coinsNow = r.coinsBalance;
+      if (typeof coinsNow === 'number') patch((b) => ({ ...b, user: { ...b.user, coins: coinsNow } }));
       const d = await getTodayQuests();
       questCache = d;
       setData(d);
@@ -260,6 +283,9 @@ function QuestModal({
       }
     >
       <div className={`p-5 space-y-4 transition-all duration-300 ${closing ? 'opacity-0 scale-95' : 'opacity-100'}`}>
+        <p className="text-sm font-bold text-stone-800 leading-snug" data-mission-intro>
+          {t('mlm.missionIntro')}
+        </p>
         <div className={`rounded-2xl p-3.5 flex items-center gap-3 ${data?.isMlmUnlocked ? 'bg-[#ECFDF5]' : 'bg-[#FFFBEA]'}`}>
           <Icon name={data?.isMlmUnlocked ? 'check' : 'lock'} size={22} className={data?.isMlmUnlocked ? 'text-emerald-600' : 'text-[#B08600]'} />
           <div className="text-sm leading-snug">

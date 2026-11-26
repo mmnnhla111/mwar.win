@@ -58,6 +58,10 @@ import {
   contentTypeFor,
 } from '../utils/social-media';
 import { getLiveRoomsSnapshot } from './games';
+import { bootstrapHandler } from './bootstrap';
+import { getUtcDateKey, syncUserMissions } from './quests';
+import { DAILY_QUESTS_REQUIRED_TO_UNLOCK as MISSIONS_REQUIRED, DAILY_MISSION_QUEST_IDS } from '@mwar/shared';
+import type { NetworkLockStatus, DailyMission } from '@mwar/shared';
 
 type AppCtx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
 
@@ -1355,4 +1359,64 @@ socialRouter.post('/admin/reports/:id/action', async (c) => {
   }
   await c.env.DB.prepare("UPDATE content_reports SET status = 'dismissed', resolved_by = ?1, resolved_at = ?2 WHERE id = ?3").bind(me.userId, now, report.id).run();
   return c.json({ success: true, action });
+});
+
+// ---------------------------------------------------------------------------
+// Header shell + daily mission (MLM) lock
+// ---------------------------------------------------------------------------
+
+/** Same payload as GET /api/bootstrap (alias under /api/social for the shell). */
+socialRouter.get('/bootstrap', (c) => bootstrapHandler(c as any));
+
+/**
+ * GET /api/social/network-lock — today's 5 missions and whether the 5-level upline share is unlocked.
+ * 4 of 5 missions done → unlocked (tier commissions are paid at the 00:00 UTC / 07:00 ICT settlement).
+ * Fewer → locked: that day's upline share is bypassed to the platform.
+ */
+socialRouter.get('/network-lock', async (c) => {
+  const me = c.get('user');
+  const dateKey = getUtcDateKey();
+  const [defs, prog, net] = await c.env.DB.batch([
+    c.env.DB.prepare('SELECT quest_id, target_count, reward_coins FROM daily_quest_definitions WHERE is_active = 1'),
+    c.env.DB.prepare('SELECT quest_id, current_count, is_completed, is_claimed FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2').bind(me.userId, dateKey),
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(CASE WHEN depth = 1 THEN 1 ELSE 0 END), 0) AS direct, COUNT(*) AS total
+       FROM network_trees WHERE ancestor_id = ?1 AND depth >= 1`
+    ).bind(me.userId),
+  ]);
+  const byId = new Map<string, any>();
+  for (const r of (prog.results || []) as any[]) byId.set(r.quest_id, r);
+  const order = DAILY_MISSION_QUEST_IDS as readonly string[];
+  const pos = (id: string) => (order.includes(id) ? order.indexOf(id) : order.length);
+  const missions: DailyMission[] = ((defs.results || []) as any[])
+    .sort((a, b) => pos(a.quest_id) - pos(b.quest_id))
+    .map((d) => {
+      const r = byId.get(d.quest_id);
+      return {
+        questId: d.quest_id,
+        current: Math.min(Number(r?.current_count || 0), Number(d.target_count)),
+        target: Number(d.target_count),
+        done: r?.is_completed === 1,
+        claimed: r?.is_claimed === 1,
+        rewardCoins: Number(d.reward_coins || 0),
+      };
+    });
+  const completed = missions.filter((m) => m.done).length;
+  const unlocked = completed >= MISSIONS_REQUIRED;
+  if (byId.size > 0) await syncUserMissions(c.env.DB, me.userId, dateKey).catch(() => false);
+  const n = (net.results?.[0] || {}) as any;
+  const reset = new Date(`${dateKey}T00:00:00Z`);
+  reset.setUTCDate(reset.getUTCDate() + 1);
+  const body: NetworkLockStatus = {
+    dateKey,
+    resetsAt: reset.toISOString(),
+    unlocked,
+    completed,
+    total: missions.length,
+    required: MISSIONS_REQUIRED,
+    missions,
+    directReferrals: Number(n.direct || 0),
+    totalReferrals: Number(n.total || 0),
+  };
+  return c.json(body, 200, { 'Cache-Control': 'private, no-store' });
 });

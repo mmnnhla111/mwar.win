@@ -13,6 +13,8 @@ import { MobileDrawer } from './MobileDrawer';
 import { displayName } from '../../lib/format';
 import { LanguageMenu } from '../i18n/LanguagePicker';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { StatusBar } from './StatusBar';
+import { RankBadge } from '../ui/RankBadge';
 
 function Badge({ n }: { n: number }) {
   if (!n) return null;
@@ -141,12 +143,13 @@ export function TopNav() {
             <div className="relative hidden md:block" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen((v) => !v)}
-                className="flex items-center gap-2 rounded-full bg-stone-100 hover:bg-stone-200 pl-1 pr-3 py-1 transition max-w-[170px]"
+                className="flex items-center gap-2 rounded-full bg-stone-100 hover:bg-stone-200 pl-1 pr-3 py-1 transition max-w-[200px]"
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
               >
                 <Avatar src={user.avatarUrl} name={displayName(user)} size={30} />
                 <span className="text-sm font-bold text-stone-800 truncate">{displayName(user)}</span>
+                <RankBadge rankId={user.rank?.id} name={user.rank?.name} exp={user.exp} size={20} />
               </button>
               {menuOpen && (
                 <div role="menu" className="absolute right-0 mt-2 w-56 bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5 animate-[popIn_160ms_ease-out]">
@@ -171,6 +174,7 @@ export function TopNav() {
           )}
         </div>
       </div>
+      <StatusBar />
       <MobileDrawer open={drawerOpen} onClose={closeDrawer} />
       {mobileSearch && (
         <div className="lg:hidden px-3 pb-3">

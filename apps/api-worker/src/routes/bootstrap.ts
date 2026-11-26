@@ -1,8 +1,8 @@
 import type { Context } from 'hono';
-import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd, normalizeStaffRole } from '@mwar/shared';
+import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd, normalizeStaffRole, getRankForExp, microUsdToCents, DAILY_QUESTS_REQUIRED_TO_UNLOCK } from '@mwar/shared';
 import type { BootstrapResponse, ProfileCoverColor } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
-import { getUtcDateKey } from './quests';
+import { getUtcDateKey, ACTIVE_COMPLETED_SQL } from './quests';
 import { isEnvSuperAdmin } from '../middleware/staff';
 
 /**
@@ -19,15 +19,23 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       c.env.DB.prepare(
         `SELECT id, username, display_name, CASE WHEN avatar_url LIKE 'data:%' THEN NULL ELSE avatar_url END AS avatar_url,
                 cover_color, role, status, rank_badge, energy_tickets, max_energy_tickets,
-                energy_progress_pct, created_at, show_nsfw, preferred_lang, earnings_visibility, staff_role, cover_url
+                energy_progress_pct, created_at, show_nsfw, preferred_lang, earnings_visibility, staff_role, cover_url,
+                COALESCE(exp, 0) AS exp, COALESCE(coins, 0) AS coins
          FROM users WHERE id = ?1`
       ).bind(me.userId),
       c.env.DB.prepare('SELECT balance_micro_usd, bounty_micro_usd, total_earned_micro_usd FROM wallets WHERE user_id = ?1').bind(me.userId),
       c.env.DB.prepare(
-        `SELECT (SELECT COUNT(*) FROM daily_quest_definitions)
-              - (SELECT COUNT(*) FROM user_daily_quests WHERE user_id = ?1 AND date_key = ?2 AND is_claimed = 1) AS remaining`
+        `SELECT (SELECT COUNT(*) FROM daily_quest_definitions WHERE is_active = 1)
+              - (SELECT COUNT(*) FROM user_daily_quests uq JOIN daily_quest_definitions d ON d.quest_id = uq.quest_id AND d.is_active = 1
+                  WHERE uq.user_id = ?1 AND uq.date_key = ?2 AND uq.is_claimed = 1) AS remaining,
+                (SELECT COUNT(*) FROM daily_quest_definitions WHERE is_active = 1) AS total_missions,
+                (${ACTIVE_COMPLETED_SQL}) AS completed`
       ).bind(me.userId, dateKey),
       c.env.DB.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ?1 AND is_read = 0').bind(me.userId),
+      c.env.DB.prepare(
+        `SELECT COALESCE(SUM(CASE WHEN depth = 1 THEN 1 ELSE 0 END), 0) AS direct, COUNT(*) AS total
+         FROM network_trees WHERE ancestor_id = ?1 AND depth >= 1`
+      ).bind(me.userId),
     ]),
     c.env.CHAT_DB.prepare('SELECT COUNT(*) AS n FROM direct_messages WHERE receiver_id = ?1 AND is_read = 0')
       .bind(me.userId)
@@ -41,6 +49,9 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
   const w = (core[1].results?.[0] || {}) as any;
   const remaining = Math.max(0, Number((core[2].results?.[0] as any)?.remaining ?? 0));
   const unreadNotif = Number((core[3].results?.[0] as any)?.n ?? 0);
+  const q = (core[2].results?.[0] || {}) as any;
+  const net = (core[4].results?.[0] || {}) as any;
+  const rank = getRankForExp(Number(u.exp || 0));
 
   // Owner lock-out protection: SUPER_ADMIN_USERNAMES are always super_admin (written once, then a no-op)
   let staffRole = normalizeStaffRole(u.staff_role);
@@ -72,6 +83,9 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       showNsfw: u.show_nsfw === 1,
       preferredLang: (UI_LANG_CODES as readonly string[]).includes(u.preferred_lang) ? u.preferred_lang : 'en',
       earningsVisibility: (EARNINGS_VISIBILITY as readonly string[]).includes(u.earnings_visibility) ? u.earnings_visibility : 'public',
+      exp: rank.exp,
+      rank: { id: rank.id, name: rank.name, image: rank.image, nextMinExp: rank.nextMinExp, progress: rank.progress },
+      coins: Number(u.coins || 0),
     },
     walletSummary: {
       balanceMicroUsd: Number(w.balance_micro_usd || 0),
@@ -80,6 +94,15 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       totalEarnedMicroUsd: Number(w.total_earned_micro_usd || 0),
       // The sidebar shows the same privacy-applied value the profile shows to everyone
       totalEarnings: earningsDisplay(Number(w.total_earned_micro_usd || 0), u.earnings_visibility),
+      balanceCents: microUsdToCents(w.balance_micro_usd || 0),
+    },
+    network: {
+      directReferrals: Number(net.direct || 0),
+      totalReferrals: Number(net.total || 0),
+      unlocked: Number(q.completed || 0) >= DAILY_QUESTS_REQUIRED_TO_UNLOCK,
+      completedMissions: Number(q.completed || 0),
+      requiredMissions: DAILY_QUESTS_REQUIRED_TO_UNLOCK,
+      totalMissions: Number(q.total_missions || 0),
     },
     remainingDailyQuestsCount: remaining,
     unreadNotifCount: unreadNotif,

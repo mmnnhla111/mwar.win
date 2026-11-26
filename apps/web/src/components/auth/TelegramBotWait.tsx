@@ -8,12 +8,13 @@ import { useTranslation } from '../../i18n/I18nProvider';
 import { TelegramIcon } from './ProviderButtons';
 import { Spinner, btn } from '../ui/Card';
 
-const POLL_MS = 2500;
+/** Fast enough that switching back from Telegram feels instant on iPhone (Safari tab or PWA). */
+const POLL_MS = 1500;
 const MAX_WAIT_MS = 3 * 60 * 1000;
 
 /**
  * Waiting card after "เข้าสู่ระบบด้วย Telegram": the Telegram app opened @bot with /start auth_<state>.
- * While this tab is visible it asks the server every 2.5 s (max 3 min) whether the bot approved,
+ * While this tab is visible it asks the server every 1.5 s (max 3 min), and at once on focus / pageshow, whether the bot approved,
  * so a player who switches back by hand is signed in automatically. Tapping the bot's button
  * instead signs in through /auth/callback/telegram?token=… in whatever browser Telegram opens.
  */
@@ -81,20 +82,32 @@ export function TelegramBotWait({
     };
 
     timer = window.setInterval(poll, POLL_MS);
+    // iOS freezes timers in a background tab: check immediately when the player comes back
     const onVis = () => {
       if (document.visibilityState === 'visible') poll();
     };
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('focus', onVis);
+    window.addEventListener('pageshow', onVis);
+    poll();
     return () => {
       stopped = true;
       if (timer) window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('focus', onVis);
+      window.removeEventListener('pageshow', onVis);
     };
   }, [init.state, phase]);
 
   const signedInHere = typeof window !== 'undefined' && !!getAuthToken();
+
+  // Signed in from another tab of this same browser (e.g. "Open in Safari"): continue without a tap
+  useEffect(() => {
+    if (phase === 'elsewhere' && signedInHere && !linking) {
+      const id = window.setTimeout(() => window.location.replace('/'), 900);
+      return () => window.clearTimeout(id);
+    }
+  }, [phase, signedInHere, linking]);
 
   return (
     <div className="space-y-3 rounded-3xl border border-sky-100 bg-[#F0F9FF] p-4 text-center" data-telegram-wait={phase}>

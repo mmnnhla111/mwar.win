@@ -336,6 +336,21 @@ export interface BootstrapUser {
   preferredLang: UiLang;
   /** How total earnings are shown on the profile and sidebar. */
   earningsVisibility: EarningsVisibility;
+  /** Rank EXP (matches × 20 + kills × 5) and its tier, e.g. { id: 'silver_2', name: 'Silver II' }. */
+  exp: number;
+  rank: { id: string; name: string; image: string; nextMinExp: number | null; progress: number };
+  /** ฿ game coins (mission rewards; not withdrawable). */
+  coins: number;
+}
+
+/** Header MLM indicator: today's 4-of-5 mission lock and the player's referral counts. */
+export interface BootstrapNetworkSummary {
+  directReferrals: number;
+  totalReferrals: number;
+  unlocked: boolean;
+  completedMissions: number;
+  requiredMissions: number;
+  totalMissions: number;
 }
 
 export interface BootstrapWalletSummary {
@@ -345,12 +360,15 @@ export interface BootstrapWalletSummary {
   totalEarnedMicroUsd: number;
   /** Total earnings with the owner's privacy mode applied (what the sidebar shows). */
   totalEarnings: EarningsDisplay;
+  /** Cash balance in cents (balanceMicroUsd / 10 000), e.g. $0.50 → 50. */
+  balanceCents: number;
 }
 
 /** GET /api/bootstrap — everything the shell needs, in one request. */
 export interface BootstrapResponse {
   user: BootstrapUser;
   walletSummary: BootstrapWalletSummary;
+  network: BootstrapNetworkSummary;
   remainingDailyQuestsCount: number;
   unreadNotifCount: number;
   unreadChatCount: number;

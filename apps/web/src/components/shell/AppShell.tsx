@@ -99,7 +99,7 @@ function MainFrame({ children }: { children: React.ReactNode }) {
         }`}
       >
         <aside className="hidden md:block">
-          <div className="sticky top-[84px]">
+          <div className="sticky top-[124px]">
             <LeftSidebar />
           </div>
         </aside>
@@ -108,7 +108,7 @@ function MainFrame({ children }: { children: React.ReactNode }) {
         </main>
         {!wide && (
           <aside className="hidden md:block">
-            <div className="sticky top-[84px] max-h-[calc(100dvh-100px)] overflow-y-auto no-scrollbar">
+            <div className="sticky top-[124px] max-h-[calc(100dvh-140px)] overflow-y-auto no-scrollbar">
               <RightSidebar />
             </div>
           </aside>
