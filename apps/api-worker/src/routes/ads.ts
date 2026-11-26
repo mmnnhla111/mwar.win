@@ -4,7 +4,6 @@ import {
   formatMicroUsd,
   getStatisticalAdMicroUsd,
   type AdFormat,
-  AD_BANNER_MIN_GAP_SECONDS,
   AD_VIDEO_SECONDS,
   AD_VIDEO_EC_DAILY_CAP,
   EC_PROGRESS_BP_PER_TICKET,
@@ -15,6 +14,7 @@ import { trackQuestAction, getUtcDateKey } from './quests';
 import { isLocalDev, safeEqual } from '../utils/guards';
 import { getStaffRole } from '../middleware/staff';
 import { authMiddleware } from '../middleware/auth';
+import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, parseAdFormat, utcDateKey, type AdValueSource } from '../utils/ad-value';
 
 export const adsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
@@ -202,16 +202,11 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
     return c.json({ error: 'count must be 1..10' }, 400);
   }
   if (format === 'banner') {
-    // Passive banner: at most one verified impression per ~20 s per user (tab must be visible client-side).
-    // A batch of N needs N × the minimum gap since the last credited banner.
-    const last = await c.env.DB
-      .prepare("SELECT MAX(created_at) AS t FROM ad_impressions WHERE user_id = ?1 AND ad_format = 'banner'")
-      .bind(user.userId)
-      .first<{ t: number | null }>();
-    const need = count * AD_BANNER_MIN_GAP_SECONDS;
-    if (last?.t && now - last.t < need) {
-      return c.json({ error: 'Banner impressions too soon', retryInSeconds: need - (now - last.t) }, 429);
-    }
+    // Anti-AFK: last real input within 40 s, then the atomic per-user 18 s gate (a batch of N needs N gaps)
+    const idle = bannerIdleMs(body);
+    if (idle !== null) return c.json(idlePausedBody(idle), 400);
+    const wait = await claimBannerGate(c.env.DB, user.userId, count, now);
+    if (wait !== null) return c.json({ error: 'Banner impressions too soon', code: 'too_soon', retryInSeconds: wait }, 429);
   } else {
     const viewId = typeof body.viewId === 'string' ? body.viewId : '';
     const view = await c.env.DB

@@ -784,5 +784,10 @@
   "tgbot.openSafari": "Mở bằng Safari",
   "tgbot.openSystemBrowser": "Nút không hoạt động? Mở bằng trình duyệt của máy",
   "tgbot.signInHere": "Đăng nhập tại đây",
-  "tgbot.signInHereHint": "Bạn sẽ chỉ được đăng nhập trong trình duyệt của Telegram."
+  "tgbot.signInHereHint": "Bạn sẽ chỉ được đăng nhập trong trình duyệt của Telegram.",
+  "idle.title": "Tạm dừng sạc năng lượng",
+  "idle.body": "Không phát hiện di chuyển chuột hoặc chạm màn hình.",
+  "idle.hiddenBody": "Bạn đã rời trang này nên việc sạc đã tạm dừng.",
+  "idle.resume": "Chạm để tiếp tục sạc",
+  "idle.note": "Tiến độ EC của bạn vẫn được giữ."
 }

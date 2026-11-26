@@ -784,5 +784,10 @@
   "tgbot.openSafari": "Open in Safari",
   "tgbot.openSystemBrowser": "Button not working? Open in the system browser",
   "tgbot.signInHere": "Sign in here instead",
-  "tgbot.signInHereHint": "You'll stay signed in only inside Telegram's browser."
+  "tgbot.signInHereHint": "You'll stay signed in only inside Telegram's browser.",
+  "idle.title": "Charging paused",
+  "idle.body": "No mouse movement or screen touch detected.",
+  "idle.hiddenBody": "You left this page, so charging was paused.",
+  "idle.resume": "Tap to resume charging",
+  "idle.note": "Your EC progress so far is kept."
 }

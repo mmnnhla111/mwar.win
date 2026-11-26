@@ -784,5 +784,10 @@
   "tgbot.openSafari": "Abrir en Safari",
   "tgbot.openSystemBrowser": "¿No funciona el botón? Abrir en el navegador del sistema",
   "tgbot.signInHere": "Iniciar sesión aquí",
-  "tgbot.signInHereHint": "La sesión quedará solo en el navegador de Telegram."
+  "tgbot.signInHereHint": "La sesión quedará solo en el navegador de Telegram.",
+  "idle.title": "Carga en pausa",
+  "idle.body": "No se detectó movimiento del ratón ni toques en la pantalla.",
+  "idle.hiddenBody": "Saliste de esta página, así que la carga se pausó.",
+  "idle.resume": "Toca para seguir cargando",
+  "idle.note": "Tu progreso de EC se conserva."
 }

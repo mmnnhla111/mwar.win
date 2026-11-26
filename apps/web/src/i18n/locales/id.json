@@ -784,5 +784,10 @@
   "tgbot.openSafari": "Buka di Safari",
   "tgbot.openSystemBrowser": "Tombol tidak berfungsi? Buka di browser perangkat",
   "tgbot.signInHere": "Masuk di sini saja",
-  "tgbot.signInHereHint": "Kamu hanya akan masuk di browser Telegram."
+  "tgbot.signInHereHint": "Kamu hanya akan masuk di browser Telegram.",
+  "idle.title": "Pengisian dijeda",
+  "idle.body": "Tidak ada gerakan mouse atau sentuhan layar.",
+  "idle.hiddenBody": "Kamu meninggalkan halaman ini, jadi pengisian dijeda.",
+  "idle.resume": "Ketuk untuk lanjut mengisi",
+  "idle.note": "Progres EC-mu tetap tersimpan."
 }

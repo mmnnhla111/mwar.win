@@ -48,6 +48,8 @@ import RadialPropMenu, { propIndexAt, RADIAL } from '../../game/ui/RadialPropMen
 import LoadoutScreen from '../../game/ui/LoadoutScreen';
 import { useAdConfig } from '../../lib/ads';
 import { AdsterraBanner } from '../../components/ad-networks/AdsterraBanner';
+import { ChargePausedModal } from '../../components/ad-networks/ChargePausedModal';
+import { useIdleChargeGuard } from '../../hooks/useIdleChargeGuard';
 import { DirectLinkAdModal } from '../../components/ad-networks/DirectLinkVisit';
 import { flushBannerImpressions, RechargeVideoButtons, RewardedVideoModal, SimulatedAdBanner, usePendingBanners, type AdEcResult } from '../../game/ui/AdEngine';
 import { BLIP_LIFETIME_MS, drawMinimap, RadarBlip } from '../../game/ui/minimap';
@@ -2710,6 +2712,10 @@ export default function GamePage() {
   // Also shown over the Solo / Practice loadout screen (first deploy and after every death) so the
   // impression clock keeps running while the player picks a new weapon / operator.
   const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld;
+  // Anti-AFK (spec §5.3): Practice / Solo bots and Ghost Spectator only — never in paid PvP rooms.
+  // 35 s without input or a hidden tab pauses the 20 s banner clock and unmounts the banner.
+  const chargeGuard = useIdleChargeGuard({ enabled: showAdBanner });
+  const bannerPaused = chargeGuard.isPaused;
   const liftForAd = showAdBanner && isMobile && !compactLandscape; // portrait phones: raise thumbs above the ad
 
   // FIRE button = fire + drag-to-aim with the same finger (independent of the joystick finger)
@@ -3380,7 +3386,9 @@ export default function GamePage() {
       )}
 
       {/* Compact bottom banner ad slot — Solo Bot / Practice and Ghost Spectator only (never paid PvP) */}
-      {showAdBanner && (
+      {showAdBanner && chargeGuard.paused && <ChargePausedModal reason={chargeGuard.paused} onResume={chargeGuard.resume} />}
+
+      {showAdBanner && !bannerPaused && (
         <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 ${showLoadout ? 'z-[45]' : 'z-[15]'} pointer-events-auto flex flex-col items-center`}>
           {showLoadout && (
             <div className="mb-1 text-[11px] font-black text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] whitespace-nowrap">

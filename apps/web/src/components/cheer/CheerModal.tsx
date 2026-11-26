@@ -11,11 +11,13 @@ import { useSession } from '../../lib/session';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { useAdConfig } from '../../lib/ads';
 import { AdsterraBanner } from '../ad-networks/AdsterraBanner';
+import { ChargePausedModal } from '../ad-networks/ChargePausedModal';
+import { useIdleChargeGuard } from '../../hooks/useIdleChargeGuard';
 import { DirectLinkCountdown, useDirectLinkVisit } from '../ad-networks/DirectLinkVisit';
 
 type Phase =
   | { kind: 'menu' }
-  | { kind: 'watching'; viewId: string; format: CheerAdFormat; total: number; endsAt: number }
+  | { kind: 'watching'; viewId: string; format: CheerAdFormat; total: number; endsAt: number; /** ms left, frozen while the anti-AFK pause is up */ pausedLeft?: number }
   | { kind: 'claiming'; format: CheerAdFormat }
   | { kind: 'done'; format: CheerAdFormat; addedPct: number; ticketsAwarded: number };
 
@@ -130,9 +132,25 @@ export function CheerModal({
     [patch, onCheered, loadStatus, t]
   );
 
+  // Anti-AFK: 35 s without input or a hidden tab freezes the ad clock and hides the banner until
+  // "Resume Charging". (Not during a direct-link visit: that one is meant to happen in another tab.)
+  const guard = useIdleChargeGuard({ enabled: open && phase.kind === 'watching' });
   useEffect(() => {
-    if (phase.kind === 'watching' && now >= phase.endsAt) claim(phase.viewId, phase.format);
-  }, [phase, now, claim]);
+    setPhase((p) => {
+      if (p.kind !== 'watching') return p;
+      if (guard.isPaused && p.pausedLeft === undefined) return { ...p, pausedLeft: Math.max(0, p.endsAt - Date.now()) };
+      if (!guard.isPaused && p.pausedLeft !== undefined) {
+        const t0 = Date.now();
+        setNow(t0);
+        return { ...p, endsAt: t0 + p.pausedLeft, pausedLeft: undefined };
+      }
+      return p;
+    });
+  }, [guard.isPaused]);
+
+  useEffect(() => {
+    if (phase.kind === 'watching' && phase.pausedLeft === undefined && !guard.isPaused && now >= phase.endsAt) claim(phase.viewId, phase.format);
+  }, [phase, now, claim, guard.isPaused]);
 
   const pick = async (o: CheerOption) => {
     if (!o.available || busy) return;
@@ -271,7 +289,8 @@ export function CheerModal({
 
         {phase.kind === 'watching' && (
           <div className="space-y-3" data-cheer-watching>
-            {phase.format === 'banner' && liveBanner ? (
+            {guard.paused && <ChargePausedModal reason={guard.paused} onResume={guard.resume} />}
+            {phase.format === 'banner' && liveBanner && phase.pausedLeft === undefined && !guard.isPaused ? (
               <div className="relative rounded-2xl overflow-hidden border border-stone-100 bg-stone-50 py-2" data-cheer-live-banner>
                 <span className="absolute top-1 left-3 z-10 text-[10px] font-bold uppercase tracking-wider text-stone-400">{t('side.sponsored')}</span>
                 <AdsterraBanner spec={liveBanner} />
@@ -287,11 +306,11 @@ export function CheerModal({
             <div className="h-2 rounded-full bg-stone-100 overflow-hidden">
               <div
                 className="h-full bg-[#FACC15] transition-[width] duration-1000 ease-linear"
-                style={{ width: `${Math.min(100, ((phase.total * 1000 - Math.max(0, phase.endsAt - now)) / (phase.total * 1000)) * 100)}%` }}
+                style={{ width: `${Math.min(100, ((phase.total * 1000 - (phase.pausedLeft ?? Math.max(0, phase.endsAt - now))) / (phase.total * 1000)) * 100)}%` }}
               />
             </div>
             <div className="text-center text-sm font-bold text-stone-700" data-cheer-countdown>
-              {t('cheer.secondsLeft', { s: Math.max(0, Math.ceil((phase.endsAt - now) / 1000)) })}
+              {t('cheer.secondsLeft', { s: Math.max(0, Math.ceil((phase.pausedLeft ?? phase.endsAt - now) / 1000)) })}
             </div>
           </div>
         )}

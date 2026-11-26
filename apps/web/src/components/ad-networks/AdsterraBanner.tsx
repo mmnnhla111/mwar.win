@@ -5,6 +5,9 @@ import type { AdBannerSpec } from '@mwar/shared';
 import { AD_BANNER_INTERVAL_SECONDS } from '@mwar/shared';
 import { apiFetch } from '../../lib/api';
 
+/** 20 s impression progress kept across an anti-AFK pause (banner unmounted) so charging resumes where it left off. */
+const carryMs: Record<string, number> = {};
+
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 /** JSON for inline <script>, safe against "</script>" breakouts. */
@@ -58,7 +61,9 @@ export function AdsterraBanner({
   useEffect(() => {
     if (!pingSlot) return;
     let pending = 0;
-    let visibleSince = document.visibilityState === 'visible' ? Date.now() : 0;
+    const carried = Math.min(carryMs[pingSlot] || 0, AD_BANNER_INTERVAL_SECONDS * 1000 - 1000);
+    carryMs[pingSlot] = 0;
+    let visibleSince = document.visibilityState === 'visible' ? Date.now() - carried : 0;
     const flush = (keepalive = false) => {
       if (pending <= 0) return;
       const count = Math.min(10, pending);
@@ -87,6 +92,7 @@ export function AdsterraBanner({
     return () => {
       window.clearInterval(tick);
       document.removeEventListener('visibilitychange', onVis);
+      if (visibleSince) carryMs[pingSlot] = Date.now() - visibleSince;
       flush(true);
     };
   }, [pingSlot]);

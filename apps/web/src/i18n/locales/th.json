@@ -784,5 +784,10 @@
   "tgbot.openSafari": "เปิดด้วย Safari / Open in Safari",
   "tgbot.openSystemBrowser": "ปุ่มด้านบนไม่ทำงาน? เปิดด้วยเบราว์เซอร์ของเครื่อง",
   "tgbot.signInHere": "เข้าสู่ระบบในหน้านี้แทน",
-  "tgbot.signInHereHint": "การเข้าสู่ระบบจะอยู่ในเบราว์เซอร์ของ Telegram เท่านั้น"
+  "tgbot.signInHereHint": "การเข้าสู่ระบบจะอยู่ในเบราว์เซอร์ของ Telegram เท่านั้น",
+  "idle.title": "หยุดชาร์จพลังงานชั่วคราว",
+  "idle.body": "ไม่พบการขยับเมาส์หรือการแตะหน้าจอ",
+  "idle.hiddenBody": "คุณออกจากหน้านี้ไป การชาร์จพลังงานจึงหยุดไว้ก่อน",
+  "idle.resume": "แตะเพื่อชาร์จพลังงานต่อ (Resume Charging)",
+  "idle.note": "ความคืบหน้า EC ที่ทำไว้ยังอยู่ครบ"
 }

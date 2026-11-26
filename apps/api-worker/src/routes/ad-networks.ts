@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
-  AD_BANNER_MIN_GAP_SECONDS,
   AD_VIDEO_EC_DAILY_CAP,
   DIRECT_LINK_COOLDOWN_SECONDS,
   DIRECT_LINK_TOKEN_TTL_SECONDS,
@@ -20,6 +19,7 @@ import { edgeCachedValue } from '../utils/edge-cache';
 import { creditEcProgress, logAdImpression, normalizeCountry, utcDateKey } from '../utils/ad-value';
 import { AD_CONFIG_CACHE_KEY, cfCountryOf, getAdConfig, pickDirectLink, toPublicAdConfig, valueFromNetworkPrice, valueSlot } from '../utils/ad-networks';
 import { isLocalDev, safeEqual } from '../utils/guards';
+import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { loadStatus, recordCheer, resolveTarget } from './cheer';
 
 type Ctx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
@@ -44,7 +44,7 @@ adNetworksRouter.get('/config', async (c) => {
   return c.json(body);
 });
 
-/** POST /api/ads/impression { slot: 'adsterra_320x50' | 'adsterra_300x250', count 1..10 } */
+/** POST /api/ads/impression { slot: 'adsterra_320x50' | 'adsterra_300x250', count 1..10, lastActiveAt, clientNow } */
 adNetworksRouter.post('/impression', authMiddleware, async (c) => {
   const me = c.get('user');
   const body = await c.req.json().catch(() => ({}));
@@ -55,14 +55,13 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
   const pub = toPublicAdConfig(cfg);
   if (!(slot === 'adsterra_320x50' ? pub.banner320x50 : pub.banner300x250)) return c.json({ error: 'This ad slot is not live', code: 'AD_SLOT_OFF' }, 409);
 
-  const now = nowSec();
-  // At most one impression per ~20 s per user across every banner (a batch of N needs N gaps)
-  const last = await c.env.DB
-    .prepare("SELECT MAX(created_at) AS t FROM ad_impressions WHERE user_id = ?1 AND ad_format = 'banner'")
-    .bind(me.userId)
-    .first<{ t: number | null }>();
-  const need = count * AD_BANNER_MIN_GAP_SECONDS;
-  if (last?.t && now - last.t < need) return c.json({ error: 'Banner impressions too soon', retryInSeconds: need - (now - last.t) }, 429);
+  // Anti-AFK: the player must have touched / moved / typed within the last 40 s
+  const idle = bannerIdleMs(body);
+  if (idle !== null) return c.json(idlePausedBody(idle), 400);
+  // At most one accepted banner request per 18 s per user across every banner (a batch of N needs
+  // N gaps), claimed atomically in D1 so parallel / scripted pings can't slip through
+  const wait = await claimBannerGate(c.env.DB, me.userId, count);
+  if (wait !== null) return c.json({ error: 'Banner impressions too soon', code: 'too_soon', retryInSeconds: wait }, 429);
 
   const country = cfCountryOf(c);
   const v = valueSlot(cfg, country, slot);

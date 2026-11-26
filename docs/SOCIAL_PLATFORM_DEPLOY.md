@@ -379,3 +379,25 @@ Steps for Agy:
 
 Quick check: log in → header shows "Bronze I · ฿ 0 · 0 ¢ · Locked 🔒 0/5". Claim check-in in the drawer → ฿ +60.
 New API: `GET /api/social/network-lock`, `GET /api/social/bootstrap` (same as `/api/bootstrap`).
+
+## Anti-AFK charging pause (migration 0018, 2026-11-26)
+
+EC charging screens (Practice / Solo bots, Ghost Spectator, the EC recharge "ให้กำลังใจ รับ EC" modal and the
+Cheer modal) pause after **35 s without mouse / touch / key / scroll input** or when the tab is hidden:
+the 20 s banner clock stops, the bottom banner (Adsterra 320×50 or the simulated one) is unmounted, and a
+"หยุดชาร์จพลังงานชั่วคราว" popup asks for "แตะเพื่อชาร์จพลังงานต่อ". The 20 s progress is kept. Paid PvP rooms
+(warzone / skirmish / fast_mini) never show the banner, so they are not affected.
+
+Server: `POST /api/ads/impression` (and test-mode `POST /api/ads/simulate-view` banners) now require
+`lastActiveAt` (+ `clientNow`, same client clock): older than 40 s → `400 {code: "idle_paused"}`. Each
+user may have one accepted banner request per 18 s (a batch of N needs N × 18 s), claimed atomically in
+D1 (`users.last_banner_at`) → `429 {code: "too_soon"}`.
+
+Steps for Agy:
+```bash
+cd apps/api-worker
+npx wrangler d1 migrations apply core_db --remote        # 0018_ad_banner_gate.sql
+npx wrangler deploy
+cd ../web && pnpm run deploy:pages
+```
+Deploy the Worker and Pages together: an old web build without `lastActiveAt` gets `idle_paused` from the new API.

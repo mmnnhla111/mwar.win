@@ -3,6 +3,7 @@
  */
 
 import type { TodayQuestsResponse, DailyMlmSummary, CheerAdFormat, CheerTargetType, CheerStatus, CheerResult } from '@mwar/shared';
+import { activityPayload } from './activity';
 import type {
   BootstrapResponse,
   CursorPage,
@@ -83,6 +84,8 @@ export function clearAuthToken() {
   }
 }
 
+const BANNER_PING_PATHS = new Set(['/api/ads/impression', '/api/ads/simulate-view']);
+
 export async function apiFetch<T = any>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getAuthToken();
   const headers = new Headers(options.headers || {});
@@ -95,9 +98,23 @@ export async function apiFetch<T = any>(endpoint: string, options: RequestInit =
     headers.set('Authorization', `Bearer ${token}`);
   }
 
+  // Anti-AFK: every banner impression ping carries the last real input time (the API refuses > 40 s idle)
+  let body = options.body;
+  if (typeof body === 'string' && BANNER_PING_PATHS.has(endpoint.split('?')[0])) {
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed === 'object' && (endpoint.startsWith('/api/ads/impression') || parsed.format === 'banner')) {
+        body = JSON.stringify({ ...parsed, ...activityPayload() });
+      }
+    } catch {
+      /* not JSON */
+    }
+  }
+
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}${endpoint}`;
   const response = await fetch(url, {
     ...options,
+    body,
     headers,
   });
 
