@@ -11,6 +11,7 @@
     "dev:game": "pnpm --filter @mwar/game-server dev",
     "dev:log": "pnpm --filter @mwar/log-receiver dev",
     "dev:web": "pnpm --filter @mwar/web dev",
+    "test:load-security": "node scripts/load-test/run-load-and-security-test.mjs",
     "db:migrate:local": "pnpm --filter @mwar/api-worker db:migrate:local",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"

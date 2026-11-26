@@ -152,7 +152,7 @@ export function TopNav() {
                 <RankBadge rankId={user.rank?.id} name={user.rank?.name} exp={user.exp} size={20} />
               </button>
               {menuOpen && (
-                <div role="menu" className="absolute right-0 mt-2 w-56 bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5 animate-[popIn_160ms_ease-out]">
+                <div role="menu" className="absolute right-0 mt-2 w-64 bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5 animate-[popIn_160ms_ease-out]">
                   <Link href="/profile" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-stone-50 text-sm font-semibold text-stone-800">
                     <Icon name="user" size={18} /> {tr('nav.myProfile')}
                   </Link>

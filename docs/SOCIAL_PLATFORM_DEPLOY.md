@@ -475,3 +475,32 @@ the queue and is retried.
 named `CHAT_DB_YYYY_MM` for that month exists (e.g. add `CHAT_DB_2026_12` → database `chat_2026_12`
 before December). On-demand: `POST /api/internal/audit-outbox/flush` and `POST /api/internal/retention/run`
 with `X-Internal-Secret`.
+
+## Load & security test — 1,000 players + penetration checks (V1.0, 2026-11-26)
+
+`pnpm test:load-security` (= `node scripts/load-test/run-load-and-security-test.mjs`). Options are
+listed at the top of the script; `--skip-game` / `--skip-security`, `--players=`, `--duration=`.
+
+- **Game part** starts its own game server (tsx + `scripts/load-test/server-probe.cjs`, which measures
+  ticks, patches, event-loop delay, heap and room GC from inside the process) and a mock Worker that
+  answers the first payout batch of every game with 503. Bots run in worker threads, mint their own
+  entry tokens with the run's random internal secret and spoof distinct IPs via `X-Forwarded-For`.
+- **Security part** needs a LOCAL api-worker (`npx wrangler dev`, `.dev.vars` with the test values):
+  it creates Telegram test accounts and sets staff roles, balances and listings through
+  `wrangler d1 execute --local`. Never point it at production.
+- Exit code 1 if any check fails; the JSON report path is printed at the end.
+
+Result on the 4-vCPU build machine (bots and server on the same box), 2026-11-26: **72/72 passed**.
+1,000 players in 25 rooms (17 × mini_30, 4 × standard_100, 4 × fast_mini), ~6,700 client messages/s:
+server tick gap p50 52 ms / p99 92 ms, tick work p99 3 ms, event-loop delay p99 37 ms, ~7,000 kills
+and ~4,000 bounty claims all settled exactly once; heap after GC 21.4 → 21.6 → 21.6 MB over two
+waves and 51/51 rooms garbage collected. RBAC, cashout/marketplace races, OAuth replay, postback
+secret and media gate checks all passed.
+
+Fixed by this round in the game server: (1) payouts that failed while a room was closing were lost
+— `onDispose` now waits for in-flight batches and retries with backoff for ~2 min, then logs
+`[PayoutUnsent] {json}` for manual reconciliation; (2) every hit was broadcast to the whole room
+(`player_damaged`, unused by the web client) — now only the shooter and the victim get it, and
+gunshot radar blips go only to players within 80 m (minimap radius 70 m). With every shot hitting
+(`--hit-rate=1`, ~4× the kills) tick p99 went from 316 ms before the fix to ~105 ms after it. Hits are still not range / line-of-sight checked on the server
+(`WEAPON_SPECS.range` is not used); damage, fire rate and targets are.

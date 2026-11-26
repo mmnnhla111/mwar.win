@@ -3,6 +3,7 @@
  * i18n key-parity check (no dependencies). Run: pnpm --filter @mwar/web i18n:check
  *  - every locales/*.json has exactly the keys of en.json, all strings, same {placeholders}
  *  - every language marked `enabled: true` in src/i18n/config.ts has a dictionary
+ *  - the 10 launch languages (en th id vi es zh ko ja hi pt) all exist and are enabled
  *  - every literal key used in the source (t('…'), tr('…'), tx('…')) exists in en.json
  * Exit code 1 on any problem.
  */
@@ -36,6 +37,13 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.json') && f !== '
 }
 
 const config = readFileSync(join(root, 'i18n', 'config.ts'), 'utf8');
+// V1.0 launch set: all 10 languages must exist, be enabled and match en.json 100 %
+const REQUIRED = ['en', 'th', 'id', 'vi', 'es', 'zh', 'ko', 'ja', 'hi', 'pt'];
+for (const code of REQUIRED) {
+  if (!existsSync(join(dir, `${code}.json`))) fail(`required language ${code}: locales/${code}.json is missing`);
+  if (!new RegExp(`code:\\s*'${code}'[^}]*enabled:\\s*true`).test(config)) fail(`required language ${code} is not enabled in config.ts`);
+}
+console.log(`✓ ${REQUIRED.length} required languages present and enabled`);
 for (const m of config.matchAll(/code:\s*'(\w+)'[^}]*enabled:\s*true/g)) {
   if (!existsSync(join(dir, `${m[1]}.json`))) fail(`${m[1]} is enabled in config.ts but locales/${m[1]}.json is missing`);
 }

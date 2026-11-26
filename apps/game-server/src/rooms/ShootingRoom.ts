@@ -145,6 +145,8 @@ interface SessionMeta {
 
 /** Combat death → respawn delay (ELIMINATED overlay on the client). */
 const RESPAWN_DELAY_MS = 3000;
+/** Gunshot radar blips are relayed this far (web minimap radius 70 m + 10 m slack). */
+const FIRE_BLIP_RELAY_RANGE_M = 80;
 const MEDKIT_DROP_CHANCE = 0.2;
 const MEDKIT_TTL_MS = 600_000;
 const MEDKIT_CAST_MS = 4000;
@@ -535,7 +537,16 @@ export class ShootingRoom extends Room<GameState> {
       const last = this.lastFireBlip.get(client.sessionId) ?? 0;
       if (now - last < 400) return;
       this.lastFireBlip.set(client.sessionId, now);
-      this.broadcast('player_fired', { sessionId: client.sessionId, x: shooter.x, z: shooter.z }, { except: client });
+      // Only players whose minimap can show the blip (radius 70 m) get it; spectators always do
+      const far: Client[] = [client];
+      for (const c of this.clients) {
+        if (c === client) continue;
+        const p = this.state.players.get(c.sessionId);
+        if (p && !p.isSpectator && (p.x - shooter.x) ** 2 + (p.z - shooter.z) ** 2 > FIRE_BLIP_RELAY_RANGE_M ** 2) far.push(c);
+      }
+      if (far.length < this.clients.length) {
+        this.broadcast('player_fired', { sessionId: client.sessionId, x: shooter.x, z: shooter.z }, { except: far });
+      }
     });
 
     // Respawn request (fallback; the 20 Hz loop also respawns automatically after 3 s)
@@ -607,11 +618,11 @@ export class ShootingRoom extends Room<GameState> {
     if (target.health === 0) {
       this.handlePlayerElimination(target, targetSessionId, shooter, shooterClient.sessionId);
     } else {
-      this.broadcast('player_damaged', {
-        targetSessionId,
-        newHealth: target.health,
-        damage,
-      });
+      // Only the victim and the shooter need the hit event (everyone else gets the new health from the
+      // 20 Hz state patch). A room-wide broadcast here was ~100k WebSocket sends/s at 1,000 players.
+      const msg = { targetSessionId, newHealth: target.health, damage };
+      shooterClient.send('player_damaged', msg);
+      this.clients.find((c) => c.sessionId === targetSessionId)?.send('player_damaged', msg);
     }
   }
 
@@ -962,29 +973,55 @@ export class ShootingRoom extends Room<GameState> {
     player.sessionEarningsMicroUsd = 0;
   }
 
-  // Batch sync financial rewards to Cloudflare Workers API
-  private async flushPayoutBatch() {
-    if (this.pendingPayouts.length === 0) return;
+  /** In-flight batch POSTs (onDispose waits for them, so a failure can still be retried). */
+  private inFlightFlushes = new Set<Promise<boolean>>();
+
+  // Batch sync financial rewards to Cloudflare Workers API. Returns false when the batch was re-queued.
+  private flushPayoutBatch(): Promise<boolean> {
+    if (this.pendingPayouts.length === 0) return Promise.resolve(true);
 
     const payoutsToFlush = this.pendingPayouts.splice(0, this.pendingPayouts.length);
-    try {
-      const res = await fetch(`${this.workerApiUrl}/api/game/batch-payout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          gameId: this.gameId,
-          timestamp: Math.floor(Date.now() / 1000),
-          secret: this.internalSecret,
-          payouts: payoutsToFlush,
-        }),
-      });
-      if (!res.ok) {
-        // Requeue on failure
-        this.pendingPayouts.push(...payoutsToFlush);
+    const p = (async () => {
+      try {
+        const res = await fetch(`${this.workerApiUrl}/api/game/batch-payout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            gameId: this.gameId,
+            timestamp: Math.floor(Date.now() / 1000),
+            secret: this.internalSecret,
+            payouts: payoutsToFlush,
+          }),
+        });
+        if (res.ok) return true;
+      } catch {
+        // connection error → re-queue below
       }
-    } catch {
-      // Requeue on connection error
       this.pendingPayouts.push(...payoutsToFlush);
+      return false;
+    })();
+    this.inFlightFlushes.add(p);
+    void p.finally(() => this.inFlightFlushes.delete(p));
+    return p;
+  }
+
+  /**
+   * Room is closing: wait for in-flight batches, then retry what is still queued with backoff
+   * (≈ 2 min in total) so a short Worker outage at the end of a round loses no earnings. Whatever is
+   * still unsent after that is logged as [PayoutUnsent] JSON for manual reconciliation.
+   */
+  private async drainPayouts() {
+    const delays = [0, 1000, 2000, 4000, 8000, 15000, 30000, 60000];
+    for (const d of delays) {
+      if (d) await new Promise((r) => setTimeout(r, d));
+      await Promise.allSettled([...this.inFlightFlushes]);
+      if (this.pendingPayouts.length === 0) return;
+      if (await this.flushPayoutBatch()) {
+        if (this.pendingPayouts.length === 0) return;
+      }
+    }
+    if (this.pendingPayouts.length) {
+      console.error(`[PayoutUnsent] ${JSON.stringify({ gameId: this.gameId, payouts: this.pendingPayouts })}`);
     }
   }
 
@@ -1204,8 +1241,8 @@ export class ShootingRoom extends Room<GameState> {
   }
 
   async onDispose() {
-    // Flush any remaining payouts before room disposal
-    await this.flushPayoutBatch();
+    // Flush any remaining payouts before room disposal (retried while the Worker is unreachable)
+    await this.drainPayouts();
     if (this.redis) {
       this.redis.del(`room:${this.roomId}`).catch(() => {});
       this.redis.disconnect();

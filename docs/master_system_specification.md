@@ -365,10 +365,12 @@ sudo systemctl start cloudflared
 ## 10. รายการแผนงานการพัฒนา (Development Roadmap Checklist)
 
 - [x] **ระยะที่ 1: กำหนดสถาปัตยกรรมและ Schema ฐานข้อมูล** (D1, PostgreSQL, R2)
-- [ ] **ระยะที่ 2: สรุปฉากเกม 3D & อุปกรณ์ประกอบฉาก (Props)** (กล่องไม้, ต้นไม้, หีบสมบัติ)
-- [ ] **ระยะที่ 3: พัฒนา Cloudflare Workers API & D1 Database Logic** (Auth, MLM 5 ชั้น, Market)
-- [ ] **ระยะที่ 4: พัฒนา Colyseus Real-Time Engine & Local Redis integration** (No DB on Game Server)
-- [ ] **ระยะที่ 5: พัฒนา Log Receiver & Cloudflare Tunnel บน Mini PC** (Fastify + PostgreSQL)
-- [ ] **ระยะที่ 6: พัฒนา AI Layer 1 (Log Verification) & Layer 2 (Anti-Cheat)**
-- [ ] **ระยะที่ 7: ทดสอบ Load Test (การยิงพร้อมกัน 1,000 คน) & Security Penetration Test**
-- [ ] **ระยะที่ 8: เปิดตัวระบบเวอร์ชัน V1.0 (Production Launch)**
+- [x] **ระยะที่ 2: สรุปฉากเกม 3D & อุปกรณ์ประกอบฉาก (Props)** (กล่องไม้, ต้นไม้, หีบสมบัติ)
+- [x] **ระยะที่ 3: พัฒนา Cloudflare Workers API & D1 Database Logic** (Auth, MLM 5 ชั้น, Market)
+- [x] **ระยะที่ 4: พัฒนา Colyseus Real-Time Engine & Local Redis integration** (No DB on Game Server)
+- [x] **ระยะที่ 5: พัฒนา Log Receiver & Cloudflare Tunnel บน Mini PC** (Fastify + PostgreSQL)
+- [x] **ระยะที่ 6: พัฒนา AI Layer 1 (Log Verification) & Layer 2 (Anti-Cheat)**
+- [x] **ระยะที่ 7: ทดสอบ Load Test (การยิงพร้อมกัน 1,000 คน) & Security Penetration Test**
+  - สคริปต์: `node scripts/load-test/run-load-and-security-test.mjs` (1,000 ผู้เล่นใน 25 ห้อง + RBAC / race / OAuth replay / postback secret / media gate) — ผลรอบเปิดตัว 2026-11-26 ดูที่ `docs/SOCIAL_PLATFORM_DEPLOY.md` หัวข้อ Load & security test
+- [x] **ระยะที่ 8: เปิดตัวระบบเวอร์ชัน V1.0 (Production Launch)**
+  - ก่อนเปิดจริงบน production: ใช้ migration `0019`/`0020` กับ D1 remote, สร้างคิว `mwar-financial-logs`, ตั้ง secrets และรันสคริปต์ทดสอบกับเครื่องเกมจริง (ดู `docs/SOCIAL_PLATFORM_DEPLOY.md`)

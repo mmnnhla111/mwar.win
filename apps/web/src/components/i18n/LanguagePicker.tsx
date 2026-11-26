@@ -17,28 +17,30 @@ function current(lang: LangCode) {
   return ENABLED_LANGS.find((l) => l.code === lang) || ENABLED_LANGS[0];
 }
 
+/** Compact 2-column grid of the 10 languages (dropdowns, navbar menu and the mobile drawer). */
 function Options({ onPick }: { onPick?: () => void }) {
   const { lang, setLang } = useTranslation();
   return (
-    <ul role="listbox" className="py-1">
+    <ul role="listbox" className="grid grid-cols-2 gap-1 p-0.5" data-lang-options>
       {ENABLED_LANGS.map((l) => (
-        <li key={l.code}>
+        <li key={l.code} className="min-w-0">
           <button
             type="button"
             role="option"
             aria-selected={l.code === lang}
             data-lang={l.code}
             lang={l.code}
+            title={l.english}
             onClick={() => {
               setLang(l.code);
               onPick?.();
             }}
-            className={`w-full flex items-center justify-between gap-3 px-3 py-2 rounded-xl text-sm text-left transition ${
-              l.code === lang ? 'bg-[#FFF6C2] font-bold text-stone-900' : 'hover:bg-stone-50 font-semibold text-stone-700'
+            className={`w-full min-w-0 flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-xl text-[13px] text-left transition ${
+              l.code === lang ? 'bg-[#FFF6C2] font-bold text-stone-900 ring-1 ring-yellow-300' : 'hover:bg-stone-100 font-semibold text-stone-700'
             }`}
           >
             <span className="truncate">{l.native}</span>
-            <span className="text-[11px] uppercase text-stone-400 shrink-0">{l.code}</span>
+            <span className="text-[10px] uppercase text-stone-400 shrink-0">{l.code}</span>
           </button>
         </li>
       ))}
@@ -79,7 +81,7 @@ export function LanguagePill() {
         <span className="max-w-[9rem] truncate">{current(lang).native}</span>
       </button>
       {open && (
-        <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5">
+        <div className="absolute right-0 mt-2 w-[19rem] max-w-[calc(100vw-1.5rem)] bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5">
           <Options onPick={() => setOpen(false)} />
         </div>
       )}
@@ -117,7 +119,7 @@ export function LanguageMenu() {
 export function LanguageGrid() {
   const { lang, setLang } = useTranslation();
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2" role="radiogroup" data-lang-grid>
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2" role="radiogroup" data-lang-grid>
       {ENABLED_LANGS.map((l) => (
         <button
           key={l.code}

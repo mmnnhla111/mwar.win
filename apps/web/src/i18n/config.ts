@@ -1,6 +1,6 @@
 /**
- * Language registry. To turn on a phase-2 language: add `locales/<code>.json` (same keys as en.json,
- * check with `pnpm --filter @mwar/web i18n:check`) and flip `enabled` to true. Nothing else changes.
+ * Language registry: all 10 languages are on. A new language needs `locales/<code>.json` with every
+ * key of en.json (`pnpm --filter @mwar/web i18n:check` enforces it) plus an entry here.
  */
 export type LangCode = 'en' | 'th' | 'id' | 'vi' | 'es' | 'zh' | 'ko' | 'ja' | 'hi' | 'pt';
 
@@ -19,12 +19,12 @@ export const LANGUAGES: LangInfo[] = [
   { code: 'id', native: 'Bahasa Indonesia', english: 'Indonesian', enabled: true },
   { code: 'vi', native: 'Tiếng Việt', english: 'Vietnamese', enabled: true },
   { code: 'es', native: 'Español', english: 'Spanish', enabled: true },
-  // Phase 2 slots
-  { code: 'zh', native: '中文', english: 'Chinese', enabled: false },
-  { code: 'ko', native: '한국어', english: 'Korean', enabled: false },
-  { code: 'ja', native: '日本語', english: 'Japanese', enabled: false },
-  { code: 'hi', native: 'हिन्दी', english: 'Hindi', enabled: false },
-  { code: 'pt', native: 'Português', english: 'Portuguese', enabled: false },
+  // Phase 2 (2026-11-26)
+  { code: 'zh', native: '中文', english: 'Chinese', enabled: true },
+  { code: 'ko', native: '한국어', english: 'Korean', enabled: true },
+  { code: 'ja', native: '日本語', english: 'Japanese', enabled: true },
+  { code: 'hi', native: 'हिन्दी', english: 'Hindi', enabled: true },
+  { code: 'pt', native: 'Português', english: 'Portuguese', enabled: true },
 ];
 
 export const DEFAULT_LANG: LangCode = 'en';
