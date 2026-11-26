@@ -1,11 +1,11 @@
 import type { AuditLayer1, AuditLayer2, AuditLayer3, CashoutAuditReport, FlagSeverity } from '@mwar/shared';
 import type { Env } from '../types';
-import { logReceiverHeaders } from '../utils/audit-logger';
+import { logReceiverBase, logReceiverSecret, signedHeaders } from '../utils/audit-logger';
 
 /**
  * 3-layer anti-cheat audit run on every cashout request (spec §6):
  *   Layer 1 — exact Micro-USD reconciliation of wallets.balance against the D1 wallet ledger
- *             (+ the Mini PC PostgreSQL summary when LOG_RECEIVER_URL is configured).
+ *             (+ a signed cross-check against the Mini PC PostgreSQL copy when LOG_RECEIVER_URL is set).
  *   Layer 2 — behaviour: headshot ratio > 0.85 with ≥ 30 kills, chest collection > 3σ above the room.
  *   Layer 3 — collusion graph: kills on accounts sharing an IP hash / device fingerprint, or in a
  *             direct 1-on-1 referral loop; collusion ratio and the earnings from those kills.
@@ -26,6 +26,49 @@ type Flag = { layer: 1 | 2 | 3; type: string; severity: FlagSeverity; details: R
 const n = (v: unknown) => Number(v ?? 0) || 0;
 const round2 = (x: number) => Math.round(x * 100) / 100;
 
+/** Events newer than this may still be in the queue, so the PostgreSQL window ends here. */
+export const PG_LAG_TOLERANCE_SECONDS = 15 * 60;
+/** Stay inside PostgreSQL's 90-day retention. */
+const PG_WINDOW_DAYS = 89;
+
+/**
+ * Independent copy check: the Mini PC PostgreSQL net (wallet-moving events) over a window must equal
+ * the D1 wallet_ledger net over the same window. Catches a D1 balance + ledger edited together.
+ * PostgreSQL with fewer events than D1 (queue / outbox still delivering) → 'lagging', not a mismatch.
+ */
+export async function postgresCrossCheck(env: Env, userId: string): Promise<AuditLayer1['postgres']> {
+  const base = logReceiverBase(env);
+  const secret = logReceiverSecret(env);
+  if (!base || !secret) return { status: 'not_configured' };
+  const now = Math.floor(Date.now() / 1000);
+  const end = now - PG_LAG_TOLERANCE_SECONDS;
+  // The D1 ledger starts at the user's first row (OPENING_BALANCE at migration 0019 for older accounts)
+  const first = await env.DB.prepare('SELECT MIN(created_at) AS t FROM wallet_ledger WHERE user_id = ?1').bind(userId).first<{ t: number | null }>();
+  const start = Math.max(now - PG_WINDOW_DAYS * 86_400, (first?.t ?? now) + 1);
+  if (start >= end) return { status: 'match', calculatedMicroUsd: 0, d1WindowNetMicroUsd: 0, pgEvents: 0, d1Events: 0, windowStart: start, windowEnd: end, reason: 'window empty (new ledger)' };
+  const d1 = await env.DB.prepare(
+    `SELECT COALESCE(SUM(delta_micro_usd), 0) AS net, COUNT(*) AS n FROM wallet_ledger
+     WHERE user_id = ?1 AND action_type <> 'OPENING_BALANCE' AND delta_micro_usd <> 0 AND created_at >= ?2 AND created_at < ?3`
+  ).bind(userId, start, end).first<{ net: number; n: number }>();
+  const pending = await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_outbox WHERE user_id = ?1').bind(userId).first<{ n: number }>().catch(() => null);
+  const path = `/internal/reconcile/${encodeURIComponent(userId)}?since=${start}&until=${end}`;
+  try {
+    const res = await fetch(base + path, { headers: await signedHeaders(secret, 'GET', path), signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return { status: 'unreachable', reason: `HTTP ${res.status}` };
+    const j = (await res.json()) as { netMicroUsd?: string; events?: number };
+    const pgNet = Number(BigInt(j.netMicroUsd ?? '0'));
+    const pgEvents = n(j.events);
+    const d1Net = n(d1?.net);
+    const d1Events = n(d1?.n);
+    const detail = { calculatedMicroUsd: pgNet, d1WindowNetMicroUsd: d1Net, pgEvents, d1Events, windowStart: start, windowEnd: end };
+    if (pgNet === d1Net) return { status: 'match', ...detail };
+    if (pgEvents < d1Events || n(pending?.n) > 0) return { status: 'lagging', ...detail, reason: n(pending?.n) ? `${n(pending?.n)} events in the D1 outbox` : 'PostgreSQL behind D1' };
+    return { status: 'mismatch', ...detail };
+  } catch (e: any) {
+    return { status: 'unreachable', reason: String(e?.message || e).slice(0, 120) };
+  }
+}
+
 export async function layer1Reconcile(env: Env, userId: string): Promise<AuditLayer1> {
   const [led, wal] = await env.DB.batch([
     env.DB.prepare(
@@ -43,24 +86,7 @@ export async function layer1Reconcile(env: Env, userId: string): Promise<AuditLa
   const expected = n(l.credits) - n(l.withdrawals) - n(l.purchases) - n(l.other);
   const diff = actual - expected;
 
-  let postgres: AuditLayer1['postgres'] = { status: 'not_configured' };
-  if (env.LOG_RECEIVER_URL) {
-    const base = env.LOG_RECEIVER_URL.replace(/\/api\/logs\/?$/, '');
-    try {
-      const res = await fetch(`${base}/api/logs/summary/${encodeURIComponent(userId)}`, {
-        headers: logReceiverHeaders(env),
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!res.ok) postgres = { status: 'unreachable', reason: `HTTP ${res.status}` };
-      else {
-        const j = (await res.json()) as { calculatedBalanceMicroUsd?: string };
-        const calc = Number(BigInt(j.calculatedBalanceMicroUsd ?? '0'));
-        postgres = { status: calc === actual ? 'match' : 'mismatch', calculatedMicroUsd: calc };
-      }
-    } catch (e: any) {
-      postgres = { status: 'unreachable', reason: String(e?.message || e).slice(0, 120) };
-    }
-  }
+  const postgres = await postgresCrossCheck(env, userId);
   return {
     status: Math.abs(diff) >= 1 || postgres.status === 'mismatch' ? 'mismatch' : 'match',
     expectedBalanceMicroUsd: expected,

@@ -886,5 +886,6 @@
   "admin.cashout.approvePaid": "Setujui (dibayar)",
   "admin.cashout.done.approve": "Permintaan {id} disetujui",
   "admin.cashout.done.reject": "Permintaan {id} ditolak dan dikembalikan",
-  "admin.cashout.done.rerun": "Audit diulang untuk {id}"
+  "admin.cashout.done.rerun": "Audit diulang untuk {id}",
+  "admin.cashout.pg.lagging": "Masih sinkron"
 }

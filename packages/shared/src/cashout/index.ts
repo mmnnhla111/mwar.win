@@ -89,7 +89,18 @@ export interface AuditLayer1 {
   otherDebitsMicroUsd: number;
   ledgerRows: number;
   /** Mini PC PostgreSQL cross-check (only when LOG_RECEIVER_URL is configured). */
-  postgres: { status: 'match' | 'mismatch' | 'unreachable' | 'not_configured'; calculatedMicroUsd?: number; reason?: string };
+  postgres: {
+    /** lagging = PostgreSQL has fewer events than the D1 ledger (queue / outbox still delivering): no flag. */
+    status: 'match' | 'mismatch' | 'lagging' | 'unreachable' | 'not_configured';
+    /** PostgreSQL net (inflow − outflow) over the window, and the D1 ledger net over the same window. */
+    calculatedMicroUsd?: number;
+    d1WindowNetMicroUsd?: number;
+    pgEvents?: number;
+    d1Events?: number;
+    windowStart?: number;
+    windowEnd?: number;
+    reason?: string;
+  };
 }
 
 export interface AuditLayer2 {

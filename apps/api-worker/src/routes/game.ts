@@ -216,6 +216,11 @@ gameRouter.post('/batch-payout', async (c) => {
     if (log.action_type === 'AFK_FORFEIT') {
       if (!balances.has(log.user_id)) balances.set(log.user_id, await walletBalance(c.env.DB, log.user_id));
       log.balance_after_micro_usd = balances.get(log.user_id)!;
+      // Log what was actually clawed back (clamped at the balance), so PostgreSQL equals the D1 ledger
+      const taken = await c.env.DB.prepare(
+        "SELECT COALESCE(-SUM(delta_micro_usd), 0) AS d FROM wallet_ledger WHERE user_id = ?1 AND action_type = 'AFK_FORFEIT' AND ref_id = ?2 AND created_at = ?3"
+      ).bind(log.user_id, gameId.slice(0, 80), now).first<{ d: number }>();
+      log.amount_micro_usd = BigInt(taken?.d ?? 0);
     }
     await logFinancialTransaction(c.env, log);
   }

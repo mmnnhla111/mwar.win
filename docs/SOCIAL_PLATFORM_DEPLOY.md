@@ -420,3 +420,58 @@ Clean (score ≥ 0.7, no flags) → `pending`, waiting for super_admin to send t
 Anything else → `flagged_review`; approving it needs a written reason. Reject always refunds
 (optionally keeping Layer-3 collusive earnings for the platform). finance_auditor is read-only.
 There is no automatic payout.
+
+## Financial audit queue → Mini PC PostgreSQL + retention crons (migration 0020, 2026-11-26)
+
+Every financial mutation writes D1 first, then enqueues an immutable event
+(`transaction_id, user_id, action_type, amount_micro_usd, balance_after_micro_usd, source_game_id,
+related_user_id, mlm_level, created_at`) on `FINANCIAL_AUDIT_QUEUE`. The Worker's `queue()` consumer
+signs each batch (HMAC-SHA256 over timestamp + method + path + body hash, key `LOG_RECEIVER_SECRET`)
+and POSTs it to `LOG_RECEIVER_URL` → `/api/logs/batch`. PostgreSQL stores the whole batch in one
+transaction (`ON CONFLICT (transaction_id) DO NOTHING`); the batch is acked only after that.
+If the Mini PC is offline the queue retries (1 min … 4 h back-off, 100 retries) for up to 14 days;
+events about to expire, and every event in an environment without the queue binding, go to the D1
+`audit_outbox`, which the 10-minute cron re-sends. A financial action never fails because of logging.
+
+**For Agy — one-time setup (from `apps/api-worker`):**
+
+```bash
+# 1. Queue with 14-day retention (needs Workers Paid; the free plan keeps messages 24 h)
+npx wrangler queues create mwar-financial-logs --message-retention-period-secs 1209600
+#    If the queue already exists from an earlier round, just raise its retention:
+npx wrangler queues update mwar-financial-logs --message-retention-period-secs 1209600
+
+# 2. D1 migration
+npx wrangler d1 migrations apply core_db --remote      # applies 0020_audit_outbox.sql
+
+# 3. Shared HMAC key (same value on the Mini PC as LOG_RECEIVER_SECRET)
+npx wrangler secret put LOG_RECEIVER_SECRET
+
+# 4. Deploy the Worker (adds the */10 cron and the queue consumer)
+npx wrangler deploy
+```
+
+**Mini PC log receiver** (`apps/log-receiver`, `.env`): `DATABASE_URL`, `LOG_RECEIVER_SECRET` (same as
+the Worker; requests are refused without it), `INTERNAL_API_SECRET` + `WORKER_API_URL=https://api.mwar.win`
+(for the R2 archive upload), optional `LOG_ARCHIVE_DIR`. Then `pnpm --filter @mwar/log-receiver build`
+and restart the service. Deploy the receiver and the Worker together: the receiver now accepts only
+HMAC-signed requests (the old `X-Log-Secret` header is gone). Anything sent in between just waits in
+the queue and is retried.
+
+- Receiver endpoints: `POST /api/logs/batch`, `POST /api/logs`, signed `GET /internal/reconcile/:userId?since=&until=`
+  (Layer 1 cash-out cross-check), signed `POST /internal/maintenance/run`. `GET /health` is open.
+- Tables: `logs_YYYY_MM` for this and next month are created at startup and daily; any month is
+  created on its first insert. Rows are immutable (UPDATE/DELETE/TRUNCATE blocked by triggers).
+- Daily maintenance: a table whose month ended more than 90 days ago is exported as JSON, gzipped,
+  self-checked, uploaded to R2 `mwar-audit-archive/audit-archives/logs_YYYY_MM.json.gz` (sha256 checked
+  by the Worker, by R2 and on read-back), and only then dropped. A failed upload keeps the table.
+- Layer 1 cash-out audit: PostgreSQL's net over the last 89 days (up to 15 min ago) must equal the D1
+  ledger's net over the same window. Fewer events in PostgreSQL = "still syncing" (no flag); same
+  count but a different sum = critical `postgres_mismatch` (D1 balance and ledger were edited together).
+
+**Worker crons** (`wrangler.toml`): `*/10 * * * *` re-sends the outbox; `0 0 * * *` also purges
+`direct_messages` older than 365 days (31,536,000 s) in every chat database, deletes `oauth_states` and
+`ad_click_tokens` older than 7 days, and creates next month's `direct_messages` schema when a binding
+named `CHAT_DB_YYYY_MM` for that month exists (e.g. add `CHAT_DB_2026_12` → database `chat_2026_12`
+before December). On-demand: `POST /api/internal/audit-outbox/flush` and `POST /api/internal/retention/run`
+with `X-Internal-Secret`.

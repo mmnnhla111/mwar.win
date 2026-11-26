@@ -886,5 +886,6 @@
   "admin.cashout.approvePaid": "Aprobar (pagado)",
   "admin.cashout.done.approve": "Solicitud {id} aprobada",
   "admin.cashout.done.reject": "Solicitud {id} rechazada y reembolsada",
-  "admin.cashout.done.rerun": "Auditoría repetida para {id}"
+  "admin.cashout.done.rerun": "Auditoría repetida para {id}",
+  "admin.cashout.pg.lagging": "Sincronizando"
 }

@@ -38,25 +38,32 @@ database_name = "chat_2026_11"
 database_id = "4b626ea0-91ab-4266-ae22-8f6fbfb61190"
 migrations_dir = "migrations/chat_2026_11"
 
-# 3. Cloudflare Queues Producer (Financial Log Buffer)
+# 3. Financial audit queue (spec §8): every financial mutation enqueues an immutable event.
+#    Create once (see docs/SOCIAL_PLATFORM_DEPLOY.md):
+#      npx wrangler queues create mwar-financial-logs --message-retention-period-secs 1209600
+#    If an environment has no queue binding, events go to the D1 audit_outbox instead (no failures).
 [[queues.producers]]
-binding = "LOG_QUEUE"
+binding = "FINANCIAL_AUDIT_QUEUE"
 queue = "mwar-financial-logs"
 
-# 4. Queue consumer: forwards logs to logs.mwar.win; failed deliveries are retried (queue keeps
-#    messages up to 4 days / 345600 seconds on standard Cloudflare plans)
+# 4. Queue consumer: signs each batch (HMAC-SHA256, LOG_RECEIVER_SECRET) and POSTs it to
+#    LOG_RECEIVER_URL/api/logs/batch. Failed batches retry with back-off (1 min … 4 h) for up to
+#    14 days; events about to expire move to the D1 audit_outbox. Keep max_retries = QUEUE_MAX_RETRIES.
 [[queues.consumers]]
 queue = "mwar-financial-logs"
-max_batch_size = 50
+max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 100
 
-# 5. Midnight UTC (07:00 Bangkok): daily MLM settlement + marketplace escrow release
+# 5. Crons
+#    "*/10 * * * *": re-send the D1 audit_outbox (queue first, else direct signed delivery)
+#    "0 0 * * *"   : 00:00 UTC (07:00 Bangkok) MLM settlement, marketplace escrow, retention jobs
+#                    (chat > 12 months, oauth_states / ad_click_tokens > 7 days, next month's chat schema)
 [triggers]
-crons = ["0 0 * * *"]
+crons = ["*/10 * * * *", "0 0 * * *"]
 
 
-# 6. R2: 90-day PostgreSQL log archives (logs_YYYY_MM.jsonl.gz) uploaded by the Mini PC log receiver
+# 6. R2: 90-day PostgreSQL log archives (audit-archives/logs_YYYY_MM.json.gz) uploaded by the Mini PC log receiver
 #    Create once: npx wrangler r2 bucket create mwar-audit-archive
 [[r2_buckets]]
 binding = "ASSETS_BUCKET"

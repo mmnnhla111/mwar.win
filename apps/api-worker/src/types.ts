@@ -1,5 +1,4 @@
 import type { D1Database, R2Bucket, Queue } from '@cloudflare/workers-types';
-import type { FinancialLog } from '@mwar/shared';
 
 export interface Env {
   // Cloudflare D1 Bindings
@@ -11,8 +10,13 @@ export interface Env {
   /** Social post media (social/YYYY/MM/<uuid>.webp|.mp4|.webm). Rejected / taken-down files are deleted at once. */
   MEDIA_BUCKET: R2Bucket;
 
-  // Cloudflare Queues
-  LOG_QUEUE: Queue<FinancialLog>;
+  /** Optional monthly chat databases (CHAT_DB_2026_12 …): purged and pre-provisioned by the daily cron. */
+  [chatBinding: `CHAT_DB_${number}_${string}`]: D1Database | undefined;
+
+  // Cloudflare Queues (optional: without a binding, audit events go to the D1 audit_outbox)
+  FINANCIAL_AUDIT_QUEUE?: Queue<unknown>;
+  /** Legacy binding name, still honoured. */
+  LOG_QUEUE?: Queue<unknown>;
 
   // Environment Variables & Secrets
   /** Comma-separated usernames that are always super_admin (owner lock-out protection). */
@@ -22,7 +26,7 @@ export interface Env {
   INTERNAL_API_SECRET: string;
   NODE_PROVISION_KEY?: string;
   LOG_RECEIVER_URL?: string;
-  /** Shared secret sent as X-Log-Secret to logs.mwar.win (must match the receiver's LOG_RECEIVER_SECRET). */
+  /** HMAC-SHA256 key for signed deliveries to logs.mwar.win (same value as the receiver's LOG_RECEIVER_SECRET). */
   LOG_RECEIVER_SECRET?: string;
   /** Secret the ad networks append to S2S postbacks (?secret=...). Required when DEV_MOCK_MODE is off. */
   AD_POSTBACK_SECRET?: string;

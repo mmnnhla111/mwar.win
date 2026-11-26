@@ -150,6 +150,10 @@ export const WEAPON_MIN_SHOT_INTERVAL_MS: Record<string, number> = {
 export const LOG_RETENTION_DAYS = 90;
 export const QUEUE_RETENTION_SECONDS = 14 * 86_400;
 export const CHAT_RETENTION_MONTHS = 12;
+/** Direct messages are purged once older than this (365 days). */
+export const CHAT_RETENTION_SECONDS = 31_536_000;
+/** Expired oauth_states / ad_click_tokens rows are pruned after 7 days. */
+export const SHORT_LIVED_ROW_RETENTION_SECONDS = 7 * 86_400;
 
 // Ad eCPM and Statistical Country Rewards (docs/AD_ECPM_BY_COUNTRY.md)
 export * from './adEcpm';

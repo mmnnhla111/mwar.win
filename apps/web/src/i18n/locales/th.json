@@ -886,5 +886,6 @@
   "admin.cashout.approvePaid": "อนุมัติ (โอนแล้ว)",
   "admin.cashout.done.approve": "อนุมัติคำขอ {id} แล้ว",
   "admin.cashout.done.reject": "ปฏิเสธคำขอ {id} และคืนเงินแล้ว",
-  "admin.cashout.done.rerun": "ตรวจคำขอ {id} ใหม่แล้ว"
+  "admin.cashout.done.rerun": "ตรวจคำขอ {id} ใหม่แล้ว",
+  "admin.cashout.pg.lagging": "ยังส่งข้อมูลไม่ครบ"
 }

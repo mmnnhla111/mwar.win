@@ -886,5 +886,6 @@
   "admin.cashout.approvePaid": "Approve (paid)",
   "admin.cashout.done.approve": "Request {id} approved",
   "admin.cashout.done.reject": "Request {id} rejected and refunded",
-  "admin.cashout.done.rerun": "Audit re-run for {id}"
+  "admin.cashout.done.rerun": "Audit re-run for {id}",
+  "admin.cashout.pg.lagging": "Still syncing"
 }

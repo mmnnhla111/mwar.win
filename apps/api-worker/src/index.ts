@@ -1,7 +1,5 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import type { FinancialLog } from '@mwar/shared';
-import { CHAT_RETENTION_MONTHS } from '@mwar/shared';
 import type { Env } from './types';
 import { authRouter } from './routes/auth';
 import { socialAuthRouter, referralRouter } from './routes/auth-social';
@@ -17,7 +15,8 @@ import { chatRouter, serveChatMedia, pruneChatMedia } from './routes/chat';
 import { auditRouter } from './routes/audit';
 import { questsRouter, settleDailyMlm, authorizeSettlement, yesterdayUtcDateKey } from './routes/quests';
 
-import { stringifyLog, logReceiverHeaders } from './utils/audit-logger';
+import { consumeAuditBatch, flushAuditOutbox, sha256Hex, type AuditQueueMessage } from './utils/audit-logger';
+import { runRetentionJobs } from './services/maintenance';
 import { nodesRouter } from './routes/nodes';
 import { practiceRouter } from './routes/practice';
 import { isLocalDev, hasInternalSecret } from './utils/guards';
@@ -100,21 +99,44 @@ app.post('/api/cron/settle-daily-mlm', async (c) => {
 });
 
 /**
- * 90-day log archive: the Mini PC log receiver gzips a closed logs_YYYY_MM table and uploads it
- * here; it is stored in R2 (ASSETS_BUCKET) under audit-archive/ before the local table is dropped.
+ * 90-day log archive: the Mini PC log receiver gzips a logs_YYYY_MM table older than 90 days and
+ * uploads it here. Stored in R2 (ASSETS_BUCKET) as audit-archives/logs_YYYY_MM.json.gz. The body must
+ * match X-Content-Sha256 (R2 re-checks it on write); the stored object is read back and its sha256 is
+ * returned so the receiver drops the local table only after a verified upload.
  */
 app.put('/api/internal/log-archive/:name', async (c) => {
   if (!hasInternalSecret(c)) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   const name = c.req.param('name');
-  if (!/^logs_\d{4}_\d{2}\.jsonl\.gz$/.test(name)) return c.json({ error: 'Invalid archive name' }, 400);
+  if (!/^logs_\d{4}_\d{2}\.json\.gz$/.test(name)) return c.json({ error: 'Invalid archive name (logs_YYYY_MM.json.gz)' }, 400);
+  const claimed = (c.req.header('X-Content-Sha256') || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(claimed)) return c.json({ error: 'X-Content-Sha256 header required' }, 400);
   const body = await c.req.arrayBuffer();
-  await c.env.ASSETS_BUCKET.put(`audit-archive/${name}`, body, {
+  const got = await sha256Hex(body);
+  if (got !== claimed) return c.json({ error: 'sha256 mismatch: upload corrupted', expected: claimed, received: got }, 422);
+  const key = `audit-archives/${name}`;
+  await c.env.ASSETS_BUCKET.put(key, body, {
+    sha256: claimed,
     httpMetadata: { contentType: 'application/gzip' },
-    customMetadata: { sha256: c.req.header('X-Content-Sha256') || '' },
+    customMetadata: { sha256: claimed, rows: c.req.header('X-Row-Count') || '', uploadedAt: new Date().toISOString() },
   });
-  return c.json({ success: true, key: `audit-archive/${name}`, bytes: body.byteLength });
+  const stored = await c.env.ASSETS_BUCKET.get(key);
+  if (!stored) return c.json({ error: 'stored object not found after write' }, 500);
+  const storedSha = await sha256Hex(await stored.arrayBuffer());
+  return c.json({ success: storedSha === claimed, key, bytes: body.byteLength, sha256: storedSha }, storedSha === claimed ? 200 : 500);
+});
+
+/** Re-send the D1 audit outbox now (the 10-minute cron does the same). */
+app.post('/api/internal/audit-outbox/flush', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401);
+  return c.json({ success: true, ...(await flushAuditOutbox(c.env)) });
+});
+
+/** Run the daily retention jobs on demand. */
+app.post('/api/internal/retention/run', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401);
+  return c.json({ success: true, ...(await runRetentionJobs(c.env)) });
 });
 
 /** Chat media expiry on demand (the midnight cron runs the same job). */
@@ -138,42 +160,32 @@ export default {
   fetch: app.fetch,
 
   /**
-   * Queue consumer → logs.mwar.win. A message is acked only when PostgreSQL stored it; otherwise it
-   * is retried with back-off and stays in the queue (retention up to 14 days) until the Mini PC is back.
+   * FINANCIAL_AUDIT_QUEUE consumer → signed (HMAC-SHA256) batch POST to the Mini PC log receiver.
+   * Acked only after PostgreSQL stored the batch; otherwise retried with back-off for up to 14 days,
+   * and moved to the D1 audit_outbox just before it would expire.
    */
-  async queue(
-    batch: { messages: Array<{ body: FinancialLog; ack(): void; retry(o?: { delaySeconds?: number }): void; attempts?: number }> },
-    env: Env
-  ): Promise<void> {
-    const receiverUrl = env.LOG_RECEIVER_URL || 'http://localhost:3000/api/logs';
-    for (const msg of batch.messages) {
-      try {
-        const res = await fetch(receiverUrl, {
-          method: 'POST',
-          headers: logReceiverHeaders(env, true),
-          body: stringifyLog(msg.body),
-        });
-        if (res.ok) msg.ack();
-        else msg.retry({ delaySeconds: Math.min(3600, 30 * 2 ** Math.min(7, msg.attempts ?? 1)) });
-      } catch (err: any) {
-        console.warn(`[Queue Consumer] Log receiver offline (${receiverUrl}): ${err.message}. Retrying later.`);
-        msg.retry({ delaySeconds: Math.min(3600, 30 * 2 ** Math.min(7, msg.attempts ?? 1)) });
-      }
-    }
+  async queue(batch: { messages: readonly AuditQueueMessage[] }, env: Env): Promise<void> {
+    const r = await consumeAuditBatch(batch.messages, env);
+    if (r.retried || r.outboxed || r.dropped) console.log('[Audit consumer]', JSON.stringify(r));
   },
 
-  /** Cron 00:00 UTC: settle yesterday's MLM ledger (4-quest rule) and release due marketplace escrow. */
-  async scheduled(_event: unknown, env: Env): Promise<void> {
+  /**
+   * Crons: every 10 min → re-send the D1 audit outbox.
+   * 00:00 UTC → MLM settlement, marketplace escrow, retention (chat 12 months, oauth_states /
+   * ad_click_tokens 7 days, next month's chat schema), moderation + chat-media pruning, outbox.
+   */
+  async scheduled(event: { cron?: string }, env: Env): Promise<void> {
+    if (event?.cron === '*/10 * * * *') {
+      await flushAuditOutbox(env).catch((e: unknown) => console.warn('[Cron] audit outbox flush failed', e));
+      return;
+    }
     await settleDailyMlm(env, yesterdayUtcDateKey());
     await releaseMarketplaceEscrow(env);
-    // chat_YYYY_MM retention: direct messages are deleted after 12 months
-    await env.CHAT_DB.prepare('DELETE FROM direct_messages WHERE created_at < ?1')
-      .bind(Math.floor(Date.now() / 1000) - CHAT_RETENTION_MONTHS * 30 * 86_400)
-      .run()
-      .catch((e: unknown) => console.warn('[Cron] chat retention failed', e));
+    await runRetentionJobs(env).catch((e: unknown) => console.warn('[Cron] retention failed', e));
     // Zero-bloat: finished moderation jobs (7 d), expired reset tokens, rejected posts + their R2 media
     await pruneModerationData(env).catch((e: unknown) => console.warn('[Cron] moderation prune failed', e));
     // Chat photos / videos older than 7 days: R2 files deleted, message text kept
     await pruneChatMedia(env).catch((e: unknown) => console.warn('[Cron] chat media prune failed', e));
+    await flushAuditOutbox(env).catch((e: unknown) => console.warn('[Cron] audit outbox flush failed', e));
   },
 };
