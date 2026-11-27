@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { getRankForExp, rankImagePath } from '@mwar/shared';
+import { getRankForDownlines, rankImagePath } from '@mwar/shared';
 
 const FAMILY_STYLE: Record<string, { bg: string; ring: string; text: string }> = {
   bronze: { bg: 'linear-gradient(135deg,#E8B48A 0%,#B06A3B 55%,#7A4425 100%)', ring: '#F3D2B5', text: '#FFF7EE' },
@@ -20,21 +20,21 @@ const missing = new Set<string>();
  */
 export function RankBadge({
   rankId,
-  exp,
+  totalDownlines,
   name,
   size = 24,
   showName = false,
   className = '',
 }: {
-  /** e.g. "silver_2"; derived from `exp` when omitted. */
+  /** e.g. "silver_2"; derived from `totalDownlines` when omitted. */
   rankId?: string | null;
-  exp?: number;
+  totalDownlines?: number;
   name?: string;
   size?: number;
   showName?: boolean;
   className?: string;
 }) {
-  const info = rankId ? null : getRankForExp(exp ?? 0);
+  const info = rankId ? null : getRankForDownlines(totalDownlines ?? 0);
   const id = rankId || info!.id;
   const [family, levelStr] = id.split('_');
   const level = Math.min(3, Math.max(1, Number(levelStr) || 1));

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { CashoutReviewSchema, formatMicroUsd, maskPayoutAccount, type AdminCashoutItem, type CashoutAuditReport } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
-import { requireStaff, getStaffRole } from '../middleware/staff';
+import { requireStaff, getStaffRoles } from '../middleware/staff';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { ledgerAfterUpdate } from '../utils/ledger';
 import { isLocalDev } from '../utils/guards';
@@ -55,9 +55,8 @@ auditRouter.get('/withdrawals', requireFinanceRead, async (c) => {
   );
   const rows = await (status === 'all' || status === 'open' ? stmt : stmt.bind(status)).all<any>();
   // Full payout accounts only for the super_admin who sends the money; auditors see them masked
-  const full = (await getStaffRole(c as any)) === 'super_admin';
-  const role = await getStaffRole(c as any);
-  return c.json({ withdrawals: (rows.results || []).map((w) => toAdminItem(w, full)), canReview: role === 'super_admin' });
+  const full = (await getStaffRoles(c as any)).includes('super_admin');
+  return c.json({ withdrawals: (rows.results || []).map((w) => toAdminItem(w, full)), canReview: full });
 });
 
 /** Legacy path used by older admin builds. */

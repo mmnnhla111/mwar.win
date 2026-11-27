@@ -120,6 +120,43 @@ CREATE TABLE withdrawal_requests (
 CREATE INDEX idx_withdrawal_status ON withdrawal_requests(status);
 ```
 
+### 4.1.1 ทีมงานหลายตำแหน่ง (Multi-Role Staff) — V1.1 รอบที่ 5 (migration `0022_multi_role_staff.sql`)
+```sql
+CREATE TABLE user_staff_roles (
+    user_id TEXT NOT NULL,
+    role_key TEXT NOT NULL,      -- moderator | support | finance_auditor | ops_manager | admin (legacy)
+    granted_by TEXT NOT NULL,    -- user id ของ super_admin ที่ให้สิทธิ์ ('migration' = คัดลอกจากระบบเดิม)
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, role_key)
+);
+ALTER TABLE game_nodes ADD COLUMN mod_pending INTEGER;   -- คิวตรวจเนื้อหาที่โหนด moderator รายงาน
+ALTER TABLE game_nodes ADD COLUMN mod_processed INTEGER;
+ALTER TABLE game_nodes ADD COLUMN pg_status TEXT;        -- 'ok' | 'down' (โหนด log: PostgreSQL)
+```
+* **ตำแหน่งจริงอยู่ที่ `users.staff_role`** (ไม่ใช่ `users.role` ซึ่งเป็นค่า JWT เดิม): `users.staff_role` ยังเก็บ "ตำแหน่งสูงสุด" ไว้เพื่อแสดงผลและความเข้ากันได้ ส่วนสิทธิ์จริง = **union ของทุกแถวใน `user_staff_roles`** + `super_admin` (จาก `SUPER_ADMIN_USERNAMES` หรือ `users.staff_role = 'super_admin'`) ระบบอ่านจาก D1 ทุกคำขอ (`middleware/staff.ts` → `getStaffRoles`) การเปลี่ยนตำแหน่งมีผลทันที
+* **ตำแหน่งที่มอบได้:** `moderator`, `support`, `finance_auditor`, `ops_manager` (ใหม่: เซิร์ฟเวอร์ ห้องเกม และเกม = สิทธิ์ `games` + `nodes`). ตำแหน่ง `admin` เดิมถูกคัดลอกเข้า `user_staff_roles` ตอน migrate เพื่อไม่ให้ใครเสียสิทธิ์ แต่มอบใหม่ไม่ได้ (บันทึกแถวที่ไม่ติ๊ก `admin` = ถอด `admin` ออก)
+* **API (super_admin เท่านั้น):** `GET /api/admin/staff` (รายชื่อทีมงาน), `GET /api/admin/staff/search-users?q=` (ค้นหาสมาชิกด้วย username / ชื่อที่แสดง), `PUT /api/admin/staff/:userId/roles { roles: [...] }` (แทนที่ชุดตำแหน่งทั้งหมด; `[]` = ถอดทุกตำแหน่ง ลบแถวใน `user_staff_roles` และตั้ง `users.staff_role='user'`, `users.role='player'`), `GET /api/admin/staff/audit`. `PATCH /api/admin/staff` เดิมยังอยู่เพื่อ client เก่า (= `roles:[role]`)
+* **`super_admin` ห้ามให้ / แก้ / ถอดผ่าน API ทุกกรณี** (ตอบ `403 SUPER_ADMIN_PROTECTED`) ทั้งการส่ง `super_admin` ใน `roles` และการแก้ไขบัญชีที่เป็น super_admin อยู่แล้ว
+* **Audit:** ทุกการเปลี่ยนบันทึกลง `staff_audit_log` ด้วย action `staff_roles` (`old_value`/`new_value` = รายการตำแหน่งคั่นด้วย `,` หรือ `user`)
+* **หน้า `/admin` (Next.js static export → guard ฝั่ง client):** ไม่ได้ล็อกอินหรือไม่มีตำแหน่งทีมงานเลย → `router.replace('/')` โดยไม่ mount คอนโซล จึงไม่มีการเรียก API ของแอดมินเลย (ตรวจจาก `/api/bootstrap` ที่ดึงใหม่ 1 ครั้ง ไม่ใช้แคช 60 วินาที). แท็บที่เห็น = สิทธิ์ที่ union ของตำแหน่งอนุญาต (`moderator` → สมาชิก(อ่าน)/รายงาน, `finance_auditor` → ถอนเงิน(อ่าน)/สมาชิก, `support` → สมาชิก, `ops_manager` → เซิร์ฟเวอร์/เกม, `super_admin` → ทุกแท็บ). API ตอบ 403 ซ้ำทุกเส้นทาง
+* **การ์ดโหนดตามบทบาท (เซิร์ฟเวอร์ Ubuntu และ VPS):** `all`/`game` = CPU, RAM, ห้องต่อสู้, ผู้เล่นออนไลน์, ความจุ Mini (20P/30P/40P) และ 100P (60P/100P/120P), IP/heartbeat; `moderator` = CPU, RAM, สถานะ AI Content Moderation (NSFW + 480p Video Worker), จำนวนรอตรวจ/ตรวจแล้ว (ถ้า heartbeat ส่ง `modPending`/`modProcessed`) และ IP/heartbeat โดย **ไม่แสดง** ห้อง/ผู้เล่น/ปุ่มความจุ; `log` (ตัวติดตั้งรายงานเป็น `logs`) = CPU, RAM, สถานะ PostgreSQL (`pgStatus`) และ IP/heartbeat
+
+### 4.1.2 ยศ 12 ขั้นตามจำนวนลูกข่าย (Downline-Based Rank) — V1.1 รอบที่ 5
+ยศคำนวณจาก **จำนวนลูกข่ายทั้งหมด 5 ชั้น** (`COUNT(*) FROM network_trees WHERE ancestor_id = ? AND depth BETWEEN 1 AND 5`) ไม่ใช้ EXP อีกต่อไป (`users.exp` ยังสะสมและส่งใน bootstrap เป็นสถิติ):
+
+| ยศ | ลูกข่ายขั้นต่ำ | ยศ | ลูกข่ายขั้นต่ำ |
+|---|---|---|---|
+| Bronze I | 0 | Gold I | 250 |
+| Bronze II | 3 | Gold II | 500 |
+| Bronze III | 10 | Gold III | 1,000 |
+| Silver I | 25 | Platinum I | 2,500 |
+| Silver II | 50 | Platinum II | 5,000 |
+| Silver III | 100 | Platinum III | 10,000 |
+
+* ตารางอยู่ที่ `packages/shared/src/ranks` (`RANK_TIERS`, `getRankStatus`); ไอคอน PNG ที่ `/assets/ranks/<family>_<level>.png`
+* `/api/bootstrap` → `user.rank = { id, name, image, family, level, totalDownlines, nextRank: { id, name, image, minDownlines } | null, downlinesNeeded, progress }` และ `/api/social/profile` → `profile.rank` (รูปแบบเดียวกัน)
+* คลิกป้ายยศบนแถบสถานะ (StatusBar) เปิด `RankProgressionModal` (ยศปัจจุบัน ไอคอนใหญ่ จำนวนลูกข่าย แถบความคืบหน้า และตารางครบ 12 ขั้น "ต้องมีลูกข่าย X คน" พร้อมไฮไลต์ขั้นปัจจุบัน) แทนการไปหน้า `/profile`
+
 ### 4.2 Cloudflare D1: `chat_YYYY_MM`
 
 ```sql

@@ -12,7 +12,7 @@ import type { Env, AuthUserPayload } from '../types';
 import { applyRewardSplit } from '../utils/reward-split';
 import { trackQuestAction, getUtcDateKey } from './quests';
 import { isLocalDev, safeEqual } from '../utils/guards';
-import { getStaffRole } from '../middleware/staff';
+import { getStaffRoles } from '../middleware/staff';
 import { authMiddleware } from '../middleware/auth';
 import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, parseAdFormat, utcDateKey, type AdValueSource } from '../utils/ad-value';
@@ -151,7 +151,7 @@ function cfCountry(c: AdCtx): string {
 async function canSimulateMonetized(c: AdCtx) {
   if (isLocalDev(c)) return true;
   if (!c.get('user')) return false;
-  return ['super_admin', 'admin', 'finance_auditor'].includes(await getStaffRole(c));
+  return (await getStaffRoles(c)).some((r) => ['super_admin', 'admin', 'finance_auditor'].includes(r));
 }
 
 /** Start a rewarded video (15 s / 30 s). The server credits it only after the full duration. */

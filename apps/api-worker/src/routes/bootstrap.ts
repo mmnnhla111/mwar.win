@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd, normalizeStaffRole, getRankForExp, microUsdToCents, DAILY_QUESTS_REQUIRED_TO_UNLOCK } from '@mwar/shared';
+import { INITIAL_ENERGY_TICKETS, MAX_ENERGY_TICKETS, PROFILE_COVER_IDS, UI_LANG_CODES, EARNINGS_VISIBILITY, earningsDisplay, formatMicroUsd, normalizeStaffRole, normalizeStaffRoles, primaryStaffRole, getRankStatus, microUsdToCents, DAILY_QUESTS_REQUIRED_TO_UNLOCK } from '@mwar/shared';
 import type { BootstrapResponse, ProfileCoverColor } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { getUtcDateKey, ACTIVE_COMPLETED_SQL } from './quests';
@@ -36,6 +36,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
         `SELECT COALESCE(SUM(CASE WHEN depth = 1 THEN 1 ELSE 0 END), 0) AS direct, COUNT(*) AS total
          FROM network_trees WHERE ancestor_id = ?1 AND depth >= 1`
       ).bind(me.userId),
+      c.env.DB.prepare('SELECT role_key FROM user_staff_roles WHERE user_id = ?1').bind(me.userId),
     ]),
     c.env.CHAT_DB.prepare('SELECT COUNT(*) AS n FROM direct_messages WHERE receiver_id = ?1 AND is_read = 0')
       .bind(me.userId)
@@ -51,14 +52,19 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
   const unreadNotif = Number((core[3].results?.[0] as any)?.n ?? 0);
   const q = (core[2].results?.[0] || {}) as any;
   const net = (core[4].results?.[0] || {}) as any;
-  const rank = getRankForExp(Number(u.exp || 0));
+  // Rank = total downlines over the 5 levels (network_trees depth 1..5), not EXP
+  const rank = getRankStatus(Number(net.total || 0));
 
-  // Owner lock-out protection: SUPER_ADMIN_USERNAMES are always super_admin (written once, then a no-op)
-  let staffRole = normalizeStaffRole(u.staff_role);
-  if (staffRole !== 'super_admin' && isEnvSuperAdmin(c.env, u.username)) {
-    staffRole = 'super_admin';
-    await c.env.DB.prepare("UPDATE users SET staff_role = 'super_admin' WHERE id = ?1").bind(me.userId).run();
+  // Every staff role (union): user_staff_roles rows + legacy users.staff_role. Owner lock-out protection:
+  // SUPER_ADMIN_USERNAMES are always super_admin (written once, then a no-op). Suspended accounts never get here.
+  const roleKeys: string[] = ((core[5].results || []) as any[]).map((r) => String(r.role_key));
+  if (u.staff_role) roleKeys.push(u.staff_role);
+  if (isEnvSuperAdmin(c.env, u.username)) {
+    roleKeys.push('super_admin');
+    if (u.staff_role !== 'super_admin') await c.env.DB.prepare("UPDATE users SET staff_role = 'super_admin' WHERE id = ?1").bind(me.userId).run();
   }
+  const staffRoles = normalizeStaffRoles(roleKeys);
+  const staffRole = primaryStaffRole(staffRoles);
 
   const now = Math.floor(Date.now() / 1000);
   // EC as stored: no passive / hourly regeneration (spec §7.1). Read-only — bootstrap never writes EC.
@@ -74,6 +80,7 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       coverColor: ((PROFILE_COVER_IDS as string[]).includes(u.cover_color) ? u.cover_color : 'lemon') as ProfileCoverColor,
       role: u.role,
       staffRole,
+      staffRoles,
       coverUrl: u.cover_url || null,
       rankBadge: u.rank_badge || null,
       energyTickets: tickets,
@@ -83,8 +90,8 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       showNsfw: u.show_nsfw === 1,
       preferredLang: (UI_LANG_CODES as readonly string[]).includes(u.preferred_lang) ? u.preferred_lang : 'en',
       earningsVisibility: (EARNINGS_VISIBILITY as readonly string[]).includes(u.earnings_visibility) ? u.earnings_visibility : 'public',
-      exp: rank.exp,
-      rank: { id: rank.id, name: rank.name, image: rank.image, nextMinExp: rank.nextMinExp, progress: rank.progress },
+      exp: Number(u.exp || 0),
+      rank,
       coins: Number(u.coins || 0),
     },
     walletSummary: {

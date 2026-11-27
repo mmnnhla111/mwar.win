@@ -149,7 +149,7 @@ export function TopNav() {
               >
                 <Avatar src={user.avatarUrl} name={displayName(user)} size={30} />
                 <span className="text-sm font-bold text-stone-800 truncate">{displayName(user)}</span>
-                <RankBadge rankId={user.rank?.id} name={user.rank?.name} exp={user.exp} size={20} />
+                <RankBadge rankId={user.rank?.id} name={user.rank?.name} size={20} />
               </button>
               {menuOpen && (
                 <div role="menu" className="absolute right-0 mt-2 w-64 bg-white rounded-2xl border border-stone-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.10)] p-1.5 animate-[popIn_160ms_ease-out]">

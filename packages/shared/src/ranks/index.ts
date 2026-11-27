@@ -1,6 +1,6 @@
 /**
- * Player rank tiers by EXP. EXP grows from cumulative paid matches entered and kills:
- * EXP = matches × EXP_PER_MATCH + kills × EXP_PER_KILL (backfilled by migration 0017).
+ * Player rank = total network downlines across the 5 MLM levels (network_trees depth 1..5), V1.1.
+ * `users.exp` (matches x 20 + kills x 5) is still tracked and shown as a stat, but no longer sets the rank.
  */
 export const EXP_PER_MATCH = 20;
 export const EXP_PER_KILL = 5;
@@ -15,40 +15,57 @@ export interface RankTier {
   level: 1 | 2 | 3;
   /** e.g. "Bronze I" */
   name: string;
-  minExp: number;
+  /** Total downlines (5 levels) needed to hold this tier. */
+  minDownlines: number;
 }
 
 const ROMAN = ['I', 'II', 'III'] as const;
 const FAMILY_NAMES: Record<RankFamily, string> = { bronze: 'Bronze', silver: 'Silver', gold: 'Gold', platinum: 'Platinum' };
 
-function tier(family: RankFamily, level: 1 | 2 | 3, minExp: number): RankTier {
-  return { id: `${family}_${level}`, family, level, name: `${FAMILY_NAMES[family]} ${ROMAN[level - 1]}`, minExp };
+function tier(family: RankFamily, level: 1 | 2 | 3, minDownlines: number): RankTier {
+  return { id: `${family}_${level}`, family, level, name: `${FAMILY_NAMES[family]} ${ROMAN[level - 1]}`, minDownlines };
 }
 
-/** Ascending by minExp. */
+/** The 12-tier ladder, ascending by minDownlines. */
 export const RANK_TIERS: readonly RankTier[] = [
   tier('bronze', 1, 0),
-  tier('bronze', 2, 100),
-  tier('bronze', 3, 200),
-  tier('silver', 1, 300),
-  tier('silver', 2, 450),
-  tier('silver', 3, 600),
-  tier('gold', 1, 900),
-  tier('gold', 2, 1200),
-  tier('gold', 3, 1600),
-  tier('platinum', 1, 2000),
-  tier('platinum', 2, 2500),
-  tier('platinum', 3, 3000),
+  tier('bronze', 2, 3),
+  tier('bronze', 3, 10),
+  tier('silver', 1, 25),
+  tier('silver', 2, 50),
+  tier('silver', 3, 100),
+  tier('gold', 1, 250),
+  tier('gold', 2, 500),
+  tier('gold', 3, 1000),
+  tier('platinum', 1, 2500),
+  tier('platinum', 2, 5000),
+  tier('platinum', 3, 10000),
 ];
 
 export interface RankInfo extends RankTier {
-  exp: number;
-  /** EXP where the next tier starts, null at the top tier. */
-  nextMinExp: number | null;
+  totalDownlines: number;
+  /** Downlines where the next tier starts, null at the top tier. */
+  nextMinDownlines: number | null;
   /** 0..1 progress inside the current tier (1 at the top tier). */
   progress: number;
   /** "/assets/ranks/bronze_1.png" */
   image: string;
+}
+
+/** The shape exposed by /api/bootstrap (`user.rank`) and the profile endpoints. */
+export interface PlayerRankStatus {
+  /** Current tier id, name and badge image. */
+  id: string;
+  name: string;
+  image: string;
+  family: RankFamily;
+  level: 1 | 2 | 3;
+  totalDownlines: number;
+  nextRank: { id: string; name: string; image: string; minDownlines: number } | null;
+  /** Downlines still missing for nextRank (0 at the top tier). */
+  downlinesNeeded: number;
+  /** 0..1 progress towards nextRank. */
+  progress: number;
 }
 
 export function rankImagePath(id: string): string {
@@ -59,14 +76,30 @@ export function expFromStats(totalMatches: number, totalKills: number): number {
   return Math.max(0, Math.floor(totalMatches || 0)) * EXP_PER_MATCH + Math.max(0, Math.floor(totalKills || 0)) * EXP_PER_KILL;
 }
 
-export function getRankForExp(expRaw: number): RankInfo {
-  const exp = Math.max(0, Math.floor(Number(expRaw) || 0));
+export function getRankForDownlines(downlinesRaw: number): RankInfo {
+  const totalDownlines = Math.max(0, Math.floor(Number(downlinesRaw) || 0));
   let idx = 0;
-  for (let i = 0; i < RANK_TIERS.length; i++) if (exp >= RANK_TIERS[i].minExp) idx = i;
+  for (let i = 0; i < RANK_TIERS.length; i++) if (totalDownlines >= RANK_TIERS[i].minDownlines) idx = i;
   const cur = RANK_TIERS[idx];
   const next = RANK_TIERS[idx + 1];
-  const progress = next ? (exp - cur.minExp) / (next.minExp - cur.minExp) : 1;
-  return { ...cur, exp, nextMinExp: next ? next.minExp : null, progress, image: rankImagePath(cur.id) };
+  const progress = next ? (totalDownlines - cur.minDownlines) / (next.minDownlines - cur.minDownlines) : 1;
+  return { ...cur, totalDownlines, nextMinDownlines: next ? next.minDownlines : null, progress, image: rankImagePath(cur.id) };
+}
+
+export function getRankStatus(downlinesRaw: number): PlayerRankStatus {
+  const r = getRankForDownlines(downlinesRaw);
+  const next = RANK_TIERS[RANK_TIERS.findIndex((x) => x.id === r.id) + 1];
+  return {
+    id: r.id,
+    name: r.name,
+    image: r.image,
+    family: r.family,
+    level: r.level,
+    totalDownlines: r.totalDownlines,
+    nextRank: next ? { id: next.id, name: next.name, image: rankImagePath(next.id), minDownlines: next.minDownlines } : null,
+    downlinesNeeded: next ? Math.max(0, next.minDownlines - r.totalDownlines) : 0,
+    progress: r.progress,
+  };
 }
 
 // ---- Daily missions (MLM lock) ------------------------------------------------------------------

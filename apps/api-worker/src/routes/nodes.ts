@@ -518,7 +518,13 @@ nodesRouter.post('/heartbeat', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const nodeId = body.nodeId || body.node_id || 'mwar-game-server-1';
   const nodeName = body.nodeName || body.node_name || nodeId;
-  const role = body.role || 'all';
+  // 'logs' (installer) and 'log' are the same role; stored as sent, the admin UI treats both as log-only
+  const role = ['all', 'game', 'logs', 'log', 'moderator'].includes(String(body.role)) ? String(body.role) : 'all';
+  const optInt = (v: unknown) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Math.max(0, Math.floor(Number(v))));
+  const modPending = optInt(body.modPending ?? body.mod_pending);
+  const modProcessed = optInt(body.modProcessed ?? body.mod_processed);
+  const pgRaw = String(body.pgStatus ?? body.pg_status ?? '').toLowerCase();
+  const pgStatus = pgRaw === 'ok' || pgRaw === 'down' ? pgRaw : null;
   const cpuUsage = Number(body.cpuUsage ?? body.cpu_usage ?? 0.0);
   const ramUsage = Number(body.ramUsage ?? body.ram_usage ?? 0.0);
   const activeRooms = Number(body.activeRooms ?? body.active_rooms ?? 0);
@@ -530,9 +536,9 @@ nodesRouter.post('/heartbeat', async (c) => {
     .prepare(`
       INSERT INTO game_nodes (
         id, node_name, role, status, ip_address, cpu_usage, ram_usage,
-        active_rooms, player_count, tunnel_hostname, last_heartbeat
+        active_rooms, player_count, tunnel_hostname, last_heartbeat, mod_pending, mod_processed, pg_status
       )
-      VALUES (?1, ?2, ?3, 'online', ?4, ?5, ?6, ?7, ?8, ?9, unixepoch())
+      VALUES (?1, ?2, ?3, 'online', ?4, ?5, ?6, ?7, ?8, ?9, unixepoch(), ?10, ?11, ?12)
       ON CONFLICT(id) DO UPDATE SET
         node_name = excluded.node_name,
         role = excluded.role,
@@ -543,9 +549,12 @@ nodesRouter.post('/heartbeat', async (c) => {
         active_rooms = excluded.active_rooms,
         player_count = excluded.player_count,
         tunnel_hostname = COALESCE(excluded.tunnel_hostname, game_nodes.tunnel_hostname),
-        last_heartbeat = unixepoch()
+        last_heartbeat = unixepoch(),
+        mod_pending = COALESCE(excluded.mod_pending, game_nodes.mod_pending),
+        mod_processed = COALESCE(excluded.mod_processed, game_nodes.mod_processed),
+        pg_status = COALESCE(excluded.pg_status, game_nodes.pg_status)
     `)
-    .bind(nodeId, nodeName, role, ipAddress, cpuUsage, ramUsage, activeRooms, playerCount, tunnelHostname)
+    .bind(nodeId, nodeName, role, ipAddress, cpuUsage, ramUsage, activeRooms, playerCount, tunnelHostname, modPending, modProcessed, pgStatus)
     .run();
 
   return c.json({
@@ -568,7 +577,7 @@ nodesRouter.get('/', requireAdminOrAuditor, async (c) => {
       SELECT 
         id, node_name, role, ip_address, region, cpu_usage, ram_usage,
         active_rooms, player_count, room_capacity_mini, room_capacity_fast,
-        tunnel_hostname, last_heartbeat, created_at,
+        tunnel_hostname, last_heartbeat, created_at, mod_pending, mod_processed, pg_status,
         CASE 
           WHEN last_heartbeat IS NOT NULL AND (unixepoch() - last_heartbeat) < 420 THEN 'online'
           ELSE 'offline'
