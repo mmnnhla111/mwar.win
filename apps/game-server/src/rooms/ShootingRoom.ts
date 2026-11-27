@@ -148,6 +148,14 @@ interface SessionMeta {
   ticketId: string;
   ticketValue: number;
   ticketLive: boolean;
+  /** V1.1 R2: this seat entered (or re-entered) a Paid-EC room with a ticket → its deaths need "Play again (-1 EC)". */
+  paidSeat: boolean;
+  /** Entry id of the life in play (the Worker chains "Play again" entries to it). */
+  entryId: string;
+  /** V1.1 R2 Fast & Mini: the seat's banner pot id (= its signed entry id), '' for guests. */
+  fmPot: string;
+  /** ms timestamp of the last death (Fast & Mini: pot credits after it fund the next life). */
+  diedAt?: number;
 }
 
 /** A victim's stake taken at death (travels with the kill payout or the death chest). */
@@ -158,7 +166,12 @@ interface TicketStake {
   value: number;
 }
 
-/** Combat death → respawn delay (ELIMINATED overlay on the client). */
+/**
+ * Minimum time on the death screen before a FREE "Play again" (Fast & Mini / unpaid seats).
+ * V1.1 R2: there is no automatic respawn in any server room any more — Paid-EC seats need a new
+ * ticket ("Play again (-1 EC)" → player_restake), everyone else presses "Play again" (player_respawn).
+ * Countdown auto-respawn exists only in client-side Practice / Solo Bot mode.
+ */
 const RESPAWN_DELAY_MS = 3000;
 /** Gunshot radar blips are relayed this far (web minimap radius 70 m + 10 m slack). */
 const FIRE_BLIP_RELAY_RANGE_M = 80;
@@ -180,6 +193,10 @@ export interface EntryTokenClaims {
   tid: string;
   /** V1.1: the ticket's real backed µUSD (what killing this player pays). */
   tv: number;
+  /** V1.1 R2: Fast & Mini seat token (0 EC, no ticket — kills pay the victim's banner pot via the Worker). */
+  fm: boolean;
+  /** V1.1 R2: "Play again (-1 EC)" token (a new ticket for a dead player of the same account). */
+  rs: boolean;
 }
 
 /** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
@@ -203,6 +220,8 @@ export function verifyEntryToken(token: unknown, secret: string): EntryTokenClai
       rc: typeof json.rc === 'string' ? json.rc : '',
       tid,
       tv: tid && Number.isFinite(tv) && tv > 0 ? Math.floor(tv) : 0,
+      fm: json.fm === 1 || json.fm === true,
+      rs: json.rs === 1 || json.rs === true,
     };
   } catch {
     return null;
@@ -221,10 +240,16 @@ export class ShootingRoom extends Room<GameState> {
   private chestStake = new Map<string, TicketStake>();
   /** Unique id per queued payout item (the Worker de-duplicates re-sent batches with it). */
   private payoutSeq = 0;
+  /** Head bounty the last elimination moved to the killer (for the victim's death summary). */
+  private lastBountyLost = 0;
   /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
   private pairKills = new Map<string, number[]>();
   private usedEntryIds = new Set<string>();
   private largeMap = false;
+  /** V1.1 R2: Fast & Mini (free, banner-pot kills) — no tickets, no head bounty. */
+  private fastMini = false;
+  /** V1.1 R2: Paid-EC room (Skirmish / Warzone with an entry cost): paid seats re-stake after each death. */
+  private paidRoom = true;
   private spawnPoints: Array<{ x: number; y: number; z: number }> = ARENA_SPAWN_POINTS;
   /** sessionId → medkit cast in progress (start time + position; any movement cancels). */
   private medkitCasts = new Map<string, { startedAt: number; x: number; z: number }>();
@@ -263,6 +288,8 @@ export class ShootingRoom extends Room<GameState> {
     } else {
       this.maxClients = spec.maxPlayers;
     }
+    this.fastMini = engineMode === 'fast_mini';
+    this.paidRoom = !this.fastMini && (reg ? reg.entryCostEc > 0 : true);
     this.setMetadata({ roomCode: this.roomCode, mode: engineMode, mapSize: kind });
     this.state.mapMode = engineMode === 'fast_mini' ? 'fast_mini' : spec.id;
     this.state.mapSizeX = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
@@ -586,13 +613,46 @@ export class ShootingRoom extends Room<GameState> {
       }
     });
 
-    // Respawn request (fallback; the 20 Hz loop also respawns automatically after 3 s)
+    // V1.1 R2: FREE "Play again" (Fast & Mini, unpaid / guest seats). A Paid-EC seat must re-stake instead.
     this.onMessage('player_respawn', (client, data: { x: number; y: number; z: number; primary?: string }) => {
       const player = this.state.players.get(client.sessionId);
-      const m = this.meta.get(client.sessionId) as (SessionMeta & { diedAt?: number; lastMoveAt?: number }) | undefined;
+      const m = this.meta.get(client.sessionId) as (SessionMeta & { lastMoveAt?: number }) | undefined;
       if (!player || player.isSpectator || !player.isGhost || !m?.diedAt || Date.now() - m.diedAt < RESPAWN_DELAY_MS) return;
+      if (this.needsRestake(m)) {
+        client.send('restake_required', { roomCode: this.roomCode, entryId: m.entryId });
+        return;
+      }
       void data;
       this.respawnPlayer(client.sessionId, player);
+    });
+
+    // V1.1 R2: "Play again (-1 EC)" — the client got a NEW signed ticket token from POST /api/game/enter
+    // { restakeAfter }. Same HMAC + single-use eid rules as a join; only for a dead player of the same
+    // account in the same room. A token that cannot be applied (already alive) is returned to the Worker.
+    this.onMessage('player_restake', (client, data: { entryToken?: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      const m = this.meta.get(client.sessionId);
+      if (!player || !m || player.isSpectator) return;
+      const entry = verifyEntryToken(data?.entryToken, this.internalSecret);
+      const fail = (reason: string) => client.send('restake_result', { ok: false, reason });
+      if (!entry || !entry.tid || entry.fm || this.fastMini || entry.rc !== this.roomCode) return fail('invalid_token');
+      if (entry.uid !== player.id || !UUID_RE.test(player.id)) return fail('wrong_account');
+      if (this.usedEntryIds.has(entry.eid)) return fail('used_token');
+      this.usedEntryIds.add(entry.eid);
+      if (!player.isGhost || m.ticketLive) {
+        // Already alive / still staked: this ticket was never at stake → back to available
+        this.pendingPayouts.push({ userId: player.id, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId: this.gameId, metadata: { ticketId: entry.tid, entryId: entry.eid, reason: 'not_dead', pid: this.nextPid() } });
+        return fail('not_dead');
+      }
+      m.paid = true;
+      m.paidSeat = true;
+      m.entryId = entry.eid;
+      m.ticketId = entry.tid;
+      m.ticketValue = entry.tv;
+      m.ticketLive = true;
+      player.ticketMicroUsd = entry.tv;
+      this.respawnPlayer(client.sessionId, player);
+      client.send('restake_result', { ok: true, entryId: entry.eid, ticketMicroUsd: entry.tv });
     });
 
     // Anti-AFK Captcha Verification Response
@@ -680,7 +740,7 @@ export class ShootingRoom extends Room<GameState> {
     target.health = 0;
     target.isGhost = true;
     target.deaths += 1;
-    const tm = this.meta.get(targetSessionId) as (SessionMeta & { diedAt?: number }) | undefined;
+    const tm = this.meta.get(targetSessionId);
     if (tm) tm.diedAt = Date.now();
     this.medkitCasts.delete(targetSessionId);
     // Any death: 20 % chance to drop a medkit (10-minute despawn)
@@ -707,6 +767,8 @@ export class ShootingRoom extends Room<GameState> {
       // V1.1: the kill is worth exactly the victim's live ticket value (real ad backing), never a constant
       const stake = this.takeStake(targetSessionId, target);
       let killReward = 0;
+      // V1.1 R2 Fast & Mini: the Worker pays 90 % of the victim's own verified banner pot (amount decided there)
+      const fastMiniQueued = this.fastMini && !collusion ? this.queueFastMiniKill(killerSessionId, killer, targetSessionId, target) : false;
       if (stake && !collusion) {
         killReward = this.queuePayout(killerSessionId, killer, stake.value, 'GAME_KILL', {
           victimId: target.id,
@@ -718,8 +780,10 @@ export class ShootingRoom extends Room<GameState> {
       if (stake && !this.stakeQueued(stake.ticketId)) this.queueTicketForfeit(stake, collusion ? 'collusion' : 'unpaid_kill');
       // The killer claims the victim's whole accumulated head bounty (never on a collusion kill)
       const vm = this.meta.get(targetSessionId);
-      const bountyClaimed = collusion ? 0 : this.queueBountyClaim(killerSessionId, killer, target.bountyMicroUsd, target.id, vm?.ticketId ?? '');
+      // (Fast & Mini has no head bounty: 0 %)
+      const bountyClaimed = collusion || this.fastMini ? 0 : this.queueBountyClaim(killerSessionId, killer, target.bountyMicroUsd, target.id, vm?.ticketId ?? '');
       if (bountyClaimed > 0) target.bountyMicroUsd = 0;
+      this.lastBountyLost = bountyClaimed;
 
       this.broadcast('player_killed', {
         killerId: killer.id,
@@ -730,6 +794,8 @@ export class ShootingRoom extends Room<GameState> {
         bountyClaimedMicroUsd: bountyClaimed,
         /** The victim's ticket value V that was split 55/15/5/5/20 (0 = no live ticket). */
         ticketMicroUsd: stake && this.stakeQueued(stake.ticketId) ? stake.value : 0,
+        /** Fast & Mini: the victim's banner pot is settled by the Worker (fast_mini_reward follows). */
+        fastMini: fastMiniQueued,
       });
     } else {
       // 2. Suicide / Non-Player death:
@@ -741,14 +807,25 @@ export class ShootingRoom extends Room<GameState> {
       });
     }
 
-    // Notify victim they are now in Ghost spectator mode
+    // Notify the victim: V1.1 R2 death & round summary — no automatic respawn in any server room
     const victimClient = this.clients.find((c) => c.sessionId === targetSessionId);
     if (victimClient) {
       victimClient.send('player_eliminated', {
         killerUsername: killer?.username ?? null,
         respawnInMs: RESPAWN_DELAY_MS,
+        /** 'restake' = Paid-EC seat: "Play again (-1 EC)" / lobby · 'free' = Fast & Mini / unpaid: "Play again" free */
+        respawnMode: tm && this.needsRestake(tm) ? 'restake' : 'free',
+        fastMini: this.fastMini,
+        roomCode: this.roomCode,
+        entryId: tm?.entryId ?? '',
+        kills: target.kills,
+        deaths: target.deaths,
+        sessionEarningsMicroUsd: target.sessionEarningsMicroUsd,
+        bountyMicroUsd: target.bountyMicroUsd,
+        bountyLostMicroUsd: killer && killerSessionId !== targetSessionId ? Math.max(0, this.lastBountyLost) : 0,
       });
     }
+    this.lastBountyLost = 0;
   }
 
   private handleChestHit(shooter: PlayerState, shooterClient: Client, chestId: string, damage: number) {
@@ -921,7 +998,7 @@ export class ShootingRoom extends Room<GameState> {
 
   /** Clean respawn: full HP, fresh starting ammo, new spawn point — synced to every client. */
   private respawnPlayer(sessionId: string, player: PlayerState) {
-    const m = this.meta.get(sessionId) as (SessionMeta & { diedAt?: number; lastMoveAt?: number }) | undefined;
+    const m = this.meta.get(sessionId) as (SessionMeta & { lastMoveAt?: number }) | undefined;
     const point = this.pickRespawnPoint(player);
     player.x = point.x;
     player.y = point.y;
@@ -985,12 +1062,7 @@ export class ShootingRoom extends Room<GameState> {
     this.state.activeDroppedWeaponsCount = this.state.droppedWeapons.size;
 
     // 3. Anti-AFK Detection Check
-    // 3a. Combat death → clean respawn after 3 s (server authoritative: hp, ammo, spawn point)
-    this.state.players.forEach((player, sessionId) => {
-      if (!player.isGhost || player.isSpectator) return;
-      const dm = this.meta.get(sessionId) as (SessionMeta & { diedAt?: number }) | undefined;
-      if (dm?.diedAt && now - dm.diedAt >= RESPAWN_DELAY_MS) this.respawnPlayer(sessionId, player);
-    });
+    // (V1.1 R2: no automatic respawn — dead players wait on the death & round summary until they choose)
 
     this.state.players.forEach((player, sessionId) => {
       if (player.isSpectator) return; // spectators are never AFK-kicked by combat rules
@@ -1040,6 +1112,7 @@ export class ShootingRoom extends Room<GameState> {
         }
         return false;
       }
+      if (p.userId === player.id && p.actionType === 'FAST_MINI_KILL') return false; // never paid: the victim's pot stays theirs
       if (p.userId === player.id && p.actionType === 'BOUNTY_CLAIM') {
         unsent += p.amountMicroUsd; // not sent yet: the victim simply keeps that bounty
         return false;
@@ -1078,7 +1151,11 @@ export class ShootingRoom extends Room<GameState> {
             payouts: payoutsToFlush,
           }),
         });
-        if (res.ok) return true;
+        if (res.ok) {
+          const j = (await res.json().catch(() => null)) as { fastMini?: Array<{ killerId: string; victimId: string; status: string; valueMicroUsd: number; shooterMicroUsd: number }> } | null;
+          if (j && Array.isArray(j.fastMini)) this.applyFastMiniResults(j.fastMini);
+          return true;
+        }
       } catch {
         // connection error → re-queue below
       }
@@ -1128,8 +1205,15 @@ export class ShootingRoom extends Room<GameState> {
     }
     const entry = verifyEntryToken(options?.entryToken, this.internalSecret);
     // A paid ticket only counts in the room it was bought for (entry cost is set per room)
-    const paid = !!entry && !this.usedEntryIds.has(entry.eid) && entry.rc === this.roomCode;
-    if (paid && entry) this.usedEntryIds.add(entry.eid);
+    const valid = !!entry && !this.usedEntryIds.has(entry.eid) && entry.rc === this.roomCode;
+    if (valid && entry) this.usedEntryIds.add(entry.eid);
+    // V1.1 R2: Fast & Mini seats carry a banner pot, never a ticket; ticket seats exist only outside Fast & Mini
+    const fmSeat = valid && !!entry && this.fastMini && entry.fm;
+    const paid = valid && !!entry && !this.fastMini && !entry.fm;
+    if (valid && entry && this.fastMini && entry.tid && UUID_RE.test(entry.uid)) {
+      // A ticket token in a free room was never at stake → back to available (defensive; the Worker never issues one)
+      this.pendingPayouts.push({ userId: entry.uid, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId: this.gameId, metadata: { ticketId: entry.tid, entryId: entry.eid, reason: 'free_room', pid: this.nextPid() } });
+    }
     this.meta.set(client.sessionId, {
       paid,
       ip,
@@ -1143,6 +1227,9 @@ export class ShootingRoom extends Room<GameState> {
       ticketId: paid && entry ? entry.tid : '',
       ticketValue: paid && entry ? entry.tv : 0,
       ticketLive: !!(paid && entry && entry.tid),
+      paidSeat: !!(paid && entry && entry.tid),
+      entryId: valid && entry ? entry.eid : '',
+      fmPot: fmSeat && entry && UUID_RE.test(entry.eid) && UUID_RE.test(entry.uid) ? entry.eid : '',
     });
     return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0, ticket: paid ? entry.tv : 0 } : { userId: null };
   }
@@ -1196,6 +1283,53 @@ export class ShootingRoom extends Room<GameState> {
     return this.pendingPayouts.some(
       (p) => (p.actionType === 'GAME_KILL' || p.actionType === 'CHEST_OPEN') && (p.metadata as Record<string, unknown> | undefined)?.ticketId === ticketId
     );
+  }
+
+  /** V1.1 R2: a Paid-EC seat (entered with a ticket in a paid room) must re-stake to play again. */
+  private needsRestake(m: SessionMeta) {
+    return this.paidRoom && !this.fastMini && m.paidSeat;
+  }
+
+  /**
+   * V1.1 R2 Fast & Mini kill: queue FAST_MINI_KILL for the Worker, which pays the killer 90 % of the
+   * VICTIM's own verified banner pot (credits up to `diedAt`) and 10 % to the platform. The amount is
+   * never decided here. Both seats must be signed Fast & Mini seats; flagged shooters get nothing.
+   */
+  private queueFastMiniKill(killerSession: string, killer: PlayerState, victimSession: string, victim: PlayerState) {
+    const km = this.meta.get(killerSession);
+    const vm = this.meta.get(victimSession);
+    if (!km?.fmPot || km.flagged || !vm?.fmPot || !UUID_RE.test(killer.id) || !UUID_RE.test(victim.id) || killer.id === victim.id) return false;
+    this.pendingPayouts.push({
+      userId: killer.id,
+      amountMicroUsd: 0,
+      actionType: 'FAST_MINI_KILL',
+      gameId: this.gameId,
+      metadata: { victimId: victim.id, victimSession, potId: vm.fmPot, diedAt: vm.diedAt ?? Date.now(), hits: km.hits, headshots: km.headshots, pid: this.nextPid() },
+    });
+    return true;
+  }
+
+  private queueFastMiniClose(userId: string, potId: string, reason: string) {
+    if (!UUID_RE.test(userId) || !potId) return;
+    this.pendingPayouts.push({ userId, amountMicroUsd: 0, actionType: 'FAST_MINI_CLOSE', gameId: this.gameId, metadata: { potId, reason, pid: this.nextPid() } });
+  }
+
+  /** What the Worker really paid for Fast & Mini kills → HUD round earnings + a message to killer and victim. */
+  private applyFastMiniResults(list: Array<{ killerId: string; victimId: string; status: string; valueMicroUsd: number; shooterMicroUsd: number }>) {
+    for (const r of list) {
+      if (r.status !== 'paid') continue;
+      const shooter = Math.max(0, Math.floor(Number(r.shooterMicroUsd) || 0));
+      this.state.players.forEach((p, sid) => {
+        if (p.id === r.killerId) {
+          const m = this.meta.get(sid);
+          if (m) m.earned += shooter;
+          p.sessionEarningsMicroUsd += shooter;
+          this.clients.find((c) => c.sessionId === sid)?.send('fast_mini_reward', { victimId: r.victimId, valueMicroUsd: r.valueMicroUsd, shooterMicroUsd: shooter });
+        } else if (p.id === r.victimId) {
+          this.clients.find((c) => c.sessionId === sid)?.send('fast_mini_pot_lost', { killerId: r.killerId, valueMicroUsd: r.valueMicroUsd });
+        }
+      });
+    }
   }
 
   /** Queue the transfer of a victim's accumulated head bounty to the claimer (paid seats only). */
@@ -1311,6 +1445,9 @@ export class ShootingRoom extends Room<GameState> {
         }
         sm.paid = false;
         sm.ticketLive = false;
+        sm.paidSeat = false;
+        if (sm.fmPot) this.queueFastMiniClose(player.id, sm.fmPot, 'spectator');
+        sm.fmPot = '';
       }
     }
 
@@ -1360,6 +1497,10 @@ export class ShootingRoom extends Room<GameState> {
     // zero-deficit choice: the ticket is not refunded, its backing goes to the platform
     const stake = this.takeStake(client.sessionId, player);
     if (stake) this.queueTicketForfeit(stake, player.afkKicked ? 'afk_kick' : 'left');
+    // V1.1 R2 Fast & Mini: the pot closes with the seat (its unpaid credits → platform, by the Worker)
+    const lm = this.meta.get(client.sessionId);
+    if (lm?.fmPot) this.queueFastMiniClose(player.id, lm.fmPot, player.afkKicked ? 'afk_kick' : 'left');
+    if (lm) lm.fmPot = '';
     this.state.players.delete(client.sessionId);
     this.meta.delete(client.sessionId);
     this.state.activePlayersCount = this.state.players.size;
@@ -1377,6 +1518,12 @@ export class ShootingRoom extends Room<GameState> {
   }
 
   async onDispose() {
+    // V1.1 R2: Fast & Mini seats still present (no onLeave) → close their pots
+    for (const [sid, m] of this.meta) {
+      const p = this.state.players.get(sid);
+      if (m.fmPot && p) this.queueFastMiniClose(p.id, m.fmPot, 'room_closed');
+      m.fmPot = '';
+    }
     // V1.1: unopened death chests still hold ticket stakes → close them (backing → platform)
     for (const [id, stake] of this.chestStake) {
       this.chestStake.delete(id);

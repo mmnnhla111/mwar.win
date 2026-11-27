@@ -171,6 +171,12 @@ export default function GamesPage() {
         </button>
       </div>
 
+      {data?.gameServersOnline === false && (
+        <p className="text-xs font-semibold text-stone-500 -mt-2" data-rooms-offline>
+          {t('rooms.offlineNotice')}
+        </p>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2">
         {(games || [FALLBACK_FPS]).map((g) => (
           <GameCard key={g.id} g={g} loaded={!!games} />

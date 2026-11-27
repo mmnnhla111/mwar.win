@@ -7,16 +7,19 @@ import {
   ROOM_MODE_ENGINE,
   EXP_PER_MATCH,
   EXP_PER_KILL,
+  STALE_MATCH_TICKET_SECONDS,
+  RESTAKE_REISSUE_SECONDS,
 } from '@mwar/shared';
 import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { applyRewardSplit, claimHeadBounty } from '../utils/reward-split';
 import { ledgerClampedDebit, recordDeviceLink } from '../utils/ledger';
-import { forfeitStake, isSettleConflict, loadVictimStake, lockEntryTickets, settleStakeStmt, unlockEntryTickets } from '../utils/energy-tickets';
+import { forfeitStake, isSettleConflict, loadVictimStake, lockEntryTickets, returnUnusedStake, settleStakeStmt, unlockEntryTickets } from '../utils/energy-tickets';
+import { closeFastMiniPot, openPotStmt, settleFastMiniKill, type FastMiniKillResult } from '../utils/fast-mini';
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { trackQuestAction, getUtcDateKey } from './quests';
-import { loadRooms } from './games';
+import { loadRooms, gameServersOnline, fpsRoomsBody } from './games';
 
 export const gameRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -39,7 +42,35 @@ async function signEntryToken(secret: string, payload: Record<string, unknown>) 
  * exactly that value — never a constant. EC never regenerates over time (spec §7.3).
  * Returns a 2-minute signed entry token for the game server: only players who join with a valid token
  * earn Micro-USD (guests / token-less joins play for free, no payouts).
+ *
+ * V1.1 Round 2:
+ *  · No entry while every game server is offline (503 GAME_SERVERS_OFFLINE) — no EC is ever locked for
+ *    a room that cannot be joined.
+ *  · Fast & Mini is free: no ticket, never any EC; a signed token with `fm: 1` + a banner pot (id = eid).
+ *  · "Play again (-1 EC)" after a death in a Paid-EC room: `{ roomCode, restakeAfter: <entryId of the
+ *    life that just ended> }` locks ONE new ticket for a NEW entry that names the entry it follows (UNIQUE:
+ *    one successor per entry → never two tickets for one death). A retry within 120 s gets the same
+ *    entry's token back (the game server accepts each eid once), so a lost response never costs twice.
  */
+type EnterTokenInput = { mode: string; roomCode: string; entryId: string; ticketIds: string[]; backedMicroUsd: number; restake: boolean };
+
+async function signPaidToken(c: { env: Env }, user: AuthUserPayload, t: EnterTokenInput, now: number) {
+  const bountyRow = await c.env.DB.prepare('SELECT bounty_micro_usd FROM wallets WHERE user_id = ?1').bind(user.userId).first<{ bounty_micro_usd: number }>();
+  return signEntryToken(c.env.INTERNAL_API_SECRET, {
+    uid: user.userId,
+    un: user.username,
+    bty: bountyRow?.bounty_micro_usd ?? 0, // current head bounty (shown in-match, claimed by the killer)
+    eid: t.entryId,
+    tid: t.ticketIds[0], // ticket row the game server must name when it settles this life
+    tv: t.backedMicroUsd, // the ticket's real backed µUSD = what a kill on this player pays
+    tn: t.ticketIds.length,
+    mode: t.mode,
+    rc: t.roomCode || undefined, // the game server only accepts the token in this room
+    rs: t.restake ? 1 : undefined, // "Play again" token: only accepted for a dead player of the same account
+    exp: now + 120,
+  });
+}
+
 gameRouter.post('/enter', authMiddleware, async (c) => {
   const user = c.get('user');
   const body = await c.req.json().catch(() => ({}));
@@ -54,24 +85,89 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     mode = ROOM_MODE_ENGINE[cfg.mode];
     cost = cfg.entryCostEc;
   }
+  // Fast & Mini never costs EC (whatever the registry row says)
+  if (mode === 'fast_mini') cost = 0;
   const now = Math.floor(Date.now() / 1000);
-  // Free room: no EC spent and no entry token, so the match plays without cash payouts
-  if (cost <= 0) {
-    const left0 = await c.env.DB.prepare('SELECT energy_tickets FROM users WHERE id = ?1').bind(user.userId).first<{ energy_tickets: number }>();
-    return c.json({ success: true, free: true, entryToken: null, energyTickets: left0?.energy_tickets ?? 0 });
+  // R2: live PvP needs an online game server (heartbeat ≤ 90 s or the live /rooms check)
+  if (!(await gameServersOnline(c))) {
+    return c.json({ error: 'Live PvP servers are offline right now. Practice mode is still open.', code: 'GAME_SERVERS_OFFLINE' }, 503);
   }
+  const ecLeft = async () =>
+    Number((await c.env.DB.prepare('SELECT energy_tickets FROM users WHERE id = ?1').bind(user.userId).first<{ energy_tickets: number }>())?.energy_tickets ?? 0);
+
+  if (mode === 'fast_mini') {
+    // Free entry + banner pot: kills pay 90 % of the victim's own verified banner value (Worker ledger)
+    c.executionCtx.waitUntil(recordDeviceLink(c.env.DB, c.env.JWT_SECRET, user.userId, c.req.header('CF-Connecting-IP')));
+    const entryId = crypto.randomUUID();
+    await c.env.DB.batch([
+      c.env.DB.prepare('INSERT INTO arena_entries (id, user_id, room_mode, created_at, room_code) VALUES (?1, ?2, ?3, ?4, ?5)').bind(entryId, user.userId, mode, now, roomCode || null),
+      openPotStmt(c.env, entryId, user.userId, roomCode || null, now),
+    ]);
+    const entryToken = await signEntryToken(c.env.INTERNAL_API_SECRET, { uid: user.userId, un: user.username, bty: 0, eid: entryId, fm: 1, mode, rc: roomCode || undefined, exp: now + 120 });
+    return c.json({ success: true, free: true, fastMini: true, entryToken, entryId, potId: entryId, energyTickets: await ecLeft() });
+  }
+  // Other free room: no EC spent and no entry token, so the match plays without cash payouts
+  if (cost <= 0) {
+    return c.json({ success: true, free: true, entryToken: null, energyTickets: await ecLeft() });
+  }
+
+  const prevId = typeof body?.restakeAfter === 'string' ? body.restakeAfter.slice(0, 64) : '';
+  if (prevId) {
+    const prev = await c.env.DB
+      .prepare('SELECT user_id, room_mode, room_code, created_at FROM arena_entries WHERE id = ?1')
+      .bind(prevId)
+      .first<{ user_id: string; room_mode: string; room_code: string | null; created_at: number }>();
+    if (!prev || prev.user_id !== user.userId || prev.room_mode !== mode || (prev.room_code || '') !== roomCode || now - prev.created_at > STALE_MATCH_TICKET_SECONDS) {
+      return c.json({ error: 'This round cannot be continued — rejoin from the lobby', code: 'RESTAKE_INVALID' }, 400);
+    }
+    const next = await c.env.DB.prepare('SELECT id, created_at FROM arena_entries WHERE prev_entry_id = ?1').bind(prevId).first<{ id: string; created_at: number }>();
+    if (next) {
+      // Idempotent retry: the same successor entry's token again (never a second ticket for one death)
+      const rows = await c.env.DB
+        .prepare("SELECT id, backed_micro_usd FROM user_energy_tickets WHERE match_id = ?1 AND user_id = ?2 AND status = 'in_match' ORDER BY created_at ASC, id ASC")
+        .bind(next.id, user.userId)
+        .all<{ id: string; backed_micro_usd: number }>();
+      const list = rows.results ?? [];
+      if (now - next.created_at <= RESTAKE_REISSUE_SECONDS && list.length > 0) {
+        const backed = list.reduce((a, r) => a + Math.max(0, Number(r.backed_micro_usd) || 0), 0);
+        const entryToken = await signPaidToken(c, user, { mode, roomCode, entryId: next.id, ticketIds: list.map((r) => r.id), backedMicroUsd: backed, restake: true }, now);
+        return c.json({ success: true, reissued: true, restake: true, entryToken, entryId: next.id, energyTickets: await ecLeft(), ticketId: list[0].id, ticketValueMicroUsd: backed });
+      }
+      return c.json({ error: 'This life was already continued', code: 'ALREADY_RESTAKED' }, 409);
+    }
+  }
+
   // Layer 3: remember this account's hashed IP (collusion graph); never blocks the entry
   c.executionCtx.waitUntil(recordDeviceLink(c.env.DB, c.env.JWT_SECRET, user.userId, c.req.header('CF-Connecting-IP')));
   const entryId = crypto.randomUUID();
+  if (prevId) {
+    // Claim the successor slot FIRST (UNIQUE prev_entry_id): a parallel second request fails here, before any lock
+    try {
+      await c.env.DB
+        .prepare('INSERT INTO arena_entries (id, user_id, room_mode, created_at, room_code, prev_entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
+        .bind(entryId, user.userId, mode, now, roomCode || null, prevId)
+        .run();
+    } catch (e) {
+      if (/UNIQUE/i.test(String((e as Error)?.message ?? e))) return c.json({ error: 'This life was already continued', code: 'ALREADY_RESTAKED' }, 409);
+      throw e;
+    }
+  }
   const stake = await lockEntryTickets(c.env, user.userId, cost, entryId, EXP_PER_MATCH);
   if (!stake) {
-    return c.json({ error: 'No Energy Tickets left. Watch an ad or Cheer to recharge EC.', code: 'NO_EC' }, 402);
+    // Release the successor slot again so the player can charge EC and retry
+    if (prevId) await c.env.DB.prepare('DELETE FROM arena_entries WHERE id = ?1 AND user_id = ?2').bind(entryId, user.userId).run();
+    return c.json({ error: 'No Energy Tickets left. Watch an ad or Cheer to recharge EC.', code: 'NO_EC', energyTickets: await ecLeft() }, 402);
   }
-  try {
-    await c.env.DB.prepare('INSERT INTO arena_entries (id, user_id, room_mode, created_at) VALUES (?1, ?2, ?3, ?4)').bind(entryId, user.userId, mode, now).run();
-  } catch (e) {
-    await unlockEntryTickets(c.env, user.userId, entryId);
-    throw e;
+  if (!prevId) {
+    try {
+      await c.env.DB
+        .prepare('INSERT INTO arena_entries (id, user_id, room_mode, created_at, room_code) VALUES (?1, ?2, ?3, ?4, ?5)')
+        .bind(entryId, user.userId, mode, now, roomCode || null)
+        .run();
+    } catch (e) {
+      await unlockEntryTickets(c.env, user.userId, entryId);
+      throw e;
+    }
   }
   // Q_PLAY_MATCH: entering a paid arena round counts as playing a match
   await trackQuestAction(c.env.DB, user.userId, 'finish_game_match', 1).catch(() => {});
@@ -81,29 +177,22 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     action_type: 'EC_CONSUME',
     amount_micro_usd: BigInt(stake.backedMicroUsd), // the ticket value now at stake in the arena (no wallet change)
     balance_after_micro_usd: await walletBalance(c.env.DB, user.userId),
-    source_game_id: `${mode}:${entryId}`.slice(0, 64),
+    source_game_id: `${prevId ? 'restake' : mode}:${entryId}`.slice(0, 64),
   });
-  const bountyRow = await c.env.DB.prepare('SELECT bounty_micro_usd FROM wallets WHERE user_id = ?1').bind(user.userId).first<{ bounty_micro_usd: number }>();
-  const entryToken = await signEntryToken(c.env.INTERNAL_API_SECRET, {
-    uid: user.userId,
-    un: user.username,
-    bty: bountyRow?.bounty_micro_usd ?? 0, // current head bounty (shown in-match, claimed by the killer)
-    eid: entryId,
-    tid: stake.ticketIds[0], // ticket row the game server must name when it settles this life
-    tv: stake.backedMicroUsd, // the ticket's real backed µUSD = what a kill on this player pays
-    tn: stake.ticketIds.length,
-    mode,
-    rc: roomCode || undefined, // the game server only accepts the token in this room
-    exp: now + 120,
-  });
+  const entryToken = await signPaidToken(c, user, { mode, roomCode, entryId, ticketIds: stake.ticketIds, backedMicroUsd: stake.backedMicroUsd, restake: !!prevId }, now);
   return c.json({
     success: true,
+    restake: !!prevId,
     entryToken,
+    entryId,
     energyTickets: stake.energyTickets,
     ticketId: stake.ticketIds[0],
     ticketValueMicroUsd: stake.backedMicroUsd,
   });
 });
+
+/** GET /api/game/rooms — same body as GET /api/games/fps/rooms (live PvP rooms hidden while servers are offline). */
+gameRouter.get('/rooms', async (c) => c.json(await fpsRoomsBody(c)));
 
 // Batch Payout Sync Endpoint from Colyseus Game Engine
 gameRouter.post('/batch-payout', async (c) => {
@@ -145,7 +234,10 @@ gameRouter.post('/batch-payout', async (c) => {
   const killsByUser = new Map<string, number>();
 
   // V1.1 settlement counters (returned to the game server / load test)
-  const v11 = { ticketsSettled: 0, ticketsForfeited: 0, rejectedTicket: 0, duplicates: 0, settledMicroUsd: 0, forfeitedMicroUsd: 0, cappedItems: 0 };
+  const v11 = { ticketsSettled: 0, ticketsForfeited: 0, rejectedTicket: 0, duplicates: 0, settledMicroUsd: 0, forfeitedMicroUsd: 0, cappedItems: 0, ticketsReturned: 0 };
+  // V1.1 R2 Fast & Mini results (the game server credits the HUD with what the Worker really paid)
+  const fastMini: Array<{ pid: string; killerId: string; victimId: string; status: FastMiniKillResult['status']; valueMicroUsd: number; shooterMicroUsd: number; platformMicroUsd: number }> = [];
+  const fm = { kills: 0, paidMicroUsd: 0, potsClosed: 0, forfeitedMicroUsd: 0 };
   const md = (it: { metadata?: Record<string, unknown> }) => (it.metadata || {}) as Record<string, unknown>;
   /** Items without a ticket (bounty claims, AFK claw-backs) are de-duplicated by the game server's payout id. */
   const firstTime = async (it: { metadata?: Record<string, unknown> }) => {
@@ -210,6 +302,47 @@ gameRouter.post('/batch-payout', async (c) => {
       else {
         v11.ticketsForfeited++;
         v11.forfeitedMicroUsd += got;
+      }
+      continue;
+    }
+    if (item.actionType === 'TICKET_RETURN') {
+      // R2: an unused "Play again" ticket (the room could not apply it) → back to available
+      const n = await returnUnusedStake(c.env, md(item).ticketId, item.userId, md(item).entryId);
+      if (n > 0) v11.ticketsReturned += n;
+      else v11.duplicates++;
+      continue;
+    }
+    if (item.actionType === 'FAST_MINI_KILL') {
+      // R2: V = the victim's OWN verified banner pot up to the death (Worker ledger), never item.amountMicroUsd
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null);
+      const r = await settleFastMiniKill(c.env, {
+        killerId: item.userId,
+        victimId: md(item).victimId,
+        potId: md(item).potId,
+        diedAtMs: md(item).diedAt,
+        pid: md(item).pid,
+        gameId,
+        hits: num(md(item).hits),
+        headshots: num(md(item).headshots),
+      });
+      if (r.status === 'rejected') v11.rejectedTicket++;
+      else if (r.status === 'duplicate') v11.duplicates++;
+      else if (r.status === 'paid') {
+        fm.kills++;
+        fm.paidMicroUsd += r.valueMicroUsd;
+        earnerCredited += r.shooterMicroUsd;
+        await trackQuestAction(c.env.DB, item.userId, 'finish_game_match', 1, dateKey);
+      }
+      fastMini.push({ pid: String(md(item).pid ?? ''), killerId: item.userId, victimId: String(md(item).victimId ?? ''), ...r });
+      continue;
+    }
+    if (item.actionType === 'FAST_MINI_CLOSE') {
+      const reason = typeof md(item).reason === 'string' ? String(md(item).reason).slice(0, 24) : 'left';
+      const got = await closeFastMiniPot(c.env, { potId: md(item).potId, userId: item.userId, reason, ref: gameId });
+      if (got < 0) v11.duplicates++;
+      else {
+        fm.potsClosed++;
+        fm.forfeitedMicroUsd += got;
       }
       continue;
     }
@@ -331,5 +464,10 @@ gameRouter.post('/batch-payout', async (c) => {
     bountyClaimedMicroUsd: bountyClaimed,
     statementsExecuted: statements.length,
     ...v11,
+    fastMini,
+    fastMiniKills: fm.kills,
+    fastMiniPaidMicroUsd: fm.paidMicroUsd,
+    fastMiniPotsClosed: fm.potsClosed,
+    fastMiniForfeitedMicroUsd: fm.forfeitedMicroUsd,
   });
 });

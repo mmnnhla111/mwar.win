@@ -16,6 +16,7 @@ import { getStaffRoles } from '../middleware/staff';
 import { authMiddleware } from '../middleware/auth';
 import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { safeValue } from '../utils/energy-tickets';
+import { creditFastMiniBanner } from '../utils/fast-mini';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, parseAdFormat, utcDateKey, type AdValueSource } from '../utils/ad-value';
 
 export const adsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
@@ -246,10 +247,20 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
   }
   const ecBpEach = format === 'video_5s' ? 0 : ecProgressBpFor(format, parityValue, country, video30Ref);
   await logAdImpression(c.env.DB, { userId: user.userId, provider, country, format, purpose, microUsd: value.microUsd, source: value.source, ecBp: ecBpEach }, count);
-  const ecBp = ecBpEach * count;
+  let ecBp = ecBpEach * count;
   // V1.1: a simulated (test-mode) ad earns no revenue, so the EC it charges can only be backed by the
   // Energy Pool's unspent balance (capped atomically; an empty pool charges 0-value EC)
-  const wantBacking = ecBp > 0 ? safeValue(c.env, value.microUsd) * count : 0;
+  let wantBacking = ecBp > 0 ? safeValue(c.env, value.microUsd) * count : 0;
+  // V1.1 R2: a banner seen while playing Fast & Mini splits its safe value ONCE: 50 % into this player's
+  // own pot (what a killer can win), 50 % EC backing (the EC % credited is scaled the same way)
+  const fmPot =
+    format === 'banner' && body.fastMiniEntryId
+      ? await creditFastMiniBanner(c.env, { userId: user.userId, potId: body.fastMiniEntryId, safeMicroUsd: safeValue(c.env, value.microUsd) * count, ecBp, fromPool: true, ref: `sim:banner:x${count}` })
+      : null;
+  if (fmPot && fmPot.potMicroUsd > 0) {
+    ecBp = fmPot.ecBp;
+    wantBacking = ecBp > 0 ? fmPot.ecMicroUsd : 0;
+  }
   const ec = ecBp > 0
     ? await creditEcProgress(c.env, user.userId, ecBp, `${provider}:${format}${count > 1 ? `x${count}` : ''}`, { microUsd: wantBacking, source: 'ad_charge', country, fromPool: true })
     : null;
@@ -270,5 +281,7 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
     ticketsFull: ec?.full ?? false,
     backedMicroUsd: ec?.backedAddedMicroUsd ?? 0,
     pendingEcMicroUsd: ec?.pendingEcMicroUsd,
+    fastMiniPotAddedMicroUsd: fmPot?.potMicroUsd ?? 0,
+    fastMiniPotMicroUsd: fmPot?.potOpenMicroUsd ?? 0,
   });
 });

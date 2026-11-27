@@ -14,6 +14,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { nextBannerIntervalSeconds } from '@mwar/shared';
 import { apiFetch, getAuthToken } from '../../lib/api';
+import { bannerBatchSize, bannerContextPayload } from '../../lib/bannerContext';
 
 export interface AdEcResult {
   energy_tickets?: number;
@@ -28,6 +29,9 @@ export interface AdEcResult {
   valueSource?: string;
   country?: string;
   format?: string;
+  /** V1.1 R2 Fast & Mini: µUSD this ping added to the player's own pot, and the pot's open value now. */
+  fastMiniPotAddedMicroUsd?: number;
+  fastMiniPotMicroUsd?: number;
 }
 
 const CREATIVES = [
@@ -56,7 +60,7 @@ export function flushBannerImpressions(opts: { keepalive?: boolean } = {}) {
   bannerFlushing = true;
   apiFetch<AdEcResult>('/api/ads/simulate-view', {
     method: 'POST',
-    body: JSON.stringify({ format: 'banner', purpose: 'ec_recharge', count }),
+    body: JSON.stringify({ format: 'banner', purpose: 'ec_recharge', count, ...bannerContextPayload() }),
     keepalive: opts.keepalive,
   })
     .then((r) => {
@@ -112,7 +116,7 @@ export function SimulatedAdBanner({ className, onResult }: { className?: string;
       if (!getAuthToken()) return;
       pendingBanners = Math.min(BANNER_BATCH_MAX, pendingBanners + 1);
       notifyPending();
-      if (pendingBanners >= BANNER_BATCH) flushBannerImpressions();
+      if (pendingBanners >= bannerBatchSize(BANNER_BATCH)) flushBannerImpressions();
     }, 1000);
     return () => {
       clearInterval(tick);

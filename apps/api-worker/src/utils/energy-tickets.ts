@@ -388,3 +388,31 @@ export async function ticketSummary(db: D1Database, userId: string) {
     pendingEcMicroUsd: Number(r?.pending ?? 0),
   };
 }
+
+/**
+ * V1.1 R2 TICKET_RETURN: a "Play again (-1 EC)" ticket the game room could not use (the player was
+ * already alive again / had left) goes back to available, and its unused restake entry is removed so the
+ * same life can be re-staked. Only a fully in_match stake of `userId` locked by entry `entryId` qualifies.
+ * Returns the number of tickets returned (0 = nothing to do / duplicate).
+ */
+export async function returnUnusedStake(env: Env, ticketId: unknown, userId: string, entryId: unknown): Promise<number> {
+  const stake = await loadVictimStake(env.DB, ticketId, userId);
+  if (!stake || stake.rows === 0 || stake.inMatch !== stake.rows || typeof entryId !== 'string' || stake.matchId !== entryId) return 0;
+  const res = await env.DB.batch([
+    env.DB.prepare("UPDATE user_energy_tickets SET status = 'available', match_id = NULL, consumed_at = NULL WHERE match_id = ?1 AND user_id = ?2 AND status = 'in_match'").bind(entryId, userId),
+    env.DB.prepare("UPDATE users SET energy_tickets = (SELECT COUNT(*) FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available') WHERE id = ?1").bind(userId),
+    env.DB.prepare('DELETE FROM arena_entries WHERE id = ?1 AND user_id = ?2 AND prev_entry_id IS NOT NULL').bind(entryId, userId),
+  ]);
+  const n = res[0].meta?.changes ?? 0;
+  if (n > 0) {
+    await logFinancialTransaction(env, {
+      transaction_id: `tx_tkt_return_${entryId.slice(0, 18)}_${nowSec()}`,
+      user_id: userId,
+      action_type: 'TICKET_RETURN',
+      amount_micro_usd: BigInt(stake.backedMicroUsd),
+      balance_after_micro_usd: 0n,
+      source_game_id: entryId.slice(0, 64),
+    });
+  }
+  return n;
+}

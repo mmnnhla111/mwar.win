@@ -12,6 +12,11 @@
  *     V1.1: entry tokens carry the victim's ticket (tid + backed value tv). A kill pays EXACTLY the
  *     victim's ticket value, killing a guest pays nothing, every ticket is closed exactly once
  *     (GAME_KILL / CHEST_OPEN / TICKET_FORFEIT) and the total paid never exceeds the total backing.
+ *     V1.1 R2: no automatic respawn — a paid seat stays dead until it re-stakes with a NEW signed ticket
+ *     ("Play again (-1 EC)" → player_restake: same HMAC + single-use eid, same account only, unusable
+ *     tokens are returned), free seats press "Play again" (player_respawn, ≥ 3 s). Fast & Mini room: `fm`
+ *     tokens, no tickets, kills queue FAST_MINI_KILL naming the VICTIM's pot (the Worker decides the
+ *     amount), one FAST_MINI_CLOSE per pot, no head bounty.
  *   - Wave 1: --players (default 1,000) bots across mini_30 / standard_100 / fast_mini rooms in
  *     worker threads. Every bot moves at 10 Hz and fires at 2 Hz (35 % hit). Checks 20 Hz tick + patch
  *     stability (server side), event-loop delay, client patch intervals, and that every paid kill /
@@ -76,8 +81,9 @@ const uuid = () => crypto.randomUUID();
  * Same format as the API worker's /api/game/enter token (verified by verifyEntryToken).
  * V1.1: `tid` = the locked user_energy_tickets row, `tv` = its real backed µUSD (what a kill pays).
  */
-function mintEntryToken(secret, { uid, un, eid = uuid(), bty = 0, rc = '', tid = `tkt_${uuid()}`, tv = 0, exp = Math.floor(Date.now() / 1000) + 3600 }) {
-  const body = Buffer.from(JSON.stringify({ uid, un, eid, bty, rc, tid, tv, tn: 1, exp })).toString('base64url');
+function mintEntryToken(secret, { uid, un, eid = uuid(), bty = 0, rc = '', tid = `tkt_${uuid()}`, tv = 0, exp = Math.floor(Date.now() / 1000) + 3600, fm = 0, rs = 0 }) {
+  const claims = fm ? { uid, un, eid, bty: 0, rc, fm: 1, exp } : { uid, un, eid, bty, rc, tid, tv, tn: 1, exp, ...(rs ? { rs: 1 } : {}) };
+  const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   return `${body}.${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
 }
 
@@ -122,7 +128,11 @@ function histSummary(h) {
 // Worker thread: a slice of the bot players
 // ------------------------------------------------------------------------------------------------
 if (!isMainThread) {
-  const { url, bots, rampMs, hitRate } = workerData;
+  const { url, bots, rampMs, hitRate, secret } = workerData;
+  /** V1.1 R2: tickets minted for "Play again (-1 EC)" re-stakes (each must be closed exactly once) */
+  const restakes = [];
+  let freeRespawns = 0;
+  let autoRespawnSeen = 0;
   const sessions = [];
   const patchHist = newHist();
   const stats = { joinOk: 0, joinFail: 0, joinErrors: [], unexpectedLeaves: 0, msgsSent: 0, positionRejected: 0, afkKicked: 0 };
@@ -156,6 +166,34 @@ if (!isMainThread) {
       lastPatch = t;
     });
     room.onMessage('*', (type, msg) => {
+      if (type === 'player_eliminated') {
+        // V1.1 R2: nobody is respawned by the server — the bot chooses like a player on the death screen
+        const diedAt = Date.now();
+        const life = { chose: false };
+        // Alive again 3.4 s after the death without having chosen "Play again" = an automatic respawn (must never happen)
+        setTimeout(() => {
+          const me = room.state?.players?.get(room.sessionId);
+          if (me && !me.isGhost && !life.chose) autoRespawnSeen++;
+        }, 3400);
+        if (msg?.respawnMode === 'restake') {
+          setTimeout(() => {
+            if (leaving || !room.connection?.isOpen) return;
+            const tid = `tkt_${uuid()}`;
+            const tv = TICKET_VALUES[(Math.random() * TICKET_VALUES.length) | 0];
+            const eid = uuid();
+            life.chose = true;
+            restakes.push({ uid: bot.uid, tid, tv, eid });
+            room.send('player_restake', { entryToken: mintEntryToken(secret, { uid: bot.uid, un: bot.un, eid, tid, tv, rs: 1 }) });
+          }, 400 + Math.random() * 600);
+        } else {
+          setTimeout(() => {
+            if (leaving || !room.connection?.isOpen) return;
+            life.chose = true;
+            freeRespawns++;
+            room.send('player_respawn', {});
+          }, Math.max(0, 3100 - (Date.now() - diedAt)));
+        }
+      }
       if (type === 'position_rejected') stats.positionRejected++;
       else if (type === 'afk_kicked') stats.afkKicked++;
       else if (type === 'player_killed' && isObserver) {
@@ -207,7 +245,7 @@ if (!isMainThread) {
     if (cmd === 'combat') combat = measuring = true;
     else if (cmd === 'stop') combat = measuring = false;
     else if (cmd === 'report') {
-      parentPort.postMessage({ type: 'report', stats, patchHist, rooms: Object.fromEntries(roomTally) });
+      parentPort.postMessage({ type: 'report', stats: { ...stats, freeRespawns, autoRespawnSeen }, patchHist, rooms: Object.fromEntries(roomTally), restakes });
     } else if (cmd === 'leave') {
       leaving = true;
       for (const s of sessions) clearInterval(s.timer);
@@ -317,14 +355,18 @@ if (isMainThread) {
             res.writeHead(503);
             return res.end('{}');
           }
+          const fastMini = [];
           for (const it of j.payouts || []) {
             mock.items.push({ ...it, gameId: j.gameId });
             const g = mock.byGame.get(j.gameId) || [];
             g.push(it);
             mock.byGame.set(j.gameId, g);
+            if (it.actionType === 'FAST_MINI_KILL' && mock.fastMiniReply) {
+              fastMini.push({ pid: it.metadata?.pid, killerId: it.userId, victimId: it.metadata?.victimId, status: 'paid', valueMicroUsd: mock.fastMiniReply.value, shooterMicroUsd: mock.fastMiniReply.shooter, platformMicroUsd: mock.fastMiniReply.value - mock.fastMiniReply.shooter });
+            }
           }
           res.writeHead(200, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ success: true }));
+          return res.end(JSON.stringify({ success: true, fastMini }));
         }
         res.writeHead(404);
         res.end('{}');
@@ -386,6 +428,8 @@ if (isMainThread) {
 
     // ---- A1. combat validation room ------------------------------------------------------------
     await combatValidation(url, secret, mock);
+    // ---- A1b. V1.1 R2 Fast & Mini validation room ------------------------------------------------
+    await fastMiniValidation(url, secret, mock);
 
     // Wait until the validation room is disposed and its payouts settled
     await settle(mock, 12_000);
@@ -448,7 +492,10 @@ if (isMainThread) {
     const F = await join('198.51.100.14', { entryToken: wrongRoomF, deviceId: 'dev-wrongroom' });
     const V = await join('198.51.100.15', { entryToken: tokV, deviceId: 'dev-victim' });
     const all = [A, B, C, D, E, F, V];
-    for (const r of all) r.onMessage('*', () => {});
+    const inbox = new Map(all.map((r) => [r, []]));
+    for (const r of all) r.onMessage('*', (type, msg) => inbox.get(r).push({ type, msg }));
+    const msgsOf = (r, type) => inbox.get(r).filter((m) => m.type === type).map((m) => m.msg);
+    const elimOf = (r) => msgsOf(r, 'player_eliminated').slice(-1)[0];
     const kills = [];
     A.onMessage('player_killed', (m) => kills.push(m));
     await sleep(600);
@@ -495,6 +542,33 @@ if (isMainThread) {
     check(S, 'V1.1: paid kill is worth exactly the victim ticket (55 % to the shooter)', p(V).isGhost && kV?.victimId === uidV && Number(kV?.ticketMicroUsd) === T.V.tv && Number(kV?.rewardMicroUsd) === earnerShare(T.V.tv), `ticket ${kV?.ticketMicroUsd} · shooter +${kV?.rewardMicroUsd} (expected ${earnerShare(T.V.tv)})`);
     check(S, 'V1.1: a settled ticket is gone from the victim (respawn is worth 0)', p(V).ticketMicroUsd === 0);
 
+    // ---- V1.1 R2: Paid-EC death prompt — no auto-respawn, re-stake with a NEW ticket only ----
+    const vElim = elimOf(V);
+    check(S, 'R2: Paid-EC death → death & round summary with respawnMode "restake" (kills / C earnings / bounty in the message)', vElim?.respawnMode === 'restake' && typeof vElim?.sessionEarningsMicroUsd === 'number' && typeof vElim?.kills === 'number' && typeof vElim?.bountyMicroUsd === 'number', JSON.stringify(vElim || {}).slice(0, 160));
+    await sleep(3400);
+    check(S, 'R2: no automatic respawn in a Paid-EC room (still dead after 3.4 s)', p(V).isGhost === true);
+    V.send('player_respawn', {});
+    await sleep(250);
+    check(S, 'R2: a free "player_respawn" is refused for a paid seat (restake_required)', p(V).isGhost === true && msgsOf(V, 'restake_required').length === 1);
+    const R = { tid: `tkt_${uuid()}`, tv: 7820, eid: uuid() };
+    V.send('player_restake', { entryToken: mintEntryToken('not-the-server-secret', { uid: uidV, un: 'lt_victim', ...R, rs: 1 }) });
+    V.send('player_restake', { entryToken: mintEntryToken(secret, { uid: uidA, un: 'lt_alpha', tid: `tkt_${uuid()}`, tv: 999, rs: 1 }) }); // another account's ticket
+    V.send('player_restake', { entryToken: mintEntryToken(secret, { uid: uidV, un: 'lt_victim', tid: `tkt_${uuid()}`, tv: 999, rc: 'OTHER_ROOM', rs: 1 }) });
+    await sleep(300);
+    const rr0 = msgsOf(V, 'restake_result');
+    check(S, 'R2: forged / other-account / wrong-room "Play again" tokens are refused (still dead)', p(V).isGhost === true && rr0.length === 3 && rr0.every((r) => r.ok === false), rr0.map((r) => r.reason).join(','));
+    const tokR = mintEntryToken(secret, { uid: uidV, un: 'lt_victim', ...R, rs: 1 });
+    V.send('player_restake', { entryToken: tokR });
+    await sleep(300);
+    const rr1 = msgsOf(V, 'restake_result').slice(-1)[0];
+    check(S, 'R2: "Play again (-1 EC)" with a fresh signed ticket respawns the same player carrying the NEW ticket value', p(V).isGhost === false && p(V).health === 100 && p(V).ticketMicroUsd === R.tv && rr1?.ok === true && rr1?.entryId === R.eid, `ticket ${p(V).ticketMicroUsd}`);
+    V.send('player_restake', { entryToken: tokR });
+    const R2t = { tid: `tkt_${uuid()}`, tv: 1840, eid: uuid() };
+    V.send('player_restake', { entryToken: mintEntryToken(secret, { uid: uidV, un: 'lt_victim', ...R2t, rs: 1 }) }); // while alive
+    await sleep(300);
+    const rr2 = msgsOf(V, 'restake_result').slice(-2);
+    check(S, 'R2: replayed token refused; a second ticket while alive is refused (and returned) — no double lock', rr2[0]?.reason === 'used_token' && rr2[1]?.reason === 'not_dead' && p(V).ticketMicroUsd === R.tv, rr2.map((r) => r.reason).join(','));
+
     // Ghost cannot shoot
     B.send('player_shoot', { targetType: 'player', targetId: A.sessionId, damage: 34 });
     await sleep(200);
@@ -520,13 +594,24 @@ if (isMainThread) {
     }
     const unpaid = kills.slice(-2);
     check(S, 'replayed / wrong-room tickets play unpaid', unpaid.length === 2 && unpaid.every((k) => Number(k.rewardMicroUsd) === 0), unpaid.map((k) => k.rewardMicroUsd).join(','));
+    // R2: an unpaid seat (C, killed by F) gets the free prompt: "Play again" only after 3 s, never automatically
+    check(S, 'R2: unpaid seat death → respawnMode "free"', elimOf(C)?.respawnMode === 'free');
+    C.send('player_respawn', {});
+    await sleep(200);
+    const earlyC = p(C).isGhost;
+    await sleep(3000);
+    const waitedC = p(C).isGhost;
+    C.send('player_respawn', {});
+    await sleep(250);
+    check(S, 'R2: free "Play again" is refused before 3 s, no auto-respawn, accepted after 3 s', earlyC === true && waitedC === true && p(C).isGhost === false, `early ${earlyC} · waited ${waitedC} · after ${p(C).isGhost}`);
 
     await Promise.allSettled(all.map((r) => r.leave(true)));
     await settle(mock, 12_000);
     const mine = mock.items.filter((it) => [uidA, uidB, uidD, uidE, uidF, uidV].includes(it.userId));
     const killsA = mine.filter((it) => it.userId === uidA && it.actionType === 'GAME_KILL');
-    const money = mine.filter((it) => it.actionType !== 'TICKET_FORFEIT');
+    const money = mine.filter((it) => it.actionType !== 'TICKET_FORFEIT' && it.actionType !== 'TICKET_RETURN');
     const forfeits = mine.filter((it) => it.actionType === 'TICKET_FORFEIT');
+    const returns = mine.filter((it) => it.actionType === 'TICKET_RETURN');
     const fTid = (tid) => forfeits.filter((f) => f.metadata?.ticketId === tid);
     check(
       S,
@@ -537,13 +622,66 @@ if (isMainThread) {
     check(
       S,
       'V1.1: collusion victim A and unpaid-killer victim D → their tickets forfeited (platform), once each',
-      forfeits.length === 2 && fTid(T.A.tid).length === 1 && fTid(T.A.tid)[0].metadata?.reason === 'collusion' && fTid(T.D.tid).length === 1 && fTid(T.D.tid)[0].userId === uidD,
-      forfeits.map((f) => `${f.userId === uidA ? 'A' : f.userId === uidD ? 'D' : '?'}:${f.metadata?.reason}`).join(', ')
+      fTid(T.A.tid).length === 1 && fTid(T.A.tid)[0].metadata?.reason === 'collusion' && fTid(T.D.tid).length === 1 && fTid(T.D.tid)[0].userId === uidD,
+      forfeits.map((f) => `${f.userId === uidA ? 'A' : f.userId === uidD ? 'D' : f.userId === uidV ? 'V' : '?'}:${f.metadata?.reason}`).join(', ')
+    );
+    check(
+      S,
+      'R2: the re-staked ticket is closed once (V left alive → forfeited) and the refused second ticket is RETURNED, never paid',
+      forfeits.length === 3 && fTid(R.tid).length === 1 && fTid(R.tid)[0].metadata?.reason === 'left' && returns.length === 1 && returns[0].metadata?.ticketId === R2t.tid && returns[0].metadata?.entryId === R2t.eid && returns[0].userId === uidV,
+      `${forfeits.length} forfeits · ${returns.length} returns`
     );
     const pids = mine.map((m) => m.metadata?.pid);
     check(S, 'V1.1: every payout item carries a unique payout id (Worker de-duplicates re-sent batches)', pids.every((x) => typeof x === 'string') && new Set(pids).size === pids.length);
     check(S, 'payout batch re-queued after a 503 from the Worker', mock.injected503 >= 1 && killsA.length === 1, `${mock.injected503} injected 503(s)`);
     check(S, 'payout requests carry the internal secret', mock.badSecret === 0);
+  }
+
+  /** V1.1 R2: Fast & Mini — free seats, banner-pot kills settled by the Worker, no tickets, no bounty. */
+  async function fastMiniValidation(url, secret, mock) {
+    const S = 'fast_mini';
+    const G = { uid: uuid(), eid: uuid() };
+    const H = { uid: uuid(), eid: uuid() };
+    const I = { uid: uuid(), tid: `tkt_${uuid()}`, eid: uuid() };
+    const cl = (ip) => new Client(url, { headers: { 'x-forwarded-for': ip } });
+    mock.fastMiniReply = { value: 1000, shooter: 900 };
+    const g = await cl('198.51.100.40').create('fast_mini', { entryToken: mintEntryToken(secret, { uid: G.uid, un: 'lt_fm_g', eid: G.eid, fm: 1 }), deviceId: 'dev-fm-g' });
+    const h = await cl('198.51.100.41').joinById(g.roomId, { entryToken: mintEntryToken(secret, { uid: H.uid, un: 'lt_fm_h', eid: H.eid, fm: 1 }), deviceId: 'dev-fm-h' });
+    const i = await cl('198.51.100.42').joinById(g.roomId, { entryToken: mintEntryToken(secret, { uid: I.uid, un: 'lt_fm_i', eid: I.eid, tid: I.tid, tv: 2760 }), deviceId: 'dev-fm-i' });
+    const box = new Map([[g, []], [h, []], [i, []]]);
+    for (const r of [g, h, i]) r.onMessage('*', (type, msg) => box.get(r).push({ type, msg }));
+    const of = (r, type) => box.get(r).filter((m) => m.type === type).map((m) => m.msg);
+    await sleep(500);
+    const pl = (r) => g.state.players.get(r.sessionId);
+    check(S, 'R2: Fast & Mini seats carry no ticket value (0 EC, no ticket)', pl(g)?.ticketMicroUsd === 0 && pl(h)?.ticketMicroUsd === 0 && pl(i)?.ticketMicroUsd === 0 && pl(g)?.id === G.uid);
+    g.send('player_shoot', { targetType: 'player', targetId: h.sessionId, damage: 68, headshot: true });
+    await sleep(160);
+    g.send('player_shoot', { targetType: 'player', targetId: h.sessionId, damage: 68, headshot: true });
+    await sleep(300);
+    const el = of(h, 'player_eliminated').slice(-1)[0];
+    const pk = of(g, 'player_killed').slice(-1)[0];
+    check(S, 'R2: Fast & Mini death → free prompt (respawnMode "free", fastMini) and no instant reward claimed by the game server', pl(h)?.isGhost && el?.respawnMode === 'free' && el?.fastMini === true && pk?.fastMini === true && Number(pk?.rewardMicroUsd) === 0, JSON.stringify(el || {}).slice(0, 120));
+    await sleep(3400);
+    check(S, 'R2: Fast & Mini has no automatic respawn either', pl(h)?.isGhost === true);
+    h.send('player_respawn', {});
+    await sleep(250);
+    check(S, 'R2: "Play again free (0 EC)" respawns the Fast & Mini player', pl(h)?.isGhost === false);
+    // the Worker answers the FAST_MINI_KILL (after the injected 503 + 10 s batch): the HUD gets what was REALLY paid
+    const t0 = Date.now();
+    while (!of(g, 'fast_mini_reward').length && Date.now() - t0 < 25_000) await sleep(250);
+    const rw = of(g, 'fast_mini_reward')[0];
+    check(S, 'R2: shooter HUD credited with the Worker-reported 90 % (not a game-server amount)', rw?.shooterMicroUsd === 900 && pl(g)?.sessionEarningsMicroUsd === 900 && of(h, 'fast_mini_pot_lost').length === 1, `reward ${JSON.stringify(rw)} · earnings ${pl(g)?.sessionEarningsMicroUsd}`);
+    await Promise.allSettled([g, h, i].map((r) => r.leave(true)));
+    await settle(mock, 12_000);
+    const items = mock.items.filter((it) => [G.uid, H.uid, I.uid].includes(it.userId));
+    const fk = items.filter((it) => it.actionType === 'FAST_MINI_KILL');
+    const fc = items.filter((it) => it.actionType === 'FAST_MINI_CLOSE');
+    const ret = items.filter((it) => it.actionType === 'TICKET_RETURN');
+    const other = items.filter((it) => !['FAST_MINI_KILL', 'FAST_MINI_CLOSE', 'TICKET_RETURN'].includes(it.actionType));
+    check(S, 'R2: one FAST_MINI_KILL = killer G, victim H, H\'s OWN pot, amount 0 (Worker decides), death time attached', fk.length === 1 && fk[0].userId === G.uid && fk[0].metadata?.victimId === H.uid && fk[0].metadata?.potId === H.eid && fk[0].amountMicroUsd === 0 && Number(fk[0].metadata?.diedAt) > 0, JSON.stringify(fk[0]?.metadata || {}).slice(0, 160));
+    check(S, 'R2: every Fast & Mini pot closed exactly once on leave; no GAME_KILL / BOUNTY / ticket items', fc.length === 2 && new Set(fc.map((f) => f.metadata?.potId)).size === 2 && fc.some((f) => f.metadata?.potId === G.eid) && fc.some((f) => f.metadata?.potId === H.eid) && other.length === 0, `${fc.length} closes · ${other.length} other`);
+    check(S, 'R2: a ticket token used in the free Fast & Mini room is returned, never staked', ret.length === 1 && ret[0].metadata?.ticketId === I.tid && ret[0].userId === I.uid);
+    mock.fastMiniReply = null;
   }
 
   /** Wait until no payout request arrived for 3 s (and at least minMs passed). */
@@ -564,18 +702,26 @@ if (isMainThread) {
       const mode = r < 5 ? 'mini_30' : r < 9 ? 'standard_100' : 'fast_mini';
       const uid = uuid();
       const un = `lt_${label}_${i}`;
+      const ip = `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`;
+      if (mode === 'fast_mini') {
+        // V1.1 R2: Fast & Mini seats are free — an `fm` token with a pot id (= eid), never a ticket
+        const eid = uuid();
+        bots.push({ mode, uid, un, tid: null, tv: 0, eid, token: mintEntryToken(secret, { uid, un, eid, fm: 1 }), ip, deviceId: `lt-dev-${label}-${i}` });
+        continue;
+      }
       const tid = `tkt_${uuid()}`;
       const tv = TICKET_VALUES[i % TICKET_VALUES.length];
-      bots.push({ mode, uid, un, tid, tv, token: mintEntryToken(secret, { uid, un, tid, tv }), ip: `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`, deviceId: `lt-dev-${label}-${i}` });
+      bots.push({ mode, uid, un, tid, tv, token: mintEntryToken(secret, { uid, un, tid, tv }), ip, deviceId: `lt-dev-${label}-${i}` });
     }
     const uids = new Set(bots.map((b) => b.uid));
-    const ticketOf = new Map(bots.map((b) => [b.uid, b]));
+    const fmBots = bots.filter((b) => b.mode === 'fast_mini');
+    const fmUids = new Set(fmBots.map((b) => b.uid));
     const slices = Array.from({ length: OPT.workers }, () => []);
     bots.forEach((b, i) => slices[i % OPT.workers].push(b));
     const rampMs = Math.min(20_000, players * 12);
 
     const t0 = Date.now();
-    const workers = slices.map((s) => new Worker(fileURLToPath(import.meta.url), { workerData: { url, bots: s, rampMs, hitRate: OPT.hitRate } }));
+    const workers = slices.map((s) => new Worker(fileURLToPath(import.meta.url), { workerData: { url, bots: s, rampMs, hitRate: OPT.hitRate, secret } }));
     const inbox = workers.map(() => []);
     const waitFor = (type, timeout) =>
       Promise.all(
@@ -625,11 +771,13 @@ if (isMainThread) {
 
     const patchHist = newHist();
     const rooms = {};
-    const st = { joinFail: 0, unexpectedLeaves: 0, msgsSent: 0, positionRejected: 0, afkKicked: 0, joinErrors: [] };
+    const st = { joinFail: 0, unexpectedLeaves: 0, msgsSent: 0, positionRejected: 0, afkKicked: 0, freeRespawns: 0, autoRespawnSeen: 0, joinErrors: [] };
+    const restakes = [];
     for (const r of reports) {
       if (!r) continue;
       histMerge(patchHist, r.patchHist);
-      for (const k of ['joinFail', 'unexpectedLeaves', 'msgsSent', 'positionRejected', 'afkKicked']) st[k] += r.stats[k];
+      restakes.push(...(r.restakes || []));
+      for (const k of ['joinFail', 'unexpectedLeaves', 'msgsSent', 'positionRejected', 'afkKicked', 'freeRespawns', 'autoRespawnSeen']) st[k] += r.stats[k] || 0;
       st.joinErrors.push(...r.stats.joinErrors);
       // Same room seen by several threads → identical tallies, keep the biggest (latest) one
       for (const [id, t] of Object.entries(r.rooms)) if (!rooms[id] || t.killEvents > rooms[id].killEvents) rooms[id] = t;
@@ -640,28 +788,43 @@ if (isMainThread) {
     workers.forEach((w) => w.postMessage('leave'));
     await waitFor('left', 30_000);
     await settle(mock, 12_000);
+    // Every ticket of the wave: the join tickets + every "Play again (-1 EC)" re-stake ticket (R2)
+    const tickets = [...bots.filter((b) => b.tid).map((b) => ({ uid: b.uid, tid: b.tid, tv: b.tv })), ...restakes];
+    const ticketById = new Map(tickets.map((t) => [t.tid, t]));
 
     const items = mock.items.slice(itemsBefore).filter((it) => uids.has(it.userId));
     const kills = items.filter((it) => it.actionType === 'GAME_KILL');
     const claims = items.filter((it) => it.actionType === 'BOUNTY_CLAIM');
     const chestsOpened = items.filter((it) => it.actionType === 'CHEST_OPEN');
     const forfeits = items.filter((it) => it.actionType === 'TICKET_FORFEIT');
-    // V1.1: every ticket closed exactly once (GAME_KILL / CHEST_OPEN name the victim's ticket, TICKET_FORFEIT the holder's)
+    const returns = items.filter((it) => it.actionType === 'TICKET_RETURN');
+    const fmKills = items.filter((it) => it.actionType === 'FAST_MINI_KILL');
+    const fmCloses = items.filter((it) => it.actionType === 'FAST_MINI_CLOSE');
+    // V1.1: every ticket closed exactly once (GAME_KILL / CHEST_OPEN name the victim's ticket, TICKET_FORFEIT
+    // the holder's; R2: an unusable re-stake ticket is RETURNED instead)
     const closes = new Map();
-    for (const it of [...kills, ...chestsOpened, ...forfeits]) {
+    for (const it of [...kills, ...chestsOpened, ...forfeits, ...returns]) {
       const tid = it.metadata?.ticketId;
       closes.set(tid, (closes.get(tid) || 0) + 1);
     }
-    const unknownTickets = [...closes.keys()].filter((tid) => !bots.some((b) => b.tid === tid));
+    const unknownTickets = [...closes.keys()].filter((tid) => !ticketById.has(tid));
     const twice = [...closes.values()].filter((n) => n > 1).length;
-    const neverClosed = bots.filter((b) => !closes.has(b.tid)).length;
+    const neverClosed = tickets.filter((t) => !closes.has(t.tid)).length;
     const killExact = [...kills, ...chestsOpened].every((k) => {
-      const v = ticketOf.get(k.metadata?.victimId);
-      return v && k.metadata?.ticketId === v.tid && Number(k.amountMicroUsd) === v.tv && v.tv > 0 && k.userId !== v.uid;
+      const v = ticketById.get(k.metadata?.ticketId);
+      return v && v.uid === k.metadata?.victimId && Number(k.amountMicroUsd) === v.tv && v.tv > 0 && k.userId !== v.uid;
     });
-    const forfeitExact = forfeits.every((f) => ticketOf.get(f.userId)?.tid === f.metadata?.ticketId && Number(f.amountMicroUsd) === ticketOf.get(f.userId)?.tv);
-    const bountyLinked = claims.every((b) => ticketOf.get(b.metadata?.victimId)?.tid === b.metadata?.ticketId);
-    const totalBacking = bots.reduce((a, b) => a + b.tv, 0);
+    const forfeitExact = forfeits.every((f) => ticketById.get(f.metadata?.ticketId)?.uid === f.userId && Number(f.amountMicroUsd) === ticketById.get(f.metadata?.ticketId)?.tv);
+    const returnExact = returns.every((r) => ticketById.get(r.metadata?.ticketId)?.uid === r.userId);
+    const bountyLinked = claims.every((b) => ticketById.get(b.metadata?.ticketId)?.uid === b.metadata?.victimId);
+    const totalBacking = tickets.reduce((a, t) => a + t.tv, 0);
+    // R2 Fast & Mini: kills name the victim's own pot (amount decided by the Worker), each pot closes once
+    const potOf = new Map(fmBots.map((b) => [b.uid, b.eid]));
+    const fmKillExact = fmKills.every((k) => fmUids.has(k.userId) && potOf.get(k.metadata?.victimId) === k.metadata?.potId && k.amountMicroUsd === 0 && k.userId !== k.metadata?.victimId);
+    const fmCloseCount = new Map();
+    for (const f of fmCloses) fmCloseCount.set(f.metadata?.potId, (fmCloseCount.get(f.metadata?.potId) || 0) + 1);
+    const fmClosedOnce = fmBots.every((b) => fmCloseCount.get(b.eid) === 1) && fmCloses.every((f) => potOf.get(f.userId) === f.metadata?.potId);
+    const fmNoTicketItems = [...kills, ...chestsOpened, ...claims, ...forfeits].every((it) => !fmUids.has(it.userId) && !fmUids.has(String(it.metadata?.victimId)));
     const totalPaid = [...kills, ...chestsOpened].reduce((a, k) => a + Number(k.amountMicroUsd), 0);
     const strangers = mock.items.slice(itemsBefore).filter((it) => !uids.has(it.userId));
     const client = histSummary(patchHist);
@@ -675,8 +838,8 @@ if (isMainThread) {
       msgsSentPerSec: Math.round(st.msgsSent / durationSec),
       server: server && { tickGapMs: server.tickGapMs, tickCostMs: server.tickCostMs, patchGapMs: server.patchGapMs, patchCostMs: server.patchCostMs, eventLoopDelayMs: server.eventLoopDelayMs, heapUsedMB: server.heapUsedMB, rssMB: server.rssMB },
       clientPatchIntervalMs: client,
-      combat: { killEvents: observed.kills, paidKillsAnnounced: observed.paid, gameKillPayouts: kills.length, chestPayouts: chestsOpened.length, ticketForfeits: forfeits.length, bountyClaimsAnnounced: observed.bounty, bountyClaimPayouts: claims.length, positionRejected: st.positionRejected, afkKicked: st.afkKicked },
-      tickets: { total: bots.length, totalBackingMicroUsd: totalBacking, paidOutMicroUsd: totalPaid, closedTwice: twice, neverClosed, unknown: unknownTickets.length },
+      combat: { killEvents: observed.kills, paidKillsAnnounced: observed.paid, gameKillPayouts: kills.length, chestPayouts: chestsOpened.length, ticketForfeits: forfeits.length, ticketReturns: returns.length, bountyClaimsAnnounced: observed.bounty, bountyClaimPayouts: claims.length, positionRejected: st.positionRejected, afkKicked: st.afkKicked, restakes: restakes.length, freeRespawns: st.freeRespawns, fastMiniKills: fmKills.length, fastMiniPotsClosed: fmCloses.length },
+      tickets: { total: tickets.length, joinTickets: tickets.length - restakes.length, restakeTickets: restakes.length, totalBackingMicroUsd: totalBacking, paidOutMicroUsd: totalPaid, closedTwice: twice, neverClosed, unknown: unknownTickets.length },
       heapTimelineMB: samples.map((s) => s.heapUsedMB),
     };
     console.log(`  rooms ${wave.rooms} ${JSON.stringify(wave.roomsByMode)} · ${wave.msgsSentPerSec} msg/s from clients · kills ${observed.kills}`);
@@ -696,10 +859,13 @@ if (isMainThread) {
     check(S, 'every announced paid kill settled exactly once', kills.length === observed.paid, `announced ${observed.paid} · received ${kills.length}`);
     check(S, 'every announced bounty claim settled exactly once', claims.length === observed.bounty, `announced ${observed.bounty} · received ${claims.length}`);
     check(S, 'V1.1: every GAME_KILL / CHEST_OPEN = the victim\'s ticket value (no fixed 100,000), right ticket id', killExact && kills.length > 0, `${kills.length} kills, ${chestsOpened.length} chests`);
-    check(S, 'V1.1: every ticket closed exactly once (killed / chest / forfeited on leave)', twice === 0 && neverClosed === 0 && unknownTickets.length === 0, `${closes.size}/${bots.length} closed · ${twice} twice · ${neverClosed} never · ${unknownTickets.length} unknown`);
-    check(S, 'V1.1: TICKET_FORFEIT names the holder\'s own ticket; bounty claims name the victim\'s ticket', forfeitExact && bountyLinked, `${forfeits.length} forfeits · ${claims.length} bounty claims`);
+    check(S, 'V1.1: every ticket closed exactly once (killed / chest / forfeited on leave / R2 returned)', twice === 0 && neverClosed === 0 && unknownTickets.length === 0, `${closes.size}/${tickets.length} closed (${restakes.length} re-stake tickets) · ${twice} twice · ${neverClosed} never · ${unknownTickets.length} unknown`);
+    check(S, 'V1.1: TICKET_FORFEIT names the holder\'s own ticket; bounty claims name the victim\'s ticket', forfeitExact && bountyLinked && returnExact, `${forfeits.length} forfeits · ${returns.length} returns · ${claims.length} bounty claims`);
+    check(S, 'R2: no automatic respawn — dead bots came back only through "Play again" (re-stake / free)', st.autoRespawnSeen === 0 && restakes.length > 0, `${restakes.length} re-stakes · ${st.freeRespawns} free plays · ${st.autoRespawnSeen} came back without choosing`);
+    check(S, 'R2: Fast & Mini — kills name the victim\'s own pot (amount 0, Worker decides), every pot closed once, no ticket / bounty items', fmKillExact && fmClosedOnce && fmNoTicketItems && fmBots.length > 0, `${fmKills.length} FAST_MINI_KILL · ${fmCloses.length}/${fmBots.length} pots closed`);
     check(S, 'V1.1: zero deficit — total paid out ≤ total ticket backing', totalPaid <= totalBacking, `paid ${totalPaid} µUSD of ${totalBacking} µUSD backing`);
-    check(S, 'payout amounts valid (integer µUSD ≥ 0, money items > 0, known players)', items.every((i) => Number.isInteger(Number(i.amountMicroUsd)) && Number(i.amountMicroUsd) >= 0 && (i.actionType === 'TICKET_FORFEIT' || Number(i.amountMicroUsd) > 0)) && strangers.length === 0);
+    const zeroOk = new Set(['TICKET_FORFEIT', 'TICKET_RETURN', 'FAST_MINI_KILL', 'FAST_MINI_CLOSE']);
+    check(S, 'payout amounts valid (integer µUSD ≥ 0, money items > 0, known players)', items.every((i) => Number.isInteger(Number(i.amountMicroUsd)) && Number(i.amountMicroUsd) >= 0 && (zeroOk.has(i.actionType) || Number(i.amountMicroUsd) > 0)) && strangers.length === 0);
     return wave;
   }
 
@@ -919,10 +1085,13 @@ if (isMainThread) {
 
     // ---- B6. V1.1 zero-deficit ticket economy ------------------------------------------------------
     await ticketEconomy({ call, signup, sqlFile, sqlQuery, run });
+    // ---- B7. V1.1 R2: re-stake, Fast & Mini pot, offline room hiding ------------------------------
+    await roundTwo({ call, signup, sqlFile, sqlQuery });
 
     note('security', `test accounts use usernames lt${run}* in the LOCAL D1 only`);
   }
 
+  let hbTimer = null;
   /** PART B6 — tickets, payouts and cheers against the local worker (D1 checked directly). */
   async function ticketEconomy({ call, signup, sqlFile, sqlQuery, run }) {
     const S = 'tickets';
@@ -931,6 +1100,12 @@ if (isMainThread) {
     const Vc = await signup('tk_victim');
     const X = await signup('tk_other');
     const Sc = await signup('tk_selfcheer');
+    // R2: /api/game/enter refuses entry while no game server is online → register a fresh heartbeat first
+    await call('/api/nodes/heartbeat', { method: 'POST', headers: { Authorization: `Bearer ${OPT.internalSecret}` }, body: { nodeId: `lt-node-${process.pid}`, role: 'game' } });
+    // Keep it fresh (≤ 90 s window) while the slow `wrangler d1 execute` steps run; B7 stops it for the offline check
+    hbTimer = setInterval(() => {
+      call('/api/nodes/heartbeat', { method: 'POST', headers: { Authorization: `Bearer ${OPT.internalSecret}` }, body: { nodeId: `lt-node-${process.pid}`, role: 'game' } }).catch(() => {});
+    }, 20_000);
 
     // 1. sign-up: exactly one 0-backed promo ticket
     const st = q1(`SELECT COUNT(*) AS n, COALESCE(SUM(backed_micro_usd),0) AS v, MIN(source_type) AS src FROM user_energy_tickets WHERE user_id = '${Vc.id}' AND status = 'available'`);
@@ -1028,6 +1203,166 @@ if (isMainThread) {
     check(S, 'claiming a cheer before the ad ends → 425 (no EC, no money)', forged.status === 425, `${forged.status}`);
     const poolEnd = q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d FROM system_balances WHERE id = 'global'");
     check(S, 'Energy Pool still never overdrawn at the end', Number(poolEnd.p) - Number(poolEnd.d) >= 0, `pool ${poolEnd.p} drawn ${poolEnd.d}`);
+  }
+
+  /**
+   * PART B7 — V1.1 Round 2 against the local worker: "Play again (-1 EC)" re-stake chain, 0 EC, TICKET_RETURN,
+   * Fast & Mini (0 EC entry, banner pot split, 90 / 10 kill from the victim's own pot, forfeit on close) and
+   * offline room hiding (game_nodes heartbeat ≤ 90 s).
+   */
+  async function roundTwo({ call, signup, sqlFile, sqlQuery }) {
+    const S = 'round2';
+    const q1 = (sql) => sqlQuery(sql)[0] || {};
+    const decode = (tok) => JSON.parse(Buffer.from(String(tok).split('.')[0], 'base64url').toString('utf8'));
+    const fmShooter = (v) => {
+      const n = BigInt(v) * 9000n;
+      let s = n % 10000n >= 7000n ? n / 10000n + 1n : n / 10000n;
+      const cap = BigInt(v) - BigInt(v) / 10n;
+      if (s > cap) s = cap;
+      return Number(s);
+    };
+    const heartbeat = (nodeId) =>
+      call('/api/nodes/heartbeat', { method: 'POST', headers: { Authorization: `Bearer ${OPT.internalSecret}` }, body: { nodeId, nodeName: nodeId, role: 'game', activeRooms: 1, playerCount: 0 } });
+    const nodeId = `lt-node-${process.pid}`;
+    const hb = await heartbeat(nodeId);
+    const on = await call('/api/games/fps/rooms');
+    check(S, 'fresh game_nodes heartbeat (role game) → gameServersOnline true', hb.status === 200 && on.status === 200 && on.body.gameServersOnline === true, `heartbeat ${hb.status} · rooms ${on.status} online=${on.body.gameServersOnline}`);
+    check(S, 'Fast & Mini room is listed at 0 EC', (on.body.rooms || []).filter((r) => r.mode === 'fast_mini' || r.id === 'TH-03').every((r) => r.costEc === 0), JSON.stringify((on.body.rooms || []).map((r) => `${r.id}:${r.costEc}`)));
+
+    // ---- Re-stake chain ----------------------------------------------------------------------------
+    const R = await signup('r2_restake');
+    const O = await signup('r2_other');
+    const now = Math.floor(Date.now() / 1000);
+    sqlFile([
+      `INSERT INTO user_energy_tickets (id, user_id, source_type, backed_micro_usd, status, created_at) VALUES ('tkt_${uuid()}', '${R.id}', 'admin_grant', 700, 'available', ${now + 1}), ('tkt_${uuid()}', '${R.id}', 'admin_grant', 900, 'available', ${now + 2});`,
+      `UPDATE users SET energy_tickets = (SELECT COUNT(*) FROM user_energy_tickets WHERE user_id = '${R.id}' AND status = 'available') WHERE id = '${R.id}';`,
+    ]);
+    const avail = (id) => Number(q1(`SELECT COUNT(*) AS n FROM user_energy_tickets WHERE user_id = '${id}' AND status = 'available'`).n);
+    const inMatch = (id) => Number(q1(`SELECT COUNT(*) AS n FROM user_energy_tickets WHERE user_id = '${id}' AND status = 'in_match'`).n);
+    const a0 = await call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'mini_30' } });
+    const A = a0.body.entryId;
+    const tA = a0.body.entryToken ? decode(a0.body.entryToken) : {};
+    check(S, 'paid entry returns entryId (= token eid)', a0.status === 200 && typeof A === 'string' && tA.eid === A, `HTTP ${a0.status} entry ${A}`);
+    const r1 = await call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'mini_30', restakeAfter: A } });
+    const t1 = r1.body.entryToken ? decode(r1.body.entryToken) : {};
+    check(S, '"Play again (-1 EC)" locks a NEW ticket with a fresh signed token (new eid, rs flag)', r1.status === 200 && r1.body.restake === true && t1.eid && t1.eid !== A && t1.tid && t1.tid !== tA.tid && t1.rs === 1, `HTTP ${r1.status} eid ${t1.eid} tid ${t1.tid} rs ${t1.rs}`);
+    const r1b = await call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'mini_30', restakeAfter: A } });
+    const t1b = r1b.body.entryToken ? decode(r1b.body.entryToken) : {};
+    check(S, 'retrying the same death re-signs the SAME successor (idempotent, no second ticket)', r1b.status === 200 && r1b.body.reissued === true && t1b.eid === t1.eid && t1b.tid === t1.tid && inMatch(R.id) === 2 && avail(R.id) === 1, `HTTP ${r1b.status} · in_match ${inMatch(R.id)} · available ${avail(R.id)}`);
+    const B = t1.eid;
+    const par = await Promise.all(Array.from({ length: 5 }, () => call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'mini_30', restakeAfter: B } })));
+    const okEids = new Set(par.filter((r) => r.status === 200).map((r) => decode(r.body.entryToken).eid));
+    check(S, '5 parallel re-stakes of one death → exactly one successor / one ticket (others 409 or re-signed)', okEids.size === 1 && par.every((r) => r.status === 200 || (r.status === 409 && r.body.code === 'ALREADY_RESTAKED')) && inMatch(R.id) === 3 && avail(R.id) === 0, `statuses ${par.map((r) => r.status).join(',')} · successors ${okEids.size} · in_match ${inMatch(R.id)}`);
+    const C = [...okEids][0];
+    const tC = decode(par.find((r) => r.status === 200).body.entryToken);
+    const r0 = await call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'mini_30', restakeAfter: C } });
+    const leftover = Number(q1(`SELECT COUNT(*) AS n FROM arena_entries WHERE prev_entry_id = '${C}'`).n);
+    check(S, '0 EC → 402 NO_EC and the successor slot is released (no free paid life)', r0.status === 402 && r0.body.code === 'NO_EC' && r0.body.energyTickets === 0 && leftover === 0, `HTTP ${r0.status} ${r0.body.code} · slots ${leftover}`);
+    const foreign = await call('/api/game/enter', { method: 'POST', token: O.token, body: { mode: 'mini_30', restakeAfter: C } });
+    const wrongRoom = await call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'standard_100', restakeAfter: B } });
+    check(S, "re-staking another account's entry / another room → 400 RESTAKE_INVALID", foreign.status === 400 && foreign.body.code === 'RESTAKE_INVALID' && wrongRoom.status === 400 && wrongRoom.body.code === 'RESTAKE_INVALID', `${foreign.status}/${foreign.body.code} · ${wrongRoom.status}/${wrongRoom.body.code}`);
+    const gameId = `game_lt_r2_${process.pid}`;
+    const batch = (payouts) => call('/api/game/batch-payout', { method: 'POST', body: { gameId, timestamp: Math.floor(Date.now() / 1000), secret: OPT.internalSecret, payouts } });
+    const ret = await batch([{ userId: R.id, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId, metadata: { ticketId: tC.tid, entryId: C, reason: 'not_dead', pid: `${gameId}:ret1` } }]);
+    const ret2 = await batch([{ userId: R.id, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId, metadata: { ticketId: tC.tid, entryId: C, reason: 'not_dead', pid: `${gameId}:ret2` } }]);
+    const retWrong = await batch([{ userId: R.id, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId, metadata: { ticketId: t1.tid, entryId: A, reason: 'not_dead', pid: `${gameId}:ret3` } }]);
+    const uR = q1(`SELECT energy_tickets AS n FROM users WHERE id = '${R.id}'`);
+    check(S, 'TICKET_RETURN (unusable re-stake token) puts the ticket back to available exactly once', ret.body.ticketsReturned === 1 && ret2.body.ticketsReturned === 0 && retWrong.body.ticketsReturned === 0 && avail(R.id) === 1 && Number(uR.n) === 1 && Number(q1(`SELECT COUNT(*) AS n FROM arena_entries WHERE id = '${C}'`).n) === 0, `returned ${ret.body.ticketsReturned}/${ret2.body.ticketsReturned}/${retWrong.body.ticketsReturned} · available ${avail(R.id)} · users.energy_tickets ${uR.n}`);
+
+    // ---- Fast & Mini ---------------------------------------------------------------------------------
+    const F1 = await signup('r2_fm_victim');
+    const F2 = await signup('r2_fm_killer');
+    const F3 = await signup('r2_fm_noseat');
+    sqlFile([`UPDATE system_balances SET energy_pool_micro_usd = energy_pool_micro_usd + 2000000 WHERE id = 'global';`]);
+    const ec1 = avail(F1.id);
+    const f1 = await call('/api/game/enter', { method: 'POST', token: F1.token, body: { mode: 'fast_mini' } });
+    const f2 = await call('/api/game/enter', { method: 'POST', token: F2.token, body: { mode: 'fast_mini' } });
+    const tf1 = f1.body.entryToken ? decode(f1.body.entryToken) : {};
+    check(S, 'Fast & Mini entry: 0 EC, no ticket, signed fm token, a pot opened for this entry', f1.status === 200 && f1.body.fastMini === true && tf1.fm === 1 && !tf1.tid && avail(F1.id) === ec1 && inMatch(F1.id) === 0 && f1.body.potId === f1.body.entryId && q1(`SELECT status FROM fast_mini_pots WHERE id = '${f1.body.potId}'`).status === 'open', `HTTP ${f1.status} fm ${tf1.fm} tid ${tf1.tid} · EC ${ec1} → ${avail(F1.id)}`);
+    const P1 = f1.body.potId;
+    const P2 = f2.body.potId;
+    const pool = () => q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d, platform_micro_usd AS pl FROM system_balances WHERE id = 'global'");
+    const ban = (u, potId) => call('/api/ads/simulate-view', { method: 'POST', token: u.token, body: { format: 'banner', purpose: 'ec_recharge', count: 1, fastMiniEntryId: potId, lastActiveAt: Date.now(), clientNow: Date.now() } });
+    const pl0 = pool();
+    const b1 = await ban(F1, P1);
+    const pl1 = pool();
+    const safe1 = Math.floor((Number(b1.body.adValueMicroUsd) * 9200) / 10000);
+    const cr1 = q1(`SELECT COALESCE(SUM(micro_usd),0) AS pot, COALESCE(SUM(ec_micro_usd),0) AS ec FROM fast_mini_pot_credits WHERE pot_id = '${P1}'`);
+    const drawn1 = Number(pl1.d) - Number(pl0.d);
+    check(
+      S,
+      'banner with fastMiniEntryId: safe value split ONCE — pot 50 % + EC backing 50 % = drawn (no double use)',
+      b1.status === 200 && Number(cr1.pot) === Math.floor(safe1 / 2) && Number(b1.body.fastMiniPotAddedMicroUsd) === Number(cr1.pot) && Number(cr1.pot) + Number(cr1.ec) === safe1 && drawn1 === safe1,
+      `gross ${b1.body.adValueMicroUsd} · safe ${safe1} · pot ${cr1.pot} · EC ${cr1.ec} · pool drawn ${drawn1} · EC% +${b1.body.ecProgressAddedPct}`
+    );
+    const b1b = await ban(F1, P1);
+    const V = Number(q1(`SELECT COALESCE(SUM(micro_usd),0) AS v FROM fast_mini_pot_credits WHERE pot_id = '${P1}' AND status = 'open'`).v);
+    // A 2nd banner right away may be refused by the 30–45 s banner gate; either way the pot = the sum of its open credits
+    const added2 = b1b.status === 200 ? Number(b1b.body.fastMiniPotAddedMicroUsd ?? 0) : 0;
+    check(S, 'pot total = sum of its own open banner credits (banner gate still applies)', V > 0 && V === Number(cr1.pot) + added2 && (added2 === 0 || Number(b1b.body.fastMiniPotMicroUsd) === V), `pot ${V} · 2nd banner HTTP ${b1b.status} +${added2}`);
+    const foreignPot = await ban(F3, P1);
+    check(S, "a banner naming someone else's pot never funds it", Number(foreignPot.body.fastMiniPotAddedMicroUsd) === 0 && Number(q1(`SELECT COALESCE(SUM(micro_usd),0) AS v FROM fast_mini_pot_credits WHERE pot_id = '${P1}'`).v) === V, `added ${foreignPot.body.fastMiniPotAddedMicroUsd}`);
+
+    const wallet = (id) => q1(`SELECT COALESCE(w.balance_micro_usd,0) AS bal, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = '${id}') AS ledger FROM users u LEFT JOIN wallets w ON w.user_id = u.id WHERE u.id = '${id}'`);
+    const wK0 = wallet(F2.id);
+    const sysA = pool();
+    const diedAt = Date.now() + 5000;
+    const kill = { userId: F2.id, amountMicroUsd: 999_999, actionType: 'FAST_MINI_KILL', gameId, metadata: { victimId: F1.id, potId: P1, diedAt, pid: `${gameId}:fm1`, hits: 4, headshots: 1 } };
+    const k1 = await batch([kill]);
+    const wK1 = wallet(F2.id);
+    const sysB = pool();
+    const fm = (k1.body.fastMini || [])[0] || {};
+    const shooter = Number(wK1.bal) - Number(wK0.bal);
+    const plat = Number(sysB.pl) - Number(sysA.pl);
+    check(
+      S,
+      'FAST_MINI_KILL claiming 999,999 µUSD pays only the victim pot V: shooter 90 % / platform 10 % (sum = V)',
+      k1.status === 200 && fm.status === 'paid' && fm.valueMicroUsd === V && shooter === fmShooter(V) && plat === V - fmShooter(V) && plat >= Math.floor(V / 10),
+      `V ${V} · shooter +${shooter} (expected ${fmShooter(V)}) · platform +${plat}`
+    );
+    check(S, 'Fast & Mini kill: 0 % MLM, 0 % bounty, 0 % Energy Pool (pool untouched)', Number(sysB.p) === Number(sysA.p) && Number(sysB.d) === Number(sysA.d), `pool ${sysA.p}/${sysA.d} → ${sysB.p}/${sysB.d}`);
+    check(S, 'wallet_ledger equals balance after the Fast & Mini payout', Number(wK1.bal) === Number(wK1.ledger), `${wK1.bal} vs ${wK1.ledger}`);
+    const k2 = await batch([kill]);
+    const k3 = await batch([{ ...kill, metadata: { ...kill.metadata, pid: `${gameId}:fm2` } }]);
+    const k4 = await batch([{ ...kill, userId: F3.id, metadata: { ...kill.metadata, pid: `${gameId}:fm3` } }]);
+    const k5 = await batch([{ ...kill, userId: F1.id, metadata: { ...kill.metadata, victimId: F1.id, pid: `${gameId}:fm4` } }]);
+    check(
+      S,
+      'duplicate pid / second kill on an emptied pot / killer without a seat / self-kill pay nothing',
+      k2.body.duplicates >= 1 && ((k3.body.fastMini || [])[0] || {}).status === 'empty' && (k4.body.fastMiniKills ?? 0) === 0 && (k5.body.fastMiniKills ?? 0) === 0 && Number(wallet(F2.id).bal) === Number(wK1.bal) && Number(wallet(F3.id).bal) === 0,
+      `dup ${k2.body.duplicates} · second ${((k3.body.fastMini || [])[0] || {}).status} · noseat ${k4.body.fastMiniKills} · self ${k5.body.fastMiniKills}`
+    );
+    // Credits earned AFTER the death fund the next life, not the killer of the earlier death
+    const b2 = await ban(F2, P2);
+    const V2 = Number(q1(`SELECT COALESCE(SUM(micro_usd),0) AS v FROM fast_mini_pot_credits WHERE pot_id = '${P2}' AND status = 'open'`).v);
+    const early = await batch([{ userId: F1.id, amountMicroUsd: 0, actionType: 'FAST_MINI_KILL', gameId, metadata: { victimId: F2.id, potId: P2, diedAt: Date.now() - 120_000, pid: `${gameId}:fm5` } }]);
+    check(S, 'credits created after the death time are not paid for that death', b2.status === 200 && V2 > 0 && ((early.body.fastMini || [])[0] || {}).status === 'empty', `pot ${V2} · ${((early.body.fastMini || [])[0] || {}).status}`);
+    const sysC = pool();
+    const c1 = await batch([{ userId: F2.id, amountMicroUsd: 0, actionType: 'FAST_MINI_CLOSE', gameId, metadata: { potId: P2, reason: 'left', pid: `${gameId}:c1` } }]);
+    const c2 = await batch([{ userId: F2.id, amountMicroUsd: 0, actionType: 'FAST_MINI_CLOSE', gameId, metadata: { potId: P2, reason: 'left', pid: `${gameId}:c2` } }]);
+    const sysD = pool();
+    check(S, 'FAST_MINI_CLOSE forfeits the open pot to the platform exactly once', c1.body.fastMiniPotsClosed === 1 && c1.body.fastMiniForfeitedMicroUsd === V2 && Number(sysD.pl) - Number(sysC.pl) === V2 && (c2.body.fastMiniPotsClosed ?? 0) === 0, `closed ${c1.body.fastMiniPotsClosed}/${c2.body.fastMiniPotsClosed} · forfeited ${c1.body.fastMiniForfeitedMicroUsd} (pot ${V2}) · platform +${Number(sysD.pl) - Number(sysC.pl)}`);
+    const afterClose = await ban(F2, P2);
+    const lateKill = await batch([{ userId: F1.id, amountMicroUsd: 0, actionType: 'FAST_MINI_KILL', gameId, metadata: { victimId: F2.id, potId: P2, diedAt: Date.now() + 5000, pid: `${gameId}:fm6` } }]);
+    check(S, 'a closed pot takes no new banner value and pays no kill', Number(afterClose.body.fastMiniPotAddedMicroUsd) === 0 && (lateKill.body.fastMiniKills ?? 0) === 0, `added ${afterClose.body.fastMiniPotAddedMicroUsd} · kills ${lateKill.body.fastMiniKills}`);
+    const poolEnd = pool();
+    check(S, 'Energy Pool still never overdrawn after Fast & Mini banners', Number(poolEnd.p) - Number(poolEnd.d) >= 0, `pool ${poolEnd.p} drawn ${poolEnd.d}`);
+
+    // ---- Offline room hiding ------------------------------------------------------------------------
+    if (hbTimer) clearInterval(hbTimer);
+    hbTimer = null;
+    sqlFile([`UPDATE game_nodes SET last_heartbeat = unixepoch() - 120 WHERE last_heartbeat IS NOT NULL;`]);
+    const off = await call('/api/games/fps/rooms');
+    const hub = await call('/api/games');
+    const before = avail(R.id);
+    const eOff = await call('/api/game/enter', { method: 'POST', token: R.token, body: { mode: 'mini_30' } });
+    check(S, 'heartbeat older than 90 s + dead live check → gameServersOnline false, liveRooms [], Practice only', off.status === 200 && off.body.gameServersOnline === false && off.body.serverOnline === false && Array.isArray(off.body.liveRooms) && off.body.liveRooms.length === 0 && (off.body.rooms || []).length > 0 && off.body.rooms.every((r) => !r.multiplayer), `online ${off.body.gameServersOnline} · live ${off.body.liveRooms?.length} · rooms ${(off.body.rooms || []).map((r) => r.id).join(',')}`);
+    check(S, '/api/games reports gameServersOnline false', hub.status === 200 && hub.body.gameServersOnline === false, `${hub.status} ${hub.body.gameServersOnline}`);
+    check(S, 'offline → POST /api/game/enter 503 GAME_SERVERS_OFFLINE, no EC locked', eOff.status === 503 && eOff.body.code === 'GAME_SERVERS_OFFLINE' && avail(R.id) === before, `HTTP ${eOff.status} ${eOff.body.code} · EC ${before} → ${avail(R.id)}`);
+    await heartbeat(nodeId);
+    const back = await call('/api/games/fps/rooms');
+    check(S, 'a new heartbeat brings the live rooms back', back.body.gameServersOnline === true && (back.body.liveRooms || []).length > 0, `online ${back.body.gameServersOnline} · live ${(back.body.liveRooms || []).length}`);
+    sqlFile([`DELETE FROM game_nodes WHERE id = '${nodeId}';`]);
   }
 
   // ==============================================================================================

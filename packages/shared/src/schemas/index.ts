@@ -96,7 +96,12 @@ export const BatchPayoutItemSchema = z.object({
   //   at user_energy_tickets.backed_micro_usd, settled exactly once)
   // TICKET_FORFEIT: userId's in_match ticket (metadata.ticketId) ended without a payout (left / AFK /
   //   collusion kill / unopened chest) → its backing goes to the platform
-  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT']),
+  // V1.1 R2 TICKET_RETURN: a "Play again" ticket the room could not use (player already alive / gone) →
+  //   back to available (metadata.ticketId, metadata.entryId)
+  // V1.1 R2 FAST_MINI_KILL: userId killed metadata.victimId in Fast & Mini → the Worker pays 90/10 of the
+  //   victim's OWN verified-banner pot (metadata.potId, credits up to metadata.diedAt) — amount is ignored
+  // V1.1 R2 FAST_MINI_CLOSE: userId's Fast & Mini pot (metadata.potId) closed (left / AFK / room closed)
+  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT', 'TICKET_RETURN', 'FAST_MINI_KILL', 'FAST_MINI_CLOSE']),
   gameId: z.string(),
   metadata: z.record(z.any()).optional(),
 });

@@ -53,6 +53,8 @@ export interface GameDirectoryItem extends GameRecord {
 
 export interface GamesResponse {
   games: GameDirectoryItem[];
+  /** V1.1 R2: false while no game server is online (the hub then shows a subtle "Practice only" notice). */
+  gameServersOnline?: boolean;
   updatedAt: number;
 }
 

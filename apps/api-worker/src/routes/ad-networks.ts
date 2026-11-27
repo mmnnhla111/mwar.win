@@ -17,6 +17,7 @@ import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { edgeCachedValue } from '../utils/edge-cache';
 import { creditEcProgress, logAdImpression, normalizeCountry, utcDateKey } from '../utils/ad-value';
+import { creditFastMiniBanner } from '../utils/fast-mini';
 import { AD_CONFIG_CACHE_KEY, cfCountryOf, getAdConfig, pickDirectLink, toPublicAdConfig, valueFromNetworkPrice, valueSlot } from '../utils/ad-networks';
 import { isLocalDev, safeEqual } from '../utils/guards';
 import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
@@ -81,8 +82,18 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
     count
   );
   // V1.1: a live banner impression is real ad revenue → floor(gross × 0.90–0.95) backs the EC it charges
-  const backed = safeValue(c.env, backingGross(country, v)) * count;
-  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp * count, `${slot}x${count}`, { microUsd: backed, source: 'ad_charge', country }) : null;
+  let backed = safeValue(c.env, backingGross(country, v)) * count;
+  let creditBp = v.ecBp * count;
+  // V1.1 R2: while playing Fast & Mini, 50 % of this real banner revenue funds the player's own pot
+  // (what a killer can win, 90/10) and 50 % stays EC backing — the same µUSD is never used twice
+  const fmPot = body.fastMiniEntryId
+    ? await creditFastMiniBanner(c.env, { userId: me.userId, potId: body.fastMiniEntryId, safeMicroUsd: backed, ecBp: creditBp, fromPool: false, ref: `${slot}x${count}` })
+    : null;
+  if (fmPot && fmPot.potMicroUsd > 0) {
+    backed = fmPot.ecMicroUsd;
+    creditBp = fmPot.ecBp;
+  }
+  const ec = creditBp > 0 ? await creditEcProgress(c.env, me.userId, creditBp, `${slot}x${count}`, { microUsd: backed, source: 'ad_charge', country }) : null;
   return c.json({
     success: true,
     format: 'banner',
@@ -92,7 +103,9 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
     country,
     impressions: count,
     adValueMicroUsd: v.effectiveMicroUsd,
-    ecProgressAddedPct: (v.ecBp * count) / (EC_PROGRESS_BP_PER_TICKET / 100),
+    ecProgressAddedPct: creditBp / (EC_PROGRESS_BP_PER_TICKET / 100),
+    fastMiniPotAddedMicroUsd: fmPot?.potMicroUsd ?? 0,
+    fastMiniPotMicroUsd: fmPot?.potOpenMicroUsd ?? 0,
     energy_tickets: ec?.energyTickets,
     max_energy_tickets: ec?.maxEnergyTickets,
     energy_progress_pct: ec?.energyProgressPct,
