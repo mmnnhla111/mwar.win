@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PlayerRankStatus } from '../ranks';
 import { POST_MEDIA_MAX_ITEMS, POST_VISIBILITY } from '../platform';
 import type { NotificationType, PostMediaItem, PostVisibility, StaffRole } from '../platform';
 
@@ -294,6 +295,8 @@ export interface SocialProfile {
   /** Cheers received on posts + profile. */
   cheerCount?: number;
   memberSince: number;
+  /** Downline-based rank of this player. */
+  rank?: PlayerRankStatus;
   isFollowing?: boolean;
   isMe?: boolean;
   /** I blocked this player. */
@@ -323,7 +326,10 @@ export interface BootstrapUser {
   coverColor: ProfileCoverColor;
   role: 'player' | 'admin' | 'auditor';
   /** Staff role (RBAC); 'user' for players. */
+  /** Highest staff role (display / legacy). */
   staffRole: StaffRole;
+  /** Every staff role the account holds (union decides the /admin tabs). Empty for regular players. */
+  staffRoles: StaffRole[];
   coverUrl: string | null;
   rankBadge: string | null;
   energyTickets: number;
@@ -338,7 +344,8 @@ export interface BootstrapUser {
   earningsVisibility: EarningsVisibility;
   /** Rank EXP (matches × 20 + kills × 5) and its tier, e.g. { id: 'silver_2', name: 'Silver II' }. */
   exp: number;
-  rank: { id: string; name: string; image: string; nextMinExp: number | null; progress: number };
+  /** Downline-based rank (5 levels): current tier + { totalDownlines, nextRank, downlinesNeeded }. */
+  rank: PlayerRankStatus;
   /** ฿ game coins (mission rewards; not withdrawable). */
   coins: number;
 }

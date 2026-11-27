@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { apiFetch, getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
-import { staffCan } from '@mwar/shared';
-import type { StaffPermission } from '@mwar/shared';
+import { useRouter } from 'next/navigation';
+import { getServerNodes, updateNodeCapacity, type GameNode } from '../../lib/api';
+import { staffCanAny } from '@mwar/shared';
+import { primaryStaffRole } from '@mwar/shared';
+import type { StaffPermission, StaffRole } from '@mwar/shared';
 import { StaffRolesAdmin } from '../../components/admin/StaffRolesAdmin';
 import { useSession } from '../../lib/session';
 import { TakedownQueue } from '../../components/admin/TakedownQueue';
@@ -11,13 +13,49 @@ import { MembersAdmin } from '../../components/admin/MembersAdmin';
 import { GamesAdmin } from '../../components/admin/GamesAdmin';
 import { AdNetworksAdmin } from '../../components/admin/AdNetworksAdmin';
 import { CashoutReviewAdmin } from '../../components/admin/CashoutReviewAdmin';
+import { NodeCard } from '../../components/admin/NodeCard';
 import { useTranslation } from '../../i18n/I18nProvider';
 
+/**
+ * Strict /admin guard (static export => client side). Nothing from the console below is mounted, so no admin
+ * data is requested, until a FRESH /api/bootstrap says the account holds at least one staff role. Not logged in,
+ * or a regular member -> router.replace('/'). The API enforces every permission again (403) regardless.
+ */
 export default function AdminAuditPage() {
+  const router = useRouter();
+  const { boot, status, refresh } = useSession();
+  const [verified, setVerified] = useState(false);
+  const roles = boot?.user.staffRoles || [];
+  const isStaff = roles.length > 0;
+
+  useEffect(() => {
+    if (status === 'anon') router.replace('/');
+  }, [status, router]);
+
+  // Re-check against the server once (the cached bootstrap can be up to 60 s old, e.g. just after a demotion)
+  useEffect(() => {
+    if (status !== 'ready') return;
+    let live = true;
+    refresh(true).finally(() => live && setVerified(true));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status === 'ready']);
+
+  const allowed = status === 'ready' && verified && isStaff;
+  useEffect(() => {
+    if (status === 'ready' && verified && !isStaff) router.replace('/');
+  }, [status, verified, isStaff, router]);
+
+  if (!allowed) return <div className="py-24 text-center text-stone-300" data-admin-guard="checking" aria-busy="true" />;
+  return <AdminConsole roles={roles} />;
+}
+
+function AdminConsole({ roles }: { roles: StaffRole[] }) {
   const { t } = useTranslation();
-  const { boot } = useSession();
-  const staffRole = boot?.user.staffRole || 'user';
-  const can = (p: StaffPermission) => staffCan(staffRole, p);
+  const staffRole = primaryStaffRole(roles);
+  const can = (p: StaffPermission) => staffCanAny(roles, p);
   // Each tab mirrors an API permission (the API enforces it; this only hides what you cannot use)
   const TABS = ([
     ['fleet', '🖥️', 'admin.tab.fleet', 'nodes'],
@@ -126,7 +164,7 @@ export default function AdminAuditPage() {
 
         <div className="flex items-center space-x-2 text-xs font-bold text-amber-700 bg-stone-50 px-3.5 py-1.5 rounded-2xl border border-stone-200/80">
           <span className="w-2 h-2 rounded-full bg-[#FFE135] animate-ping" />
-          <span data-staff-role={staffRole}>{t(`staff.role.${staffRole}`)}</span>
+          <span data-staff-role={staffRole} data-staff-roles={roles.join(',')}>{roles.map((r) => t(`staff.role.${r}`)).join(' + ')}</span>
         </div>
       </div>
 
@@ -196,134 +234,15 @@ export default function AdminAuditPage() {
               {t('admin.noNodes')}
             </div>
           ) : (
-            nodes.map((node) => {
-              const isOnline = node.status === 'online';
-              return (
-                <div
-                  key={node.id}
-                  className={`rounded-2xl border p-4 sm:p-5 transition shadow-[0_2px_12px_rgba(0,0,0,0.04)] ${
-                    isOnline
-                      ? 'bg-stone-50 border-emerald-200 '
-                      : 'bg-stone-50 border-stone-200/80 opacity-80'
-                  }`}
-                >
-                  {/* Top: Name & Status */}
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-extrabold text-stone-900 tracking-tight truncate max-w-[200px]" title={node.node_name}>
-                        {node.node_name}
-                      </h3>
-                      <div className="text-[10px] text-stone-500 font-mono mt-0.5">
-                        {t('admin.role')}: <span className="text-amber-700 font-bold uppercase">{node.role}</span> • {node.region || t('admin.localBareMetal')}
-                      </div>
-                    </div>
-
-                    <span
-                      className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full border flex items-center gap-1.5 ${
-                        isOnline
-                          ? 'bg-emerald-50 text-emerald-600 border-emerald-200 shadow-sm'
-                          : 'bg-rose-50 text-rose-500 border-rose-200'
-                      }`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-                      {isOnline ? t('admin.online') : t('admin.offline')}
-                    </span>
-                  </div>
-
-                  {/* Telemetry Metrics */}
-                  <div className="grid grid-cols-2 gap-2 mt-4 bg-white p-2.5 rounded-xl border border-stone-200/80">
-                    <div>
-                      <div className="flex justify-between text-[10px] text-stone-500 font-bold">
-                        <span>{t('admin.cpu')}</span>
-                        <span className="text-stone-900 font-mono">{node.cpu_usage.toFixed(1)}%</span>
-                      </div>
-                      <div className="w-full bg-stone-100 h-1.5 rounded-full overflow-hidden mt-1">
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            node.cpu_usage > 80 ? 'bg-rose-500' : node.cpu_usage > 50 ? 'bg-[#FFE135]' : 'bg-emerald-400'
-                          }`}
-                          style={{ width: `${Math.min(100, Math.max(5, node.cpu_usage))}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-[10px] text-stone-500 font-bold">
-                        <span>{t('admin.ram')}</span>
-                        <span className="text-stone-900 font-mono">{node.ram_usage.toFixed(1)}%</span>
-                      </div>
-                      <div className="w-full bg-stone-100 h-1.5 rounded-full overflow-hidden mt-1">
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            node.ram_usage > 80 ? 'bg-rose-500' : node.ram_usage > 60 ? 'bg-[#FFE135]' : 'bg-sky-400'
-                          }`}
-                          style={{ width: `${Math.min(100, Math.max(5, node.ram_usage))}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Live Rooms & Players */}
-                  <div className="flex items-center justify-between text-xs py-2.5 border-b border-stone-200/80 font-medium">
-                    <span className="text-stone-500 text-[11px]">{t('admin.rooms')}</span>
-                    <span className="text-stone-900 font-bold">{node.active_rooms} active</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs py-2 border-b border-stone-200/80 font-medium">
-                    <span className="text-stone-500 text-[11px]">{t('admin.players')}</span>
-                    <span className="text-emerald-600 font-extrabold font-mono">{node.player_count} online</span>
-                  </div>
-
-                  {/* Capacity Controls */}
-                  <div className="mt-3 pt-1 space-y-1.5">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-stone-500">{t('admin.miniCap')}</span>
-                      <div className="flex items-center space-x-1">
-                        {[20, 30, 40].map((cap) => (
-                          <button
-                            key={cap}
-                            onClick={() => handleCapacityChange(node.id, cap, node.room_capacity_fast)}
-                            disabled={updatingNodeId === node.id}
-                            className={`px-2 py-0.5 text-[10px] rounded-md font-bold transition ${
-                              node.room_capacity_mini === cap
-                                ? 'bg-[#FFE135] text-stone-900 font-extrabold'
-                                : 'bg-stone-100 text-stone-500 hover:text-stone-900'
-                            }`}
-                          >
-                            {cap}P
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-stone-500">{t('admin.stdCap')}</span>
-                      <div className="flex items-center space-x-1">
-                        {[60, 100, 120].map((cap) => (
-                          <button
-                            key={cap}
-                            onClick={() => handleCapacityChange(node.id, node.room_capacity_mini, cap)}
-                            disabled={updatingNodeId === node.id}
-                            className={`px-2 py-0.5 text-[10px] rounded-md font-bold transition ${
-                              node.room_capacity_fast === cap
-                                ? 'bg-rose-600 text-white font-extrabold'
-                                : 'bg-stone-100 text-stone-500 hover:text-stone-900'
-                            }`}
-                          >
-                            {cap}P
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Footer status */}
-                  <div className="mt-3 pt-2 border-t border-stone-200/80 flex justify-between items-center text-[10px] text-stone-500">
-                    <span className="truncate max-w-[140px] font-mono">{node.ip_address || node.tunnel_hostname || 'localhost'}</span>
-                    <span>{formatLastHeartbeat(node.last_heartbeat)}</span>
-                  </div>
-                </div>
-              );
-            })
+            nodes.map((node) => (
+              <NodeCard
+                key={node.id}
+                node={node}
+                heartbeat={formatLastHeartbeat(node.last_heartbeat)}
+                updating={updatingNodeId === node.id}
+                onCapacity={handleCapacityChange}
+              />
+            ))
           )}
         </div>
 

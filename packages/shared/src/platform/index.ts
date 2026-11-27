@@ -4,8 +4,18 @@ import { z } from 'zod';
 // Staff roles (RBAC) — users.staff_role (migration 0013)
 // ---------------------------------------------------------------------------
 /** Highest first. `user` = regular player. */
-export const STAFF_ROLES = ['super_admin', 'admin', 'moderator', 'support', 'finance_auditor', 'user'] as const;
+export const STAFF_ROLES = ['super_admin', 'admin', 'ops_manager', 'moderator', 'support', 'finance_auditor', 'user'] as const;
 export type StaffRole = (typeof STAFF_ROLES)[number];
+
+/**
+ * V1.1 multi-role staff (table user_staff_roles): one account can hold several of these at once; its powers are the
+ * union. `super_admin` is never grantable / editable via the API (owner var SUPER_ADMIN_USERNAMES, or set in D1).
+ * `admin` is the pre-V1.1 all-round role: kept for accounts that already have it (migration 0022 copies it into
+ * user_staff_roles) but can no longer be newly granted; saving a staff row without it removes it.
+ */
+export const ASSIGNABLE_STAFF_ROLES = ['moderator', 'support', 'finance_auditor', 'ops_manager'] as const;
+export type AssignableStaffRole = (typeof ASSIGNABLE_STAFF_ROLES)[number];
+export const LEGACY_STAFF_ROLES = ['admin'] as const;
 
 /** What each staff area allows (checked on the API; the /admin tabs only mirror it). */
 export const STAFF_PERMISSIONS = {
@@ -24,8 +34,8 @@ export const STAFF_PERMISSIONS = {
   /** Suspend / lift suspension. */
   suspend: ['super_admin', 'admin', 'moderator'],
   /** Games, rooms, nodes. */
-  games: ['super_admin', 'admin'],
-  nodes: ['super_admin', 'admin'],
+  games: ['super_admin', 'admin', 'ops_manager'],
+  nodes: ['super_admin', 'admin', 'ops_manager'],
   /** Takedown reports + 18+ review. */
   takedown: ['super_admin', 'admin', 'moderator'],
   /** Ad networks (Adsterra / Monetag) config, live/test mode, eCPM multipliers. */
@@ -40,6 +50,23 @@ export function staffCan(role: StaffRole | null | undefined, perm: StaffPermissi
   return !!role && (STAFF_PERMISSIONS[perm] as readonly string[]).includes(role);
 }
 
+/** Union check for a multi-role account. */
+export function staffCanAny(roles: readonly (StaffRole | string)[] | null | undefined, perm: StaffPermission): boolean {
+  const allowed = STAFF_PERMISSIONS[perm] as readonly string[];
+  return !!roles && roles.some((r) => allowed.includes(r));
+}
+
+/** Keep only valid staff roles (no 'user'), highest first, de-duplicated. */
+export function normalizeStaffRoles(v: unknown): StaffRole[] {
+  const list = Array.isArray(v) ? v : [];
+  return STAFF_ROLES.filter((r) => r !== 'user' && list.includes(r));
+}
+
+/** The single most senior role of a set ('user' when empty): the legacy `staffRole` field. */
+export function primaryStaffRole(roles: readonly string[]): StaffRole {
+  return STAFF_ROLES.find((r) => roles.includes(r)) || 'user';
+}
+
 export function normalizeStaffRole(v: unknown): StaffRole {
   return (STAFF_ROLES as readonly string[]).includes(String(v)) ? (v as StaffRole) : 'user';
 }
@@ -49,11 +76,17 @@ export const StaffRoleUpdateSchema = z.object({
   staffRole: z.enum(STAFF_ROLES),
 });
 
+export const StaffRolesUpdateSchema = z.object({
+  roles: z.array(z.string().trim().min(1).max(32)).max(10),
+});
+
 export interface StaffMember {
   id: string;
   username: string;
   displayName: string | null;
   staffRole: StaffRole;
+  /** All roles held (union). */
+  staffRoles: StaffRole[];
   createdAt: number;
 }
 

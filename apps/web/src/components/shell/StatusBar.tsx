@@ -1,11 +1,12 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { useSession } from '../../lib/session';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { RankBadge } from '../ui/RankBadge';
 import { openDailyQuests } from '../FloatingQuestWidget';
+import { RankProgressionModal } from '../rank/RankProgressionModal';
 
 const nf = (n: number) => Math.max(0, Math.floor(n || 0)).toLocaleString('en-US');
 
@@ -16,6 +17,7 @@ const nf = (n: number) => Math.max(0, Math.floor(n || 0)).toLocaleString('en-US'
 export function StatusBar() {
   const { boot } = useSession();
   const { t } = useTranslation();
+  const [rankOpen, setRankOpen] = useState(false);
   if (!boot?.user) return null;
   const u = boot.user;
   const net = boot.network;
@@ -26,15 +28,17 @@ export function StatusBar() {
   return (
     <div className="border-t border-stone-100" data-status-bar>
       <div className="max-w-[1320px] mx-auto px-3 md:px-4 h-10 flex items-center gap-1.5 md:gap-2 overflow-x-auto no-scrollbar text-[12px] font-bold whitespace-nowrap">
-        <Link
-          href="/profile"
+        <button
+          type="button"
+          onClick={() => setRankOpen(true)}
           className="flex items-center gap-1.5 rounded-full bg-stone-100 hover:bg-stone-200 pl-1 pr-2.5 h-7 shrink-0"
-          title={t('rank.expTitle', { exp: nf(u.exp ?? 0) })}
+          title={t('rankx.chipTitle', { n: nf(u.rank?.totalDownlines ?? net?.totalReferrals ?? 0) })}
+          aria-haspopup="dialog"
           data-rank-chip
         >
-          <RankBadge rankId={u.rank?.id} name={u.rank?.name} exp={u.exp} size={22} />
+          <RankBadge rankId={u.rank?.id} name={u.rank?.name} totalDownlines={u.rank?.totalDownlines} size={22} />
           <span className="text-stone-800">{u.rank?.name || 'Bronze I'}</span>
-        </Link>
+        </button>
 
         <span className="flex items-center gap-1 rounded-full bg-[#FFF6C2] text-[#7A5B00] px-2.5 h-7 shrink-0" title={t('currency.coinsHint')} data-coins>
           <span className="font-black">฿</span>
@@ -68,6 +72,7 @@ export function StatusBar() {
           <span className="text-stone-400 font-semibold">· {t('mlm.directShort', { n: nf(net?.directReferrals ?? 0) })}</span>
         </Link>
       </div>
+      {rankOpen && <RankProgressionModal rank={u.rank} onClose={() => setRankOpen(false)} />}
     </div>
   );
 }

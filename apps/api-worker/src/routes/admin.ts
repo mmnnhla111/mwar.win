@@ -12,14 +12,19 @@ import {
   MAX_ENERGY_TICKETS,
   SUPPORT_EC_DAILY_LIMIT,
   StaffRoleUpdateSchema,
+  StaffRolesUpdateSchema,
+  ASSIGNABLE_STAFF_ROLES,
+  LEGACY_STAFF_ROLES,
+  normalizeStaffRoles,
+  primaryStaffRole,
   STAFF_PERMISSIONS,
   normalizeStaffRole,
 } from '@mwar/shared';
-import type { StaffAuditEntry, StaffMember } from '@mwar/shared';
+import type { StaffAuditEntry, StaffMember, StaffRole } from '@mwar/shared';
 import type { AdminMemberDetail, AdminMemberRow, MemberFilter } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { requireStaff, getStaffRole, isEnvSuperAdmin } from '../middleware/staff';
+import { requireStaff, getStaffRoles, isEnvSuperAdmin } from '../middleware/staff';
 import { edgeCachePurge } from '../utils/edge-cache';
 import { GAMES_CACHE_KEYS, roomsCacheKey, rowToGame, rowToRoom } from './games';
 
@@ -141,7 +146,9 @@ adminRouter.get('/members/:id', requireStaff('membersRead'), async (c) => {
 /** PATCH /api/admin/members/:id { ecDelta?, status? } — EC is clamped to 0…30. */
 adminRouter.patch('/members/:id', requireStaff([...STAFF_PERMISSIONS.membersWrite, 'support', 'moderator']), async (c) => {
   const me = c.get('user');
-  const myRole = await getStaffRole(c);
+  const myRoles = await getStaffRoles(c);
+  const myRole = myRoles.join('+') || 'user';
+  const holds = (allowed: readonly string[]) => myRoles.some((r) => allowed.includes(r));
   const id = c.req.param('id');
   const parsed = AdminMemberPatchSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || 'Invalid update' }, 400);
@@ -154,8 +161,8 @@ adminRouter.patch('/members/:id', requireStaff([...STAFF_PERMISSIONS.membersWrit
   const t = now();
 
   // Permission per field: EC = admin+ (unlimited) or support (daily limit); suspension = admin+ / moderator
-  if (ecDelta && !(STAFF_PERMISSIONS.membersWrite as readonly string[]).includes(myRole)) {
-    if (myRole !== 'support') return c.json({ error: 'Forbidden: your staff role cannot adjust EC', code: 'STAFF_ROLE' }, 403);
+  if (ecDelta && !holds(STAFF_PERMISSIONS.membersWrite)) {
+    if (!myRoles.includes('support')) return c.json({ error: 'Forbidden: your staff role cannot adjust EC', code: 'STAFF_ROLE' }, 403);
     const dayStart = t - (t % 86_400);
     const used = await c.env.DB
       .prepare("SELECT COALESCE(SUM(ABS(CAST(new_value AS INTEGER))), 0) AS n FROM staff_audit_log WHERE action = 'ec_adjust' AND actor_id = ?1 AND created_at >= ?2")
@@ -165,7 +172,7 @@ adminRouter.patch('/members/:id', requireStaff([...STAFF_PERMISSIONS.membersWrit
       return c.json({ error: `Support can adjust at most ${SUPPORT_EC_DAILY_LIMIT} EC per day (used ${used?.n || 0})`, code: 'EC_DAILY_LIMIT' }, 403);
     }
   }
-  if (status && !(STAFF_PERMISSIONS.suspend as readonly string[]).includes(myRole)) {
+  if (status && !holds(STAFF_PERMISSIONS.suspend)) {
     return c.json({ error: 'Forbidden: your staff role cannot suspend accounts', code: 'STAFF_ROLE' }, 403);
   }
   if (status && (target.id === me.userId || normalizeStaffRole(target.staff_role) !== 'user' || target.role !== 'player')) {
@@ -208,67 +215,122 @@ adminRouter.patch('/members/:id', requireStaff([...STAFF_PERMISSIONS.membersWrit
 // Staff & roles (super_admin only)
 // ---------------------------------------------------------------------------
 const STAFF_COLS = 'id, username, display_name, staff_role, created_at';
-const toStaff = (r: any): StaffMember => ({
-  id: r.id,
-  username: r.username,
-  displayName: r.display_name || null,
-  staffRole: normalizeStaffRole(r.staff_role),
-  createdAt: r.created_at,
-});
+const toStaff = (r: any, roles?: StaffRole[]): StaffMember => {
+  const primary = normalizeStaffRole(r.staff_role);
+  const all = roles && roles.length ? roles : primary === 'user' ? [] : [primary];
+  return {
+    id: r.id,
+    username: r.username,
+    displayName: r.display_name || null,
+    staffRole: primaryStaffRole(all),
+    staffRoles: all,
+    createdAt: r.created_at,
+  };
+};
 
-/** GET /api/admin/staff?q= — current staff (no q) or a username / id prefix search (any user). */
-adminRouter.get('/staff', requireStaff('staff'), async (c) => {
-  const q = (c.req.query('q') || '').trim().replace(/^@/, '');
-  if (q) {
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(q)) return c.json({ items: [] });
-    const { results } = await c.env.DB
-      .prepare(
-        `SELECT ${STAFF_COLS} FROM users WHERE id = ?1
-         UNION SELECT ${STAFF_COLS} FROM users WHERE username >= ?2 AND username < ?3
-         ORDER BY username LIMIT 20`
-      )
-      .bind(q, q.toLowerCase(), `${q.toLowerCase()}\uffff`)
-      .all<any>();
-    return c.json({ items: (results || []).map(toStaff) });
-  }
+/** Every role of each user id: user_staff_roles rows + the legacy users.staff_role (+ owner env var). */
+async function loadRolesFor(c: Ctx, rows: any[]): Promise<Map<string, StaffRole[]>> {
+  const out = new Map<string, StaffRole[]>();
+  if (!rows.length) return out;
+  const ids = rows.map((r) => r.id);
   const { results } = await c.env.DB
-    .prepare(`SELECT ${STAFF_COLS} FROM users WHERE staff_role != 'user' ORDER BY created_at ASC LIMIT 200`)
+    .prepare(`SELECT user_id, role_key FROM user_staff_roles WHERE user_id IN (${ids.map((_, i) => `?${i + 1}`).join(',')})`)
+    .bind(...ids)
+    .all<{ user_id: string; role_key: string }>();
+  for (const r of rows) {
+    const keys = (results || []).filter((x) => x.user_id === r.id).map((x) => x.role_key);
+    if (r.staff_role) keys.push(r.staff_role);
+    if (isEnvSuperAdmin(c.env, r.username)) keys.push('super_admin');
+    out.set(r.id, normalizeStaffRoles(keys));
+  }
+  return out;
+}
+const withRoles = async (c: Ctx, rows: any[]): Promise<StaffMember[]> => {
+  const map = await loadRolesFor(c, rows);
+  return rows.map((r) => toStaff(r, map.get(r.id)));
+};
+
+/** GET /api/admin/staff — current staff: everyone with at least one staff role. */
+adminRouter.get('/staff', requireStaff('staff'), async (c) => {
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT ${STAFF_COLS} FROM users
+       WHERE staff_role != 'user' OR id IN (SELECT user_id FROM user_staff_roles)
+       ORDER BY created_at ASC LIMIT 200`
+    )
     .all<any>();
-  return c.json({ items: (results || []).map(toStaff) });
+  return c.json({ items: await withRoles(c, results || []) });
 });
 
-/** PATCH /api/admin/staff { userId, staffRole } — assign / change / revoke, with an audit row. */
-adminRouter.patch('/staff', requireStaff('staff'), async (c) => {
+/** GET /api/admin/staff/search-users?q= — find registered members (username / display name) to make staff. super_admin only. */
+adminRouter.get('/staff/search-users', requireStaff('staff'), async (c) => {
+  const q = (c.req.query('q') || '').trim().replace(/^@/, '').slice(0, 40);
+  if (q.length < 1) return c.json({ items: [] });
+  const like = `%${q.toLowerCase().replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT ${STAFF_COLS} FROM users
+       WHERE status = 'active' AND id NOT LIKE 'SYSTEM%'
+         AND (id = ?1 OR LOWER(username) LIKE ?2 ESCAPE '\\' OR LOWER(COALESCE(display_name, '')) LIKE ?2 ESCAPE '\\')
+       ORDER BY (LOWER(username) = ?3) DESC, username LIMIT 20`
+    )
+    .bind(q, like, q.toLowerCase())
+    .all<any>();
+  return c.json({ items: await withRoles(c, results || []) });
+});
+
+/**
+ * Replace a member's staff roles. super_admin can never be granted, edited or removed here (403);
+ * an empty list demotes the account back to a regular member. Audited as 'staff_roles'.
+ */
+async function applyStaffRoles(c: Ctx, userId: string, wanted: unknown) {
   const me = c.get('user');
-  const parsed = StaffRoleUpdateSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || 'Invalid role' }, 400);
-  const { userId, staffRole } = parsed.data;
+  const list = Array.isArray(wanted) ? wanted.map((x) => String(x)) : null;
+  if (!list) return c.json({ error: 'roles must be an array' }, 400);
+  if (list.includes('super_admin')) return c.json({ error: 'super_admin cannot be granted, edited or removed through the API', code: 'SUPER_ADMIN_PROTECTED' }, 403);
   const target = await c.env.DB.prepare(`SELECT ${STAFF_COLS}, status FROM users WHERE id = ?1`).bind(userId).first<any>();
   if (!target) return c.json({ error: 'Member not found' }, 404);
-  const old = normalizeStaffRole(target.staff_role);
-  if (old === staffRole) return c.json({ success: true, member: toStaff(target) });
-  // Never leave the platform without an owner: you cannot demote yourself, and the last super_admin stays
-  if (target.id === me.userId && staffRole !== 'super_admin') return c.json({ error: 'You cannot remove your own super_admin role' }, 400);
-  if (old === 'super_admin') {
-    const others = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE staff_role = 'super_admin' AND id != ?1").bind(target.id).first<{ n: number }>();
-    if (!Number(others?.n || 0) && !isEnvSuperAdmin(c.env, target.username)) return c.json({ error: 'At least one super_admin must remain' }, 400);
-  }
-  // Keep the legacy JWT role roughly in step (old clients / DEV panel): admin-type staff -> 'admin'
-  const legacyRole = staffRole === 'super_admin' || staffRole === 'admin' ? 'admin' : staffRole === 'finance_auditor' ? 'auditor' : 'player';
+  const current = (await loadRolesFor(c, [target])).get(target.id) || [];
+  if (current.includes('super_admin')) return c.json({ error: 'A super_admin account cannot be edited or demoted through the API', code: 'SUPER_ADMIN_PROTECTED' }, 403);
+  const allowed: string[] = [...ASSIGNABLE_STAFF_ROLES, ...(current.includes('admin') ? LEGACY_STAFF_ROLES : [])];
+  const bad = list.find((r) => !allowed.includes(r));
+  if (bad) return c.json({ error: `Unknown or not assignable role: ${bad}` }, 400);
+  if (target.status !== 'active' && list.length) return c.json({ error: 'Only active members can be made staff' }, 400);
+  const next = normalizeStaffRoles(list);
+  const primary = primaryStaffRole(next);
+  // Keep the legacy JWT role roughly in step (old clients / DEV panel)
+  const legacyRole = next.includes('admin') ? 'admin' : next.includes('finance_auditor') ? 'auditor' : 'player';
   const t = now();
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE users SET staff_role = ?1, role = ?2 WHERE id = ?3').bind(staffRole, legacyRole, userId),
-    c.env.DB.prepare("INSERT INTO staff_audit_log (id, actor_id, target_id, action, old_value, new_value, created_at) VALUES (?1, ?2, ?3, 'staff_role', ?4, ?5, ?6)").bind(
+    c.env.DB.prepare('DELETE FROM user_staff_roles WHERE user_id = ?1').bind(userId),
+    ...next.map((r) => c.env.DB.prepare('INSERT INTO user_staff_roles (user_id, role_key, granted_by, created_at) VALUES (?1, ?2, ?3, ?4)').bind(userId, r, me.userId, t)),
+    c.env.DB.prepare('UPDATE users SET staff_role = ?1, role = ?2 WHERE id = ?3').bind(primary, legacyRole, userId),
+    c.env.DB.prepare("INSERT INTO staff_audit_log (id, actor_id, target_id, action, old_value, new_value, created_at) VALUES (?1, ?2, ?3, 'staff_roles', ?4, ?5, ?6)").bind(
       crypto.randomUUID(),
       me.userId,
       userId,
-      old,
-      staffRole,
+      current.join(',') || 'user',
+      next.join(',') || 'user',
       t
     ),
   ]);
-  console.log(`[ADMIN] ${me.username} set staff_role of ${target.username}: ${old} -> ${staffRole}`);
-  return c.json({ success: true, member: { ...toStaff(target), staffRole } });
+  console.log(`[ADMIN] ${me.username} set staff roles of ${target.username}: ${current.join(',') || 'user'} -> ${next.join(',') || 'user'}`);
+  return c.json({ success: true, member: toStaff({ ...target, staff_role: primary }, next) });
+}
+
+/** PUT /api/admin/staff/:userId/roles { roles: ['moderator', ...] } — [] = back to a regular member. */
+adminRouter.put('/staff/:userId/roles', requireStaff('staff'), async (c) => {
+  const parsed = StaffRolesUpdateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'roles must be an array of role keys' }, 400);
+  return applyStaffRoles(c, c.req.param('userId') || '', parsed.data.roles);
+});
+
+/** PATCH /api/admin/staff { userId, staffRole } — pre-V1.1 single-role call, kept for old clients (= roles [role]). */
+adminRouter.patch('/staff', requireStaff('staff'), async (c) => {
+  const parsed = StaffRoleUpdateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || 'Invalid role' }, 400);
+  const { userId, staffRole } = parsed.data;
+  return applyStaffRoles(c, userId, staffRole === 'user' ? [] : [staffRole]);
 });
 
 /** GET /api/admin/staff/audit — newest 50 staff actions (role changes, EC adjustments, suspensions). */

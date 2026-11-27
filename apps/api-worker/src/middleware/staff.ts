@@ -1,5 +1,5 @@
 import type { Context, Next } from 'hono';
-import { STAFF_PERMISSIONS, normalizeStaffRole } from '@mwar/shared';
+import { STAFF_PERMISSIONS, normalizeStaffRoles, primaryStaffRole } from '@mwar/shared';
 import type { StaffPermission, StaffRole } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from './auth';
@@ -17,28 +17,39 @@ export function isEnvSuperAdmin(env: Env, username: string | null | undefined): 
   return list.includes(username.toLowerCase());
 }
 
-const CACHE = new WeakMap<Request, StaffRole>();
+const CACHE = new WeakMap<Request, StaffRole[]>();
 
 /**
- * The caller's staff role, read from D1 on every staff request (one primary-key read), so a role
- * change works at once — no new login needed, unlike the JWT `role` claim.
+ * The caller's staff roles (V1.1 multi-role), read from D1 on every staff request, so a role change works at
+ * once — no new login needed, unlike the JWT `role` claim. Union of: super_admin (SUPER_ADMIN_USERNAMES or
+ * users.staff_role), every user_staff_roles row, and the legacy users.staff_role value. Empty = regular player.
  */
-export async function getStaffRole(c: Ctx): Promise<StaffRole> {
+export async function getStaffRoles(c: Ctx): Promise<StaffRole[]> {
   const hit = CACHE.get(c.req.raw);
   if (hit) return hit;
   const me = c.get('user');
-  if (!me) return 'user';
-  const row = await c.env.DB
-    .prepare('SELECT username, status, staff_role FROM users WHERE id = ?1')
-    .bind(me.userId)
-    .first<{ username: string; status: string; staff_role: string | null }>()
-    .catch(() => null);
-  let role: StaffRole = 'user';
+  if (!me) return [];
+  const [u, rows] = await c.env.DB
+    .batch([
+      c.env.DB.prepare('SELECT username, status, staff_role FROM users WHERE id = ?1').bind(me.userId),
+      c.env.DB.prepare('SELECT role_key FROM user_staff_roles WHERE user_id = ?1').bind(me.userId),
+    ])
+    .catch(() => [null, null] as any);
+  const row = u?.results?.[0] as { username: string; status: string; staff_role: string | null } | undefined;
+  let roles: StaffRole[] = [];
   if (row && row.status === 'active') {
-    role = isEnvSuperAdmin(c.env, row.username) ? 'super_admin' : normalizeStaffRole(row.staff_role);
+    const keys: string[] = (rows?.results || []).map((r: any) => String(r.role_key));
+    if (row.staff_role) keys.push(row.staff_role);
+    if (isEnvSuperAdmin(c.env, row.username)) keys.push('super_admin');
+    roles = normalizeStaffRoles(keys);
   }
-  CACHE.set(c.req.raw, role);
-  return role;
+  CACHE.set(c.req.raw, roles);
+  return roles;
+}
+
+/** The most senior role ('user' for a regular player); kept for call sites that only need a label. */
+export async function getStaffRole(c: Ctx): Promise<StaffRole> {
+  return primaryStaffRole(await getStaffRoles(c));
 }
 
 /**
@@ -54,9 +65,9 @@ export function requireStaff(allowed: StaffPermission | readonly StaffRole[]) {
       const denied = await authMiddleware(c, async () => {});
       if (denied) return denied;
     }
-    const role = await getStaffRole(c);
-    if (!roles.includes(role)) {
-      return c.json({ error: 'Forbidden: your staff role does not allow this', code: 'STAFF_ROLE', staffRole: role }, 403);
+    const mine = await getStaffRoles(c);
+    if (!mine.some((r) => roles.includes(r))) {
+      return c.json({ error: 'Forbidden: your staff role does not allow this', code: 'STAFF_ROLE', staffRole: primaryStaffRole(mine) }, 403);
     }
     return next();
   };
@@ -64,5 +75,6 @@ export function requireStaff(allowed: StaffPermission | readonly StaffRole[]) {
 
 /** Inline check for handlers that branch on permissions. */
 export async function staffHas(c: Ctx, perm: StaffPermission): Promise<boolean> {
-  return (STAFF_PERMISSIONS[perm] as readonly string[]).includes(await getStaffRole(c));
+  const allowed = STAFF_PERMISSIONS[perm] as readonly string[];
+  return (await getStaffRoles(c)).some((r) => allowed.includes(r));
 }

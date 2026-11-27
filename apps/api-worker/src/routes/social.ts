@@ -5,6 +5,7 @@ import {
   SOCIAL_IMAGE_MAX_BYTES,
   SOCIAL_POST_TAGS,
   PROFILE_COVER_IDS,
+  getRankStatus,
   SocialPostCreateSchema,
   SocialPostUpdateSchema,
   SocialCommentCreateSchema,
@@ -730,7 +731,8 @@ async function loadProfile(c: AppCtx, username: string): Promise<SocialProfile |
       .prepare(
         `SELECT u.id, u.username, u.display_name, u.bio, ${AVATAR_SQL('u')} AS avatar_url, u.cover_color, u.cover_url,
                 u.total_kills, u.total_matches, u.followers_count, u.following_count, u.posts_count, u.cheer_count, u.created_at,
-                u.earnings_visibility, COALESCE(w.total_earned_micro_usd, 0) AS earned
+                u.earnings_visibility, COALESCE(w.total_earned_micro_usd, 0) AS earned,
+                (SELECT COUNT(*) FROM network_trees nt WHERE nt.ancestor_id = u.id AND nt.depth BETWEEN 1 AND 5) AS downlines
          FROM users u LEFT JOIN wallets w ON w.user_id = u.id
          WHERE u.username = ?1 AND u.status != 'banned'`
       )
@@ -754,6 +756,7 @@ async function loadProfile(c: AppCtx, username: string): Promise<SocialProfile |
       postsCount: r.posts_count || 0,
       cheerCount: r.cheer_count || 0,
       memberSince: r.created_at || 0,
+      rank: getRankStatus(Number(r.downlines || 0)),
     };
   });
 }

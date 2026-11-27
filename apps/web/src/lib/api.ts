@@ -202,7 +202,8 @@ export async function settleDailyMlm(dateKey?: string, targetUserId?: string) {
 export interface GameNode {
   id: string;
   node_name: string;
-  role: 'all' | 'game' | 'logs';
+  /** 'logs' = log-only node (the installer's spelling); 'log' accepted too. */
+  role: 'all' | 'game' | 'moderator' | 'log' | 'logs';
   status: 'online' | 'offline';
   ip_address?: string;
   region?: string;
@@ -216,6 +217,10 @@ export interface GameNode {
   tunnel_hostname?: string;
   last_heartbeat?: number;
   created_at: number;
+  /** Optional telemetry from moderator / log nodes. */
+  mod_pending?: number | null;
+  mod_processed?: number | null;
+  pg_status?: 'ok' | 'down' | null;
 }
 
 export async function getServerNodes() {
@@ -241,7 +246,7 @@ export async function updateNodeCapacity(nodeId: string, data: { room_capacity_m
 // ---------------------------------------------------------------------------
 
 export const BOOTSTRAP_FRESH_MS = 60_000;
-const BOOT_STORAGE_KEY = 'mwar_bootstrap_v2'; // v2: rank, coins, cents, network lock
+const BOOT_STORAGE_KEY = 'mwar_bootstrap_v3'; // v3: downline rank object + staffRoles
 type BootEntry = { at: number; data: BootstrapResponse };
 let bootMem: BootEntry | null = null;
 let bootInflight: Promise<BootstrapResponse> | null = null;
@@ -585,11 +590,15 @@ export function completeCheer(viewId: string) {
 // ---------------------------------------------------------------------------
 // Staff & roles (super_admin)
 // ---------------------------------------------------------------------------
-export function getStaff(q?: string) {
-  return apiFetch<{ items: StaffMember[] }>(`/api/admin/staff${qs({ q })}`);
+export function getStaff() {
+  return apiFetch<{ items: StaffMember[] }>('/api/admin/staff');
 }
-export function setStaffRole(userId: string, staffRole: StaffRole) {
-  return apiFetch<{ success: boolean; member: StaffMember }>('/api/admin/staff', { method: 'PATCH', body: JSON.stringify({ userId, staffRole }) });
+export function searchStaffCandidates(q: string) {
+  return apiFetch<{ items: StaffMember[] }>(`/api/admin/staff/search-users${qs({ q })}`);
+}
+/** roles = [] demotes the account back to a regular member. */
+export function setStaffRoles(userId: string, roles: StaffRole[]) {
+  return apiFetch<{ success: boolean; member: StaffMember }>(`/api/admin/staff/${encodeURIComponent(userId)}/roles`, { method: 'PUT', body: JSON.stringify({ roles }) });
 }
 export function getStaffAudit() {
   return apiFetch<{ items: StaffAuditEntry[] }>('/api/admin/staff/audit');

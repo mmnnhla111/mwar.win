@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { POST_VISIBILITY, SOCIAL_COMMENT_MAX_CHARS, SOCIAL_POST_MAX_CHARS, staffCan } from '@mwar/shared';
+import { POST_VISIBILITY, SOCIAL_COMMENT_MAX_CHARS, SOCIAL_POST_MAX_CHARS, staffCanAny } from '@mwar/shared';
 import type { PostVisibility, SocialComment, SocialPost } from '@mwar/shared';
 import { Avatar } from '../ui/Avatar';
 import { Card, Spinner } from '../ui/Card';
@@ -170,7 +170,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
   };
 
   const isMine = !!me && me.id === post.author.id;
-  const canDelete = !!me && (isMine || staffCan(me.staffRole, 'takedown'));
+  const canDelete = !!me && (isMine || staffCanAny(me.staffRoles, 'takedown'));
   const pending = post.moderationStatus === 'pending';
   const rejected = post.moderationStatus === 'rejected';
   const is18 = post.contentRating === 'nsfw_18';
@@ -401,7 +401,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
                       {t('post.edit')}
                     </button>
                   )}
-                  {(me?.id === cm.author.id || isMine || staffCan(me?.staffRole, 'takedown')) && (
+                  {(me?.id === cm.author.id || isMine || staffCanAny(me?.staffRoles, 'takedown')) && (
                     <button onClick={() => removeComment(cm.id)} className="font-bold hover:text-rose-500">
                       {t('post.delete')}
                     </button>
