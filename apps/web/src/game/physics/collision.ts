@@ -11,6 +11,8 @@
  * lists short.
  */
 
+import type { StairVolume } from '@mwar/shared';
+
 export interface AABB {
   minX: number;
   minY: number;
@@ -28,6 +30,11 @@ export interface SolidBox extends AABB {
   blocksBullets: boolean;
   /** Whether the top face can be stood on. */
   walkable: boolean;
+  /**
+   * Solid stair block: a body overlapping it (wedged in by a fast drop / sideways corner clip) is
+   * pushed back out, never left inside the stairs.
+   */
+  pushOut?: boolean;
 }
 
 /** A ramp / staircase surface: height rises linearly along one axis over its footprint. */
@@ -91,6 +98,7 @@ export class CollisionWorld {
   private readonly cellSize: number;
   private boxes: SolidBox[] = [];
   private ramps: Ramp[] = [];
+  private stairList: StairVolume[] = [];
   private boxGrid = new Map<number, number[]>();
   private rampGrid = new Map<number, number[]>();
   private nextId = 1;
@@ -111,6 +119,20 @@ export class CollisionWorld {
 
   get boxCount() {
     return this.boxes.length;
+  }
+
+  /** Solid staircases registered by the map builders (world-space records, see @mwar/shared stairs). */
+  get stairs(): readonly StairVolume[] {
+    return this.stairList;
+  }
+
+  addStair(s: StairVolume) {
+    this.stairList.push(s);
+  }
+
+  /** Every registered box (read-only view, used by geometry tests and tools). */
+  get allBoxes(): readonly SolidBox[] {
+    return this.boxes;
   }
 
   /** Terrain height (0 when the world has no terrain). */
@@ -168,7 +190,7 @@ export class CollisionWorld {
 
   addBox(
     box: AABB,
-    opts: Partial<Pick<SolidBox, 'blocksMovement' | 'blocksBullets' | 'walkable'>> = {}
+    opts: Partial<Pick<SolidBox, 'blocksMovement' | 'blocksBullets' | 'walkable' | 'pushOut'>> = {}
   ): number {
     const b: SolidBox = {
       id: this.nextId++,
@@ -181,6 +203,7 @@ export class CollisionWorld {
       blocksMovement: opts.blocksMovement ?? true,
       blocksBullets: opts.blocksBullets ?? true,
       walkable: opts.walkable ?? true,
+      pushOut: opts.pushOut ?? false,
     };
     const idx = this.boxes.length;
     this.boxes.push(b);
@@ -427,6 +450,8 @@ export class CollisionWorld {
       body.y = ny;
     }
 
+    this.pushOutOfStairs(body);
+
     // Safety: never sink inside a solid (e.g. spawned overlapping) — push up onto its top.
     const floor = this.terrain ? this.terrain.height(body.x, body.z) : 0;
     if (body.y < floor) {
@@ -435,6 +460,44 @@ export class CollisionWorld {
       body.onGround = true;
     }
     return body;
+  }
+
+  /**
+   * Depenetration for solid stair blocks. Horizontal sweeps already refuse to enter a block, but a
+   * body falling past a stair's side or back corner (window drop, jump onto the flight) overlaps the
+   * block by the part of its radius outside the narrower ground footprint. Resolve that every frame:
+   * centre inside the footprint → stand on the tread; otherwise slide out along the shortest normal.
+   */
+  private pushOutOfStairs(body: MoveBody) {
+    for (let iter = 0; iter < 3; iter++) {
+      let moved = false;
+      const allow = body.onGround ? this.stepHeight : 0.12;
+      const r = body.radius;
+      this.forBoxesNear(body.x - r, body.z - r, body.x + r, body.z + r, (b) => {
+        if (!b.pushOut || !b.blocksMovement) return;
+        if (b.maxY <= body.y + allow || b.minY >= body.y + body.height) return;
+        const cx = Math.max(b.minX, Math.min(body.x, b.maxX));
+        const cz = Math.max(b.minZ, Math.min(body.z, b.maxZ));
+        const dx = body.x - cx;
+        const dz = body.z - cz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= r * r - EPS) return;
+        if (d2 < 1e-10) {
+          // Centre inside the block's footprint: it can only be resolved upward, onto the tread.
+          body.y = b.maxY;
+          body.velY = Math.min(0, body.velY);
+          body.onGround = true;
+        } else {
+          const d = Math.sqrt(d2);
+          const push = r - d + 0.002;
+          body.x += (dx / d) * push;
+          body.z += (dz / d) * push;
+        }
+        moved = true;
+      });
+      if (!moved) break;
+    }
+    this.clampToBounds(body, body.radius + 0.2);
   }
 
   /** Largest fraction of `delta` along one axis that keeps the body out of solids. */

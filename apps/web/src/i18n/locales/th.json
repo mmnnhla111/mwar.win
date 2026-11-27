@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "อนุมัติคำขอ {id} แล้ว",
   "admin.cashout.done.reject": "ปฏิเสธคำขอ {id} และคืนเงินแล้ว",
   "admin.cashout.done.rerun": "ตรวจคำขอ {id} ใหม่แล้ว",
-  "admin.cashout.pg.lagging": "ยังส่งข้อมูลไม่ครบ"
+  "admin.cashout.pg.lagging": "ยังส่งข้อมูลไม่ครบ",
+  "spectate.hint.mobile": "ผู้ชมแบบผี • จอยสติ๊ก: เคลื่อนที่ • ปุ่ม: ขึ้น / ลง • ลาก: มอง",
+  "spectate.hint.desktop": "ผู้ชมแบบผี • WASD: เคลื่อนที่ • Space / E: ขึ้น • Shift / C: ลง • ลากเมาส์: มอง",
+  "spectate.fly.up": "บินขึ้น",
+  "spectate.fly.down": "บินลง"
 }

@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "요청 {id} 승인됨",
   "admin.cashout.done.reject": "요청 {id} 거절 및 환불됨",
   "admin.cashout.done.rerun": "{id} 재심사 완료",
-  "admin.cashout.pg.lagging": "동기화 중"
+  "admin.cashout.pg.lagging": "동기화 중",
+  "spectate.hint.mobile": "고스트 관전 • 조이스틱: 이동 • 버튼: 상승 / 하강 • 드래그: 시점",
+  "spectate.hint.desktop": "고스트 관전 • WASD: 이동 • Space / E: 상승 • Shift / C: 하강 • 드래그: 시점",
+  "spectate.fly.up": "위로 비행",
+  "spectate.fly.down": "아래로 비행"
 }

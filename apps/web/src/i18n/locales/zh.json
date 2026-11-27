@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "申请 {id} 已批准",
   "admin.cashout.done.reject": "申请 {id} 已拒绝并退款",
   "admin.cashout.done.rerun": "已重新审核 {id}",
-  "admin.cashout.pg.lagging": "仍在同步"
+  "admin.cashout.pg.lagging": "仍在同步",
+  "spectate.hint.mobile": "幽灵观战 • 摇杆：移动 • 按钮：上升 / 下降 • 拖动：转向",
+  "spectate.hint.desktop": "幽灵观战 • WASD：移动 • Space / E：上升 • Shift / C：下降 • 拖动鼠标：转向",
+  "spectate.fly.up": "向上飞",
+  "spectate.fly.down": "向下飞"
 }

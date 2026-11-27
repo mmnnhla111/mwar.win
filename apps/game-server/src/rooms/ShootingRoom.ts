@@ -27,6 +27,7 @@ import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
 import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState } from '../schema/GameState';
 import { getRegistryRoom } from '../roomRegistry';
+import { stairIndexForMap, shotBlockedByStairs } from '../stairLineOfSight';
 
 interface RoomOptions {
   mode?: 'mini_30' | 'standard_100' | 'fast_mini';
@@ -606,6 +607,12 @@ export class ShootingRoom extends Room<GameState> {
   private handlePlayerHit(shooter: PlayerState, shooterClient: Client, targetSessionId: string, damage: number) {
     const target = this.state.players.get(targetSessionId);
     if (!target || target.isGhost || targetSessionId === shooterClient.sessionId) return;
+
+    // V1.1 R4: solid stairs stop bullets - a target fully hidden behind a staircase takes no damage.
+    if (shotBlockedByStairs(stairIndexForMap(this.largeMap), shooter, target)) {
+      shooterClient.send('player_damaged', { targetSessionId, newHealth: target.health, damage: 0 });
+      return;
+    }
 
     // Break prop disguise on damage
     if (target.isProp) {

@@ -226,6 +226,15 @@ export function makeRoadTexture() {
   }, 41);
 }
 
+/** Plain asphalt (no lane markings): road junction tiles. */
+export function makeAsphaltTexture() {
+  return makeCanvas(512, (ctx, s, r) => {
+    ctx.fillStyle = '#34373c';
+    ctx.fillRect(0, 0, s, s);
+    speckle(ctx, s, r, 16000, 0.2, 200, 0);
+  }, 43);
+}
+
 export function makeCloudTexture(seed: number) {
   const canvas = document.createElement('canvas');
   canvas.width = 256;

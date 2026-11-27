@@ -13,3 +13,5 @@ export * from './ad-networks';
 export * from './ranks';
 export * from './cashout';
 export * from './audit-queue';
+export * from './maps/stairs';
+export * from './maps/stairData';

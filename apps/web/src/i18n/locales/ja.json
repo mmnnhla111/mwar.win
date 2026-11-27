@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "申請 {id} を承認しました",
   "admin.cashout.done.reject": "申請 {id} を却下し返金しました",
   "admin.cashout.done.rerun": "{id} を再審査しました",
-  "admin.cashout.pg.lagging": "同期中"
+  "admin.cashout.pg.lagging": "同期中",
+  "spectate.hint.mobile": "ゴースト観戦 • ジョイスティック：移動 • ボタン：上昇 / 下降 • ドラッグ：視点",
+  "spectate.hint.desktop": "ゴースト観戦 • WASD：移動 • Space / E：上昇 • Shift / C：下降 • ドラッグ：視点",
+  "spectate.fly.up": "上昇",
+  "spectate.fly.down": "下降"
 }

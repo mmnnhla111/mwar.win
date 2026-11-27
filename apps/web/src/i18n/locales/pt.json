@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "Pedido {id} aprovado",
   "admin.cashout.done.reject": "Pedido {id} recusado e reembolsado",
   "admin.cashout.done.rerun": "Auditoria refeita para {id}",
-  "admin.cashout.pg.lagging": "Ainda sincronizando"
+  "admin.cashout.pg.lagging": "Ainda sincronizando",
+  "spectate.hint.mobile": "Espectador fantasma • Joystick: Mover • Botões: Subir / Descer • Arrastar: Olhar",
+  "spectate.hint.desktop": "Espectador fantasma • WASD: Mover • Espaço / E: Subir • Shift / C: Descer • Arrastar: Olhar",
+  "spectate.fly.up": "Voar para cima",
+  "spectate.fly.down": "Voar para baixo"
 }

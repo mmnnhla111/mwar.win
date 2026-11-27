@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "Permintaan {id} disetujui",
   "admin.cashout.done.reject": "Permintaan {id} ditolak dan dikembalikan",
   "admin.cashout.done.rerun": "Audit diulang untuk {id}",
-  "admin.cashout.pg.lagging": "Masih sinkron"
+  "admin.cashout.pg.lagging": "Masih sinkron",
+  "spectate.hint.mobile": "Penonton Hantu • Joystick: Gerak • Tombol: Naik / Turun • Geser: Lihat",
+  "spectate.hint.desktop": "Penonton Hantu • WASD: Gerak • Space / E: Naik • Shift / C: Turun • Seret: Lihat",
+  "spectate.fly.up": "Terbang naik",
+  "spectate.fly.down": "Terbang turun"
 }

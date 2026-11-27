@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "अनुरोध {id} स्वीकृत",
   "admin.cashout.done.reject": "अनुरोध {id} अस्वीकृत और राशि वापस",
   "admin.cashout.done.rerun": "{id} का ऑडिट फिर चलाया गया",
-  "admin.cashout.pg.lagging": "अभी सिंक हो रहा है"
+  "admin.cashout.pg.lagging": "अभी सिंक हो रहा है",
+  "spectate.hint.mobile": "घोस्ट दर्शक • जॉयस्टिक: चलें • बटन: ऊपर / नीचे • खींचें: देखें",
+  "spectate.hint.desktop": "घोस्ट दर्शक • WASD: चलें • Space / E: ऊपर • Shift / C: नीचे • माउस खींचें: देखें",
+  "spectate.fly.up": "ऊपर उड़ें",
+  "spectate.fly.down": "नीचे उड़ें"
 }

@@ -887,5 +887,9 @@
   "admin.cashout.done.approve": "Đã duyệt yêu cầu {id}",
   "admin.cashout.done.reject": "Đã từ chối và hoàn tiền yêu cầu {id}",
   "admin.cashout.done.rerun": "Đã chạy lại kiểm tra {id}",
-  "admin.cashout.pg.lagging": "Đang đồng bộ"
+  "admin.cashout.pg.lagging": "Đang đồng bộ",
+  "spectate.hint.mobile": "Khán giả bóng ma • Cần điều khiển: Di chuyển • Nút: Lên / Xuống • Kéo: Nhìn",
+  "spectate.hint.desktop": "Khán giả bóng ma • WASD: Di chuyển • Space / E: Lên • Shift / C: Xuống • Kéo chuột: Nhìn",
+  "spectate.fly.up": "Bay lên",
+  "spectate.fly.down": "Bay xuống"
 }
