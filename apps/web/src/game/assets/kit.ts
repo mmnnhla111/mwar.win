@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CollisionWorld } from '../physics/collision';
+import { stairStepBoxes, type StairVolume } from '@mwar/shared';
 import { MaterialKey, MaterialLibrary, TEXTURE_SCALE } from './materials';
 import { MAP2D } from './map2d';
 
@@ -438,6 +439,26 @@ export class Kit {
       y0: f.baseY + (lowIsMin ? y0 : y1),
       y1: f.baseY + (lowIsMin ? y1 : y0),
     });
+
+    // SOLID stair body (V1.1 round 4): one full-height block per step, from the stair's foot level up to
+    // its tread. There is no hollow space under / behind / beside the flight, the treads are walkable
+    // (so a body dropping in from a window lands ON the steps) and every block stops bullets. The same
+    // stair is recorded as data (world.addStair) so the game server can rebuild identical volumes.
+    const stairRec: StairVolume = {
+      minX: r.minX,
+      minZ: r.minZ,
+      maxX: r.maxX,
+      maxZ: r.maxZ,
+      axis: worldAxis,
+      lowIsMin,
+      baseY: f.baseY + y0,
+      rise,
+      steps: nSteps,
+    };
+    this.world.addStair(stairRec);
+    for (const b of stairStepBoxes(stairRec)) {
+      this.world.addBox(b, { walkable: true, blocksBullets: true, blocksMovement: true, pushOut: true });
+    }
 
     // Side rails: a LOW rail (0.8 m) that follows the slope — it stops accidental falls but can be
     // jumped over (jump clears ~1.3 m) to drop down quickly. The upper floor gets a matching low

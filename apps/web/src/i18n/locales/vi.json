@@ -924,5 +924,9 @@
   "rankx.required": "Cần {n} tuyến dưới",
   "rankx.you": "Bạn",
   "rankx.unlocked": "Đã mở khóa",
-  "rankx.locked": "Đang khóa"
+  "rankx.locked": "Đang khóa",
+  "spectate.hint.mobile": "Khán giả bóng ma • Cần điều khiển: Di chuyển • Nút: Lên / Xuống • Kéo: Nhìn",
+  "spectate.hint.desktop": "Khán giả bóng ma • WASD: Di chuyển • Space / E: Lên • Shift / C: Xuống • Kéo chuột: Nhìn",
+  "spectate.fly.up": "Bay lên",
+  "spectate.fly.down": "Bay xuống"
 }

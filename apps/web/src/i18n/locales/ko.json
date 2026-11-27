@@ -924,5 +924,9 @@
   "rankx.required": "하위 {n}명 필요",
   "rankx.you": "나",
   "rankx.unlocked": "해제됨",
-  "rankx.locked": "잠김"
+  "rankx.locked": "잠김",
+  "spectate.hint.mobile": "고스트 관전 • 조이스틱: 이동 • 버튼: 상승 / 하강 • 드래그: 시점",
+  "spectate.hint.desktop": "고스트 관전 • WASD: 이동 • Space / E: 상승 • Shift / C: 하강 • 드래그: 시점",
+  "spectate.fly.up": "위로 비행",
+  "spectate.fly.down": "아래로 비행"
 }

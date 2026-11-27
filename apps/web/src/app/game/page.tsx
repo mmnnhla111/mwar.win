@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
 import { apiFetch, progressQuest } from '../../lib/api';
+import { useTranslation } from '../../i18n/I18nProvider';
 import { formatMicroUsd } from '@mwar/shared';
 import { QuestSpectateIcon } from '../../components/icons';
 import { soundFX } from '../../game/audio';
@@ -288,6 +289,7 @@ export default function GamePage() {
   const [portraits, setPortraits] = useState<Partial<Record<CharacterId, string>>>({});
   const [propMenu, setPropMenu] = useState<{ open: boolean; hover: number | null; cursor: { x: number; y: number } | null }>({ open: false, hover: null, cursor: null });
   const [currentProp, setCurrentProp] = useState<PropId | null>(null);
+  const { t } = useTranslation();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scoped, setScoped] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -696,6 +698,10 @@ export default function GamePage() {
 
     // ---- Player ------------------------------------------------------------------------------
     const isGhostSpectator = arenaMode === 'spectator';
+    // Depth precision (V1.1 R4): the free-fly spectator camera sees terrain from far away, so a 0.05 near
+    // plane z-fights coplanar surfaces. Spectator 0.3 m; large-map players 0.1 m; small map unchanged.
+    camera.near = isGhostSpectator ? 0.3 : largeMap ? 0.1 : 0.05;
+    camera.updateProjectionMatrix();
     const pickSpawn = (avoid: THREE.Vector3 | null) => {
       // Random valid spawn far from the death location and out of every living bot's direct LOS.
       const pool = layout.spawnPoints.length ? layout.spawnPoints : layout.playerSpawns;
@@ -1930,7 +1936,7 @@ export default function GamePage() {
         e.preventDefault();
         if (!e.repeat) triggerJumpRef.current();
       }
-      if (e.code === 'KeyC' && !e.repeat) togglePropRef.current();
+      if (e.code === 'KeyC' && !e.repeat && !isGhostSpectator) togglePropRef.current();
       if (e.code === 'KeyT' && !e.repeat) vaultWindowRef.current();
       if (e.code === 'Escape' && propMenuOpenRef.current) closePropMenu();
       if (e.code === 'KeyF' && !e.repeat) {
@@ -1940,7 +1946,7 @@ export default function GamePage() {
         else if (nearestWeapon(2.0) && !player.isProp) pickupRef.current();
         else firingRef.current = true;
       }
-      if ((e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === 'KeyZ') && !e.repeat) cycleStance();
+      if (!isGhostSpectator && (e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === 'KeyZ') && !e.repeat) cycleStance();
       if (e.code === 'KeyX' && !e.repeat) setStance(stanceRef.current === 'prone' ? 'stand' : 'prone');
       if (e.code === 'KeyG' && !e.repeat) throwWeaponRef.current();
       if (e.code === 'KeyV' && !e.repeat) throwGrenade(true);
@@ -2185,8 +2191,9 @@ export default function GamePage() {
         const fly = 12;
         const dir3 = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(look.pitch, look.yaw, 0, 'YXZ'));
         camera.position.addScaledVector(dir3, -mz * fly * dt).addScaledVector(right, mx * fly * dt);
-        if (keys.Space) camera.position.y += 8 * dt;
-        if (keys.ControlLeft || keys.KeyZ) camera.position.y -= 8 * dt;
+        // Ascend: Space / E. Descend: Shift / C / Q. Ctrl is NOT bound (Ctrl+W closes the browser tab).
+        if (keys.Space || keys.KeyE) camera.position.y += 8 * dt;
+        if (keys.ShiftLeft || keys.ShiftRight || keys.KeyC || keys.KeyQ) camera.position.y -= 8 * dt;
         camera.position.y = THREE.MathUtils.clamp(camera.position.y, 1, 80);
         camera.position.x = THREE.MathUtils.clamp(camera.position.x, -playHalf, playHalf);
         camera.position.z = THREE.MathUtils.clamp(camera.position.z, -playHalf, playHalf);
@@ -3248,7 +3255,7 @@ export default function GamePage() {
           data-spectator-hint
           className="absolute bottom-2 left-3 z-20 pointer-events-none text-[11px] font-semibold text-white/60 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
         >
-          👻 Ghost Spectator • {isMobile ? 'Joystick: Fly • Buttons: Up / Down • Drag: Look' : 'WASD: Fly • Space: Up • Ctrl: Down • Drag: Look'}
+          👻 {isMobile ? t('spectate.hint.mobile') : t('spectate.hint.desktop')}
         </div>
       )}
 
@@ -3298,7 +3305,7 @@ export default function GamePage() {
       )}
       {isGhostSpectator && isMobile && (
         <div className="absolute right-5 bottom-8 z-20 flex flex-col gap-2 pointer-events-auto touch-none select-none" style={showAdBanner ? { marginBottom: 58 } : undefined}>
-          {[{ label: 'Fly up', key: 'Space', icon: <JumpIcon /> }, { label: 'Fly down', key: 'ControlLeft', icon: <CrouchIcon /> }].map((b) => (
+          {[{ label: t('spectate.fly.up'), key: 'Space', icon: <JumpIcon /> }, { label: t('spectate.fly.down'), key: 'KeyC', icon: <CrouchIcon /> }].map((b) => (
             <button
               key={b.key}
               aria-label={b.label}

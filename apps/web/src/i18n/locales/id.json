@@ -924,5 +924,9 @@
   "rankx.required": "Butuh {n} downline",
   "rankx.you": "Anda",
   "rankx.unlocked": "Terbuka",
-  "rankx.locked": "Terkunci"
+  "rankx.locked": "Terkunci",
+  "spectate.hint.mobile": "Penonton Hantu • Joystick: Gerak • Tombol: Naik / Turun • Geser: Lihat",
+  "spectate.hint.desktop": "Penonton Hantu • WASD: Gerak • Space / E: Naik • Shift / C: Turun • Seret: Lihat",
+  "spectate.fly.up": "Terbang naik",
+  "spectate.fly.down": "Terbang turun"
 }

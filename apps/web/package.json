@@ -8,6 +8,8 @@
     "start": "next start -p 3001",
     "typecheck": "tsc --noEmit",
     "i18n:check": "node scripts/check-i18n.mjs",
+    "gen:stairs": "../game-server/node_modules/.bin/tsx scripts/gen-stair-data.ts",
+    "test:geometry": "../game-server/node_modules/.bin/tsx --test src/game/__tests__/*.test.ts",
     "prebuild": "node scripts/check-i18n.mjs",
     "deploy:pages": "next build && wrangler pages deploy out --project-name=mwar-web --branch=main"
   },

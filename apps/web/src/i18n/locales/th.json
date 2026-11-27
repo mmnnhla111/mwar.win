@@ -924,5 +924,9 @@
   "rankx.required": "ต้องมีลูกข่าย {n} คน",
   "rankx.you": "คุณ",
   "rankx.unlocked": "ปลดล็อกแล้ว",
-  "rankx.locked": "ยังล็อกอยู่"
+  "rankx.locked": "ยังล็อกอยู่",
+  "spectate.hint.mobile": "ผู้ชมแบบผี • จอยสติ๊ก: เคลื่อนที่ • ปุ่ม: ขึ้น / ลง • ลาก: มอง",
+  "spectate.hint.desktop": "ผู้ชมแบบผี • WASD: เคลื่อนที่ • Space / E: ขึ้น • Shift / C: ลง • ลากเมาส์: มอง",
+  "spectate.fly.up": "บินขึ้น",
+  "spectate.fly.down": "บินลง"
 }

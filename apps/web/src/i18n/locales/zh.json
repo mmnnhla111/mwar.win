@@ -924,5 +924,9 @@
   "rankx.required": "需要 {n} 位下线",
   "rankx.you": "你",
   "rankx.unlocked": "已解锁",
-  "rankx.locked": "未解锁"
+  "rankx.locked": "未解锁",
+  "spectate.hint.mobile": "幽灵观战 • 摇杆：移动 • 按钮：上升 / 下降 • 拖动：转向",
+  "spectate.hint.desktop": "幽灵观战 • WASD：移动 • Space / E：上升 • Shift / C：下降 • 拖动鼠标：转向",
+  "spectate.fly.up": "向上飞",
+  "spectate.fly.down": "向下飞"
 }

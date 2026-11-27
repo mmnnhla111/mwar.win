@@ -924,5 +924,9 @@
   "rankx.required": "ダウンライン {n} 人が必要",
   "rankx.you": "あなた",
   "rankx.unlocked": "解放済み",
-  "rankx.locked": "ロック中"
+  "rankx.locked": "ロック中",
+  "spectate.hint.mobile": "ゴースト観戦 • ジョイスティック：移動 • ボタン：上昇 / 下降 • ドラッグ：視点",
+  "spectate.hint.desktop": "ゴースト観戦 • WASD：移動 • Space / E：上昇 • Shift / C：下降 • ドラッグ：視点",
+  "spectate.fly.up": "上昇",
+  "spectate.fly.down": "下降"
 }

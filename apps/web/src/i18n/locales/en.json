@@ -924,5 +924,9 @@
   "rankx.required": "Needs {n} downlines",
   "rankx.you": "You",
   "rankx.unlocked": "Unlocked",
-  "rankx.locked": "Locked"
+  "rankx.locked": "Locked",
+  "spectate.hint.mobile": "Ghost Spectator • Joystick: Move • Buttons: Up / Down • Drag: Look",
+  "spectate.hint.desktop": "Ghost Spectator • WASD: Move • Space / E: Up • Shift / C: Down • Drag: Look",
+  "spectate.fly.up": "Fly up",
+  "spectate.fly.down": "Fly down"
 }

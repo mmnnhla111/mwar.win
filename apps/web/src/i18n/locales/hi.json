@@ -924,5 +924,9 @@
   "rankx.required": "{n} डाउनलाइन चाहिए",
   "rankx.you": "आप",
   "rankx.unlocked": "अनलॉक",
-  "rankx.locked": "लॉक"
+  "rankx.locked": "लॉक",
+  "spectate.hint.mobile": "घोस्ट दर्शक • जॉयस्टिक: चलें • बटन: ऊपर / नीचे • खींचें: देखें",
+  "spectate.hint.desktop": "घोस्ट दर्शक • WASD: चलें • Space / E: ऊपर • Shift / C: नीचे • माउस खींचें: देखें",
+  "spectate.fly.up": "ऊपर उड़ें",
+  "spectate.fly.down": "नीचे उड़ें"
 }

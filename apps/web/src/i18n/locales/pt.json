@@ -924,5 +924,9 @@
   "rankx.required": "Requer {n} indicados",
   "rankx.you": "Você",
   "rankx.unlocked": "Desbloqueado",
-  "rankx.locked": "Bloqueado"
+  "rankx.locked": "Bloqueado",
+  "spectate.hint.mobile": "Espectador fantasma • Joystick: Mover • Botões: Subir / Descer • Arrastar: Olhar",
+  "spectate.hint.desktop": "Espectador fantasma • WASD: Mover • Espaço / E: Subir • Shift / C: Descer • Arrastar: Olhar",
+  "spectate.fly.up": "Voar para cima",
+  "spectate.fly.down": "Voar para baixo"
 }

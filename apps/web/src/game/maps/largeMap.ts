@@ -13,8 +13,9 @@ import {
   type LargeSettlement,
 } from '@mwar/shared';
 import { Frame, Kit, StaticBatcher } from '../assets/kit';
-import { MaterialLibrary, makeRoadTexture, textureFactories } from '../assets/materials';
+import { MaterialLibrary, makeAsphaltTexture, makeRoadTexture, textureFactories } from '../assets/materials';
 import { CollisionWorld } from '../physics/collision';
+import { splitTile, unionRoadTiles, type RoadRect, type RoadTile } from './roadGeometry';
 import { BUILDINGS, type BuildingFactory } from '../assets/buildings';
 import { SINGLE_HOUSES, TWO_STORY_HOUSES, type HouseFactory } from '../assets/houses';
 import { StructureInfo, Vec3 } from '../assets/structure';
@@ -39,6 +40,8 @@ import type { ArenaLayout, NavNode } from '../assets/mapLayout';
  */
 
 export const LARGE_CHUNK_SIZE = 120;
+/** Debug / test hook: the disjoint road tiles of the last build. */
+export const roadDebug: { tiles: RoadTile[] } = { tiles: [] };
 const ROAD_HW = LARGE_ROAD_WIDTH / 2;
 
 function seeded(seed: number) {
@@ -89,7 +92,7 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
   disposables.push(grassTex, grassMat, grass.geometry);
 
   const rockTex = textureFactories.rock();
-  const mountainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true, map: rockTex });
+  const mountainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true, map: rockTex, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
   disposables.push(rockTex, mountainMat);
   const low = new THREE.Color(0x4f7a3f);
   const mid = new THREE.Color(0x6b6f55);
@@ -106,7 +109,11 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
       const x = pos.getX(i) + m.x;
       const z = pos.getZ(i) + m.z;
       const h = largeMapTerrainHeight(x, z);
-      pos.setXYZ(i, x, h > 0.01 ? h : -0.06, z);
+      // Foot of the mountain (V1.1 R4): never a flat flange resting on the grass plane (y = 0). Flat outer
+      // vertices are tucked 0.6 m BELOW the grass and the first rising ring is lifted a few cm, so the
+      // mesh meets the grass along a clean sloped skirt instead of running coplanar with it.
+      const lift = 0.14 * (1 - Math.min(1, h / 2.5));
+      pos.setXYZ(i, x, h > 0.005 ? h + lift : -0.6, z);
       const t = h / m.peak;
       if (t < 0.45) tmpC.copy(low).lerp(mid, t / 0.45);
       else tmpC.copy(mid).lerp(high, Math.min(1, (t - 0.45) / 0.4));
@@ -125,35 +132,23 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
 
   // ---- Roads -------------------------------------------------------------------------------------
   const roadTex = makeRoadTexture();
-  const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
-  disposables.push(roadTex, roadMat);
-  const roadChunks = new Map<string, THREE.BufferGeometry[]>();
-  const addRoadPiece = (cx: number, cz: number, length: number, alongX: boolean, width: number) => {
-    const g = new THREE.PlaneGeometry(width, length);
-    const uv = g.getAttribute('uv') as THREE.BufferAttribute;
-    for (let i = 0; i < uv.count; i++) {
-      uv.setY(i, uv.getY(i) * (length / 10));
-      uv.setX(i, 0.5 + (uv.getX(i) - 0.5) * (width / LARGE_ROAD_WIDTH));
-    }
-    g.rotateX(-Math.PI / 2);
-    if (alongX) g.rotateY(Math.PI / 2);
-    g.translate(cx, 0.025, cz);
-    const key = `${Math.floor(cx / LARGE_CHUNK_SIZE)},${Math.floor(cz / LARGE_CHUNK_SIZE)}`;
-    let list = roadChunks.get(key);
-    if (!list) roadChunks.set(key, (list = []));
-    list.push(g);
-  };
-  /** Axis-aligned road from a to b (split into ≤ 60 m pieces so it chunks cleanly). */
+  const plainRoadTex = makeAsphaltTexture();
+  // Road surface sits 5 cm above the grass plane (a 2.5 cm gap z-fights at 300 m+ with a 24-bit depth buffer).
+  const ROAD_Y = 0.05;
+  const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  const plainRoadMat = new THREE.MeshStandardMaterial({ map: plainRoadTex, roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  disposables.push(roadTex, plainRoadTex, roadMat, plainRoadMat);
+  // Roads are collected as overlapping rectangles, then cut into DISJOINT tiles (see roadGeometry.ts) so
+  // intersections never have coplanar overlapping triangles (z-fighting). Straight stretches keep the
+  // lane-marked road texture; junction areas get plain asphalt.
+  const roadRects: RoadRect[] = [];
+  /** Axis-aligned road from a to b. */
   const road = (x0: number, z0: number, x1: number, z1: number, width = LARGE_ROAD_WIDTH) => {
     const alongX = Math.abs(x1 - x0) > Math.abs(z1 - z0);
     const a = alongX ? Math.min(x0, x1) : Math.min(z0, z1);
     const b = alongX ? Math.max(x0, x1) : Math.max(z0, z1);
     const fixed = alongX ? z0 : x0;
-    for (let s = a; s < b - 0.01; s += 60) {
-      const e = Math.min(b, s + 60);
-      if (alongX) addRoadPiece((s + e) / 2, fixed, e - s, true, width);
-      else addRoadPiece(fixed, (s + e) / 2, e - s, false, width);
-    }
+    roadRects.push(alongX ? { x0: a, x1: b, z0: fixed - width / 2, z1: fixed + width / 2, alongX } : { x0: fixed - width / 2, x1: fixed + width / 2, z0: a, z1: b, alongX });
     MAP2D.roads.push(alongX ? { x: (a + b) / 2, z: fixed, w: b - a, d: width } : { x: fixed, z: (a + b) / 2, w: width, d: b - a });
   };
   const dirtLane = (x0: number, z0: number, x1: number, z1: number, width: number) => {
@@ -382,20 +377,47 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
     else buildVillage(s, vi++);
   }
 
-  // Road chunks → one mesh per 120 m chunk
+  // Road tiles → one mesh per 120 m chunk and material (strip / plain asphalt)
   const roadMeshes: THREE.Mesh[] = [];
-  roadChunks.forEach((list) => {
-    const merged = mergeGeometries(list, false);
-    list.forEach((g) => g.dispose());
-    if (!merged) return;
-    merged.computeBoundingSphere();
-    const mesh = new THREE.Mesh(merged, roadMat);
+  const roadTiles = unionRoadTiles(roadRects).flatMap((t) => splitTile(t, 60));
+  roadDebug.tiles = roadTiles;
+  const tileBuckets = new Map<string, { tiles: RoadTile[]; plain: boolean }>();
+  for (const t of roadTiles) {
+    const plain = t.kind === 'plain';
+    const key = `${plain ? 'p' : 's'}|${Math.floor((t.x0 + t.x1) / 2 / LARGE_CHUNK_SIZE)},${Math.floor((t.z0 + t.z1) / 2 / LARGE_CHUNK_SIZE)}`;
+    let e = tileBuckets.get(key);
+    if (!e) tileBuckets.set(key, (e = { tiles: [], plain }));
+    e.tiles.push(t);
+  }
+  tileBuckets.forEach(({ tiles, plain }) => {
+    const pos: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
+    for (const t of tiles) {
+      const base = pos.length / 3;
+      const corners: [number, number][] = [[t.x0, t.z0], [t.x0, t.z1], [t.x1, t.z1], [t.x1, t.z0]];
+      for (const [x, z] of corners) {
+        pos.push(x, ROAD_Y, z);
+        if (plain) uv.push(x / 10, z / 10);
+        // Strip: u across the road (centre line = 0.5), v along it (world-aligned, so markings line up).
+        else if (t.alongX) uv.push(0.5 + (z - t.centre) / LARGE_ROAD_WIDTH, x / 10);
+        else uv.push(0.5 + (x - t.centre) / LARGE_ROAD_WIDTH, z / 10);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(pos.map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    g.computeBoundingSphere();
+    const mesh = new THREE.Mesh(g, plain ? plainRoadMat : roadMat);
     mesh.receiveShadow = true;
     mesh.userData.chunked = true;
     mesh.matrixAutoUpdate = false;
     scene.add(mesh);
     roadMeshes.push(mesh);
-    disposables.push(merged);
+    disposables.push(g);
   });
 
   // ---- Instanced countryside trees + mountain pines / rocks (trunk + canopy colliders) ------------
