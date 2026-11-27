@@ -30,6 +30,8 @@ export interface Env {
   LOG_RECEIVER_SECRET?: string;
   /** Secret the ad networks append to S2S postbacks (?secret=...). Required when DEV_MOCK_MODE is off. */
   AD_POSTBACK_SECRET?: string;
+  /** V1.1 ad safety haircut on gross ad revenue before it backs an Energy Ticket ("0.92" default; clamped to 0.90–0.95). */
+  AD_SAFETY_MULTIPLIER?: string;
   /** Comma list of Cheer ad formats to switch off (e.g. 'banner' when no sponsor is booked). */
   CHEER_DISABLED_FORMATS?: string;
   /** Alias accepted for AD_POSTBACK_SECRET. */

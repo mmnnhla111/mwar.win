@@ -928,5 +928,18 @@
   "spectate.hint.mobile": "ผู้ชมแบบผี • จอยสติ๊ก: เคลื่อนที่ • ปุ่ม: ขึ้น / ลง • ลาก: มอง",
   "spectate.hint.desktop": "ผู้ชมแบบผี • WASD: เคลื่อนที่ • Space / E: ขึ้น • Shift / C: ลง • ลากเมาส์: มอง",
   "spectate.fly.up": "บินขึ้น",
-  "spectate.fly.down": "บินลง"
+  "spectate.fly.down": "บินลง",
+  "cheer2.rechargeOwn": "ชาร์จ EC",
+  "cheer2.creatorGot": "{name} ได้รับ {v}",
+  "cheer2.backed": "EC ของคุณมีมูลค่าโฆษณาจริงรองรับ {v}",
+  "cheer2.split": "แบ่ง: ผู้สร้าง 55% · ทีมของเขา 15% · ค่าหัว 5% · ระบบ 5% · EC ของคุณ 20%",
+  "econ.hud.roundEarned": "รายได้รอบนี้",
+  "econ.hud.headBounty": "ค่าหัว",
+  "econ.hud.bountyHint": "5% ของทุกรางวัลที่คุณได้ — จ่ายให้ผู้ที่กำจัดคุณ",
+  "econ.hud.ticket": "ตั๋ว {v}",
+  "econ.hud.ticketHint": "มูลค่าโฆษณาจริงที่รองรับตั๋วพลังงานของคุณ — คือสิ่งที่ผู้กำจัดคุณจะได้รับ",
+  "econ.feed.kill": "{killer} กำจัด {victim} (+{v})",
+  "econ.feed.bounty": "รวมค่าหัว {v}",
+  "econ.feed.chest": "{name} เก็บหีบค่าหัว (+{v})",
+  "econ.death.summary": "รอบนี้: ฆ่า {kills} ครั้ง · {v}"
 }

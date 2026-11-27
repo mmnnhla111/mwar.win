@@ -928,5 +928,18 @@
   "spectate.hint.mobile": "Espectador fantasma • Joystick: Mover • Botões: Subir / Descer • Arrastar: Olhar",
   "spectate.hint.desktop": "Espectador fantasma • WASD: Mover • Espaço / E: Subir • Shift / C: Descer • Arrastar: Olhar",
   "spectate.fly.up": "Voar para cima",
-  "spectate.fly.down": "Voar para baixo"
+  "spectate.fly.down": "Voar para baixo",
+  "cheer2.rechargeOwn": "Recarregar EC",
+  "cheer2.creatorGot": "{name} recebeu {v}",
+  "cheer2.backed": "Seu EC é lastreado por {v} de valor real de anúncio",
+  "cheer2.split": "Divisão: 55% criador · 15% equipe dele · 5% recompensa · 5% plataforma · 20% seu EC",
+  "econ.hud.roundEarned": "Ganho na rodada",
+  "econ.hud.headBounty": "Recompensa pela cabeça",
+  "econ.hud.bountyHint": "5% de cada recompensa que você ganha — paga a quem eliminar você",
+  "econ.hud.ticket": "Bilhete {v}",
+  "econ.hud.ticketHint": "Valor real de anúncio por trás do seu Bilhete de Energia — o que ganha quem eliminar você",
+  "econ.feed.kill": "{killer} eliminou {victim} (+{v})",
+  "econ.feed.bounty": "incl. {v} de recompensa",
+  "econ.feed.chest": "{name} abriu um Baú de recompensa (+{v})",
+  "econ.death.summary": "Nesta rodada: {kills} abates · {v}"
 }

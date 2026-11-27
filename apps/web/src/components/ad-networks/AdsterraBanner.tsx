@@ -2,10 +2,10 @@
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AdBannerSpec } from '@mwar/shared';
-import { AD_BANNER_INTERVAL_SECONDS } from '@mwar/shared';
+import { AD_BANNER_INTERVAL_MIN_SECONDS, nextBannerIntervalSeconds } from '@mwar/shared';
 import { apiFetch } from '../../lib/api';
 
-/** 20 s impression progress kept across an anti-AFK pause (banner unmounted) so charging resumes where it left off. */
+/** Impression-cycle progress (30–45 s cycles) kept across an anti-AFK pause (banner unmounted) so charging resumes where it left off. */
 const carryMs: Record<string, number> = {};
 
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
@@ -20,7 +20,7 @@ const attr = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').rep
  *    our cookies / localStorage / auth token, nor touch the page; popups (clicks) may open new tabs.
  *  · Fixed box (width × height), overflow hidden, scaled down to the container width when narrower
  *    (e.g. 300 px creative in a 250 px sidebar), so it never overflows the layout.
- *  · Optional impression ping (`pingSlot`): one impression every 20 s while the tab is visible,
+ *  · Optional impression ping (`pingSlot`): one impression per randomized 30–45 s cycle while the tab is visible,
  *    batched (3 per request, flushed when the tab hides / the banner unmounts).
  */
 export function AdsterraBanner({
@@ -55,13 +55,14 @@ export function AdsterraBanner({
     [spec.key, spec.src, spec.width, spec.height]
   );
 
-  // Impression ping (20 s, visible tab only), batched
+  // Impression ping (random 30–45 s cycle, re-rolled after every impression; visible tab only), batched
   const onResultRef = useRef(onResult);
   onResultRef.current = onResult;
   useEffect(() => {
     if (!pingSlot) return;
     let pending = 0;
-    const carried = Math.min(carryMs[pingSlot] || 0, AD_BANNER_INTERVAL_SECONDS * 1000 - 1000);
+    let cycleMs = nextBannerIntervalSeconds() * 1000;
+    const carried = Math.min(carryMs[pingSlot] || 0, AD_BANNER_INTERVAL_MIN_SECONDS * 1000 - 1000);
     carryMs[pingSlot] = 0;
     let visibleSince = document.visibilityState === 'visible' ? Date.now() - carried : 0;
     const flush = (keepalive = false) => {
@@ -75,8 +76,9 @@ export function AdsterraBanner({
     const tick = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       if (!visibleSince) visibleSince = Date.now();
-      if (Date.now() - visibleSince >= AD_BANNER_INTERVAL_SECONDS * 1000) {
+      if (Date.now() - visibleSince >= cycleMs) {
         visibleSince = Date.now();
+        cycleMs = nextBannerIntervalSeconds() * 1000;
         pending += 1;
         if (pending >= 3) flush();
       }

@@ -928,5 +928,18 @@
   "spectate.hint.mobile": "고스트 관전 • 조이스틱: 이동 • 버튼: 상승 / 하강 • 드래그: 시점",
   "spectate.hint.desktop": "고스트 관전 • WASD: 이동 • Space / E: 상승 • Shift / C: 하강 • 드래그: 시점",
   "spectate.fly.up": "위로 비행",
-  "spectate.fly.down": "아래로 비행"
+  "spectate.fly.down": "아래로 비행",
+  "cheer2.rechargeOwn": "EC 충전",
+  "cheer2.creatorGot": "{name}님이 {v}을(를) 받았어요",
+  "cheer2.backed": "내 EC는 실제 광고 수익 {v}로 보장돼요",
+  "cheer2.split": "분배: 크리에이터 55% · 그 팀 15% · 현상금 5% · 플랫폼 5% · 내 EC 20%",
+  "econ.hud.roundEarned": "이번 라운드 수익",
+  "econ.hud.headBounty": "현상금",
+  "econ.hud.bountyHint": "획득한 모든 보상의 5% — 나를 처치한 플레이어에게 지급",
+  "econ.hud.ticket": "티켓 {v}",
+  "econ.hud.ticketHint": "내 에너지 티켓을 뒷받침하는 실제 광고 가치 — 나를 처치한 플레이어가 받아요",
+  "econ.feed.kill": "{killer}님이 {victim}님을 처치 (+{v})",
+  "econ.feed.bounty": "현상금 {v} 포함",
+  "econ.feed.chest": "{name}님이 현상금 상자 획득 (+{v})",
+  "econ.death.summary": "이번 라운드: {kills}킬 · {v}"
 }

@@ -928,5 +928,18 @@
   "spectate.hint.mobile": "Penonton Hantu • Joystick: Gerak • Tombol: Naik / Turun • Geser: Lihat",
   "spectate.hint.desktop": "Penonton Hantu • WASD: Gerak • Space / E: Naik • Shift / C: Turun • Seret: Lihat",
   "spectate.fly.up": "Terbang naik",
-  "spectate.fly.down": "Terbang turun"
+  "spectate.fly.down": "Terbang turun",
+  "cheer2.rechargeOwn": "Isi ulang EC",
+  "cheer2.creatorGot": "{name} menerima {v}",
+  "cheer2.backed": "EC kamu didukung nilai iklan nyata sebesar {v}",
+  "cheer2.split": "Pembagian: 55% kreator · 15% tim mereka · 5% hadiah kepala · 5% platform · 20% EC kamu",
+  "econ.hud.roundEarned": "Pendapatan Ronde",
+  "econ.hud.headBounty": "Hadiah Kepala",
+  "econ.hud.bountyHint": "5% dari setiap hadiahmu — dibayarkan ke siapa pun yang mengeliminasimu",
+  "econ.hud.ticket": "Tiket {v}",
+  "econ.hud.ticketHint": "Nilai iklan nyata di balik Tiket Energimu — yang didapat pemain yang mengeliminasimu",
+  "econ.feed.kill": "{killer} mengeliminasi {victim} (+{v})",
+  "econ.feed.bounty": "termasuk hadiah kepala {v}",
+  "econ.feed.chest": "{name} mengambil Peti Hadiah (+{v})",
+  "econ.death.summary": "Ronde ini: {kills} kill · {v}"
 }

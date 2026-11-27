@@ -116,7 +116,13 @@ export type FinancialActionType =
   /** Ad value drawn from the Energy Recharge Reserve Pool to back an EC recharge (system ledger, informational). */
   | 'ENERGY_POOL_DRAW'
   /** A cashout paid out by super_admin (informational: the wallet was debited at request time). */
-  | 'CASHOUT_APPROVED';
+  | 'CASHOUT_APPROVED'
+  /** V1.1: 55 % of a cheer ad's safe value credited to the cheered creator's wallet (inflow). */
+  | 'CHEER_REWARD'
+  /** V1.1: an Energy Ticket minted with its real backed µUSD value (informational, no wallet change). */
+  | 'TICKET_MINT'
+  /** V1.1: an in_match ticket that ended without a payout — its backing goes to the platform (informational). */
+  | 'TICKET_FORFEIT';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
@@ -129,6 +135,7 @@ export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
   'QUEST_REWARD',
   'MARKET_SELL',
   'BOUNTY_CLAIM',
+  'CHEER_REWARD',
 ];
 /** Action types that SUBTRACT from the wallet balance. */
 export const LEDGER_OUTFLOW_ACTIONS: FinancialActionType[] = ['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT'];

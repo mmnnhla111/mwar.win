@@ -17,6 +17,8 @@ GAME_SERVER_HTTP_URL = "https://game.mwar.win"
 # Password-reset links point here; mail is sent with the RESEND_API_KEY secret (optional)
 WEB_APP_URL = "https://mwar.win"
 MAIL_FROM = "MWAR <no-reply@mwar.win>"
+# V1.1: Energy Tickets are backed by floor(gross ad revenue x this); always clamped to 0.90-0.95 in code
+AD_SAFETY_MULTIPLIER = "0.92"
 # Telegram / LINE login (the only way to open an account). Uncomment and fill in, then also set the secrets:
 #   npx wrangler secret put TELEGRAM_BOT_TOKEN   (already used before)
 #   npx wrangler secret put LINE_CHANNEL_SECRET

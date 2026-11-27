@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
 import { apiFetch, progressQuest } from '../../lib/api';
 import { useTranslation } from '../../i18n/I18nProvider';
-import { formatMicroUsd } from '@mwar/shared';
+import { formatCoins2, formatCoinsAndUsd, formatUsdPrecise } from '@mwar/shared';
 import { QuestSpectateIcon } from '../../components/icons';
 import { soundFX } from '../../game/audio';
 import { CollisionWorld, MoveBody } from '../../game/physics/collision';
@@ -172,6 +172,8 @@ interface HudState {
   earningsMicroUsd: number;
   /** Own head bounty (5 % of every reward) — whoever eliminates you claims it. */
   bountyMicroUsd: number;
+  /** V1.1: real backed value of your live Energy Ticket — what your killer is paid (0 once settled). */
+  ticketMicroUsd: number;
   isProp: boolean;
   isGhost: boolean;
   ammo: number;
@@ -220,6 +222,10 @@ interface DamageIndicator {
 }
 
 export default function GamePage() {
+  // V1.1: HUD money strings (C with 2 decimals + $) — read through a ref inside the room callbacks
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  tRef.current = t;
   const rootRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -231,6 +237,7 @@ export default function GamePage() {
     chests: 0,
     earningsMicroUsd: 0,
     bountyMicroUsd: 0,
+    ticketMicroUsd: 0,
     isProp: false,
     isGhost: false,
     ammo: 0,
@@ -1344,6 +1351,7 @@ export default function GamePage() {
                 chests: p.chestsCollected,
                 earningsMicroUsd: p.sessionEarningsMicroUsd,
                 bountyMicroUsd: p.bountyMicroUsd ?? 0,
+                ticketMicroUsd: p.ticketMicroUsd ?? 0,
                 isGhost: p.isGhost,
               }));
               if (!p.isProp && player.isProp) setProp(null, false);
@@ -1459,18 +1467,19 @@ export default function GamePage() {
         });
         roomInstance.onMessage('player_killed', (data: any) => {
           soundFX.playHitMarker();
-          // Kill value split: 55 % to the shooter (+ the victim's accumulated head bounty)
+          // V1.1: a kill is worth the victim's real ticket value V; the shooter gets 55 % of V (+ the victim's head bounty)
           const bounty = Number(data.bountyClaimedMicroUsd) || 0;
+          const tt = tRef.current;
           feed(
-            `⚔️ ${data.killerUsername} eliminated ${data.victimUsername} (+${formatMicroUsd(Number(data.rewardMicroUsd) || 0)}${
-              bounty > 0 ? ` incl. ${formatMicroUsd(bounty)} head bounty` : ''
-            })`
+            `⚔️ ${tt('econ.feed.kill', { killer: data.killerUsername, victim: data.victimUsername, v: formatCoinsAndUsd(Number(data.rewardMicroUsd) || 0) })}${
+              bounty > 0 ? ` · ${tt('econ.feed.bounty', { v: formatCoinsAndUsd(bounty) })}` : ''
+            }`
           );
         });
         roomInstance.onMessage('player_suicide', (data: any) => feed(`💀 ${data.victimUsername} died (${data.cause}) — bounty chest dropped!`));
         roomInstance.onMessage('chest_destroyed', (data: any) => {
           soundFX.playChestPickup();
-          feed(`💰 ${data.collectedByUsername} claimed a Bounty Chest!`);
+          feed(`💰 ${tRef.current('econ.feed.chest', { name: data.collectedByUsername, v: formatCoinsAndUsd(Number(data.rewardMicroUsd) || 0) })}`);
         });
         roomInstance.onMessage('afk_warning', (data: any) => setAfkPrompt(data.message));
         roomInstance.onMessage('afk_cleared', () => setAfkPrompt(null));
@@ -2720,7 +2729,7 @@ export default function GamePage() {
   // impression clock keeps running while the player picks a new weapon / operator.
   const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld;
   // Anti-AFK (spec §5.3): Practice / Solo bots and Ghost Spectator only — never in paid PvP rooms.
-  // 35 s without input or a hidden tab pauses the 20 s banner clock and unmounts the banner.
+  // 35 s without input or a hidden tab pauses the 30–45 s banner clock and unmounts the banner.
   const chargeGuard = useIdleChargeGuard({ enabled: showAdBanner });
   const bannerPaused = chargeGuard.isPaused;
   const liftForAd = showAdBanner && isMobile && !compactLandscape; // portrait phones: raise thumbs above the ad
@@ -2905,6 +2914,11 @@ export default function GamePage() {
           <div className="bg-slate-950/80 border border-rose-500/60 rounded-3xl px-8 py-5 text-center">
             <div className="text-rose-400 font-black text-xl tracking-widest">ELIMINATED — Respawning…</div>
             <div className="text-slate-300 text-xs font-bold mt-1">Back in the fight in {Math.max(1, hudStats.respawnIn)}s</div>
+            {!isBotMode && (
+              <div className="mt-2 text-xs font-bold text-emerald-300 font-mono" data-death-summary>
+                {t('econ.death.summary', { kills: hudStats.kills, v: formatCoinsAndUsd(hudStats.earningsMicroUsd) })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -3036,15 +3050,22 @@ export default function GamePage() {
                 <span className="text-xs sm:text-sm font-black text-amber-300 font-mono">EC ONLY</span>
               </div>
             ) : (
-              <div>
-                <span className="text-[10px] text-slate-400 font-bold block uppercase">Round Earned</span>
-                <span className="text-sm sm:text-base font-black text-emerald-400 font-mono">{formatMicroUsd(hudStats.earningsMicroUsd)}</span>
+              <div data-hud-round-earned>
+                <span className="text-[10px] text-slate-400 font-bold block uppercase">{t('econ.hud.roundEarned')}</span>
+                <span className="text-sm sm:text-base font-black text-emerald-400 font-mono block leading-tight">{formatCoins2(hudStats.earningsMicroUsd)}</span>
+                <span className="text-[10px] font-bold text-emerald-300/70 font-mono block leading-tight">{formatUsdPrecise(hudStats.earningsMicroUsd)}</span>
               </div>
             )}
             {!isBotMode && (
-              <div className="border-l border-slate-800 pl-3" title="5 % of every reward you earn — paid to whoever eliminates you">
-                <span className="text-[10px] text-slate-400 font-bold block uppercase">Head Bounty</span>
-                <span className="text-sm sm:text-base font-black text-rose-300 font-mono">{formatMicroUsd(hudStats.bountyMicroUsd)}</span>
+              <div className="border-l border-slate-800 pl-3" title={t('econ.hud.bountyHint')} data-hud-head-bounty>
+                <span className="text-[10px] text-slate-400 font-bold block uppercase">{t('econ.hud.headBounty')}</span>
+                <span className="text-sm sm:text-base font-black text-rose-300 font-mono block leading-tight">{formatCoins2(hudStats.bountyMicroUsd)}</span>
+                <span className="text-[10px] font-bold text-rose-200/70 font-mono block leading-tight">{formatUsdPrecise(hudStats.bountyMicroUsd)}</span>
+                {hudStats.ticketMicroUsd > 0 && (
+                  <span className="text-[9px] font-bold text-amber-300/80 font-mono block leading-tight" title={t('econ.hud.ticketHint')} data-hud-ticket>
+                    {t('econ.hud.ticket', { v: formatCoins2(hudStats.ticketMicroUsd) })}
+                  </span>
+                )}
               </div>
             )}
             <div className="border-l border-slate-800 pl-3">
@@ -3404,7 +3425,7 @@ export default function GamePage() {
             </div>
           )}
           {adCfg?.adMode === 'live' && adCfg.adsterraEnabled && adCfg.banner320x50 ? (
-            // Live: real Adsterra 320×50 in a sandboxed iframe; 20 s visible-tab impression ping → EC
+            // Live: real Adsterra 320×50 in a sandboxed iframe; random 30–45 s visible-tab impression ping → EC
             <AdsterraBanner spec={adCfg.banner320x50} pingSlot="adsterra_320x50" onResult={applyEcResult} className="bg-slate-950 border border-slate-700/70 border-b-0 rounded-t-lg" />
           ) : (
             <SimulatedAdBanner

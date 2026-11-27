@@ -20,14 +20,24 @@ import { creditEcProgress, logAdImpression, normalizeCountry, utcDateKey } from 
 import { AD_CONFIG_CACHE_KEY, cfCountryOf, getAdConfig, pickDirectLink, toPublicAdConfig, valueFromNetworkPrice, valueSlot } from '../utils/ad-networks';
 import { isLocalDev, safeEqual } from '../utils/guards';
 import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
-import { loadStatus, recordCheer, resolveTarget } from './cheer';
+import { loadStatus, recordCheer, resolveTarget, settleCheerRevenue } from './cheer';
+import { safeValue } from '../utils/energy-tickets';
+import { getStatisticalAdMicroUsd, type AdFormat } from '@mwar/shared';
+
+/**
+ * V1.1: gross revenue that may back EC — the slot value, but never above the statistical eCPM of its
+ * format (an admin multiplier > 100 % only tunes EC %, it can never create backing above the table).
+ */
+function backingGross(country: string, v: { format: string; effectiveMicroUsd: number }): number {
+  return Math.min(v.effectiveMicroUsd, getStatisticalAdMicroUsd(country, v.format as AdFormat));
+}
 
 type Ctx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
 
 /**
  * Real ad networks (Adsterra + Monetag), mounted at /api/ads:
  *   GET  /config                 public, sanitized, edge-cached 60 s (mode, enabled flags, banner keys, in-page zone)
- *   POST /impression             live Adsterra banner impression ping (20 s, visible tab) → EC progress
+ *   POST /impression             live Adsterra banner impression ping (30–45 s, visible tab) → EC progress + backing
  *   POST /direct-link/start      Path A: open a Monetag Direct Link (Adsterra Smartlink fallback) with a token
  *   POST /direct-link/claim      Path A: claim after required_seconds (server clock) → EC progress / Cheer
  *   ALL  /postback/monetag       Path B: Monetag S2S postback (secret) → P1 value from estimated_price
@@ -58,7 +68,7 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
   // Anti-AFK: the player must have touched / moved / typed within the last 40 s
   const idle = bannerIdleMs(body);
   if (idle !== null) return c.json(idlePausedBody(idle), 400);
-  // At most one accepted banner request per 18 s per user across every banner (a batch of N needs
+  // At most one accepted banner request per 28 s per user across every banner (a batch of N needs
   // N gaps), claimed atomically in D1 so parallel / scripted pings can't slip through
   const wait = await claimBannerGate(c.env.DB, me.userId, count);
   if (wait !== null) return c.json({ error: 'Banner impressions too soon', code: 'too_soon', retryInSeconds: wait }, 429);
@@ -70,10 +80,14 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
     { userId: me.userId, provider: v.network, country, format: v.format, purpose: 'ec_recharge', microUsd: v.effectiveMicroUsd, source: 'country_ecpm_mult', ecBp: v.ecBp, slot },
     count
   );
-  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp * count, `${slot}x${count}`) : null;
+  // V1.1: a live banner impression is real ad revenue → floor(gross × 0.90–0.95) backs the EC it charges
+  const backed = safeValue(c.env, backingGross(country, v)) * count;
+  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp * count, `${slot}x${count}`, { microUsd: backed, source: 'ad_charge', country }) : null;
   return c.json({
     success: true,
     format: 'banner',
+    backedMicroUsd: ec?.backedAddedMicroUsd ?? 0,
+    pendingEcMicroUsd: ec?.pendingEcMicroUsd,
     slot,
     country,
     impressions: count,
@@ -93,6 +107,11 @@ adNetworksRouter.post('/direct-link/start', authMiddleware, async (c) => {
   const parsed = DirectLinkStartSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || 'Invalid request' }, 400);
   const { purpose, seconds } = parsed.data;
+  if (purpose === 'cheer' && parsed.data.targetType && parsed.data.targetType !== 'energy') {
+    // V1.1: never cheer your own post / profile (checked before anything else)
+    const t = await resolveTarget(c, parsed.data.targetType as CheerTargetType, parsed.data.targetId);
+    if (t.ok && t.targetUserId === me.userId) return c.json({ error: 'You cannot cheer your own content', code: 'SELF_CHEER' }, 400);
+  }
   const cfg = await getAdConfig(c);
   if (cfg.adMode !== 'live') return c.json({ error: 'Real ads are in test mode', code: 'AD_MODE_TEST', adMode: cfg.adMode }, 409);
   const link = pickDirectLink(cfg);
@@ -177,6 +196,11 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
 
   let cheerCount: number | null = null;
   let cheerStatus = null;
+  let cheerSplit: Awaited<ReturnType<typeof settleCheerRevenue>> | null = null;
+  if (row.purpose === 'cheer' && row.target_user_id && row.target_user_id === me.userId) {
+    await c.env.DB.prepare("UPDATE ad_click_tokens SET status = 'expired' WHERE token = ?1").bind(row.token).run();
+    return c.json({ error: 'You cannot cheer your own content', code: 'SELF_CHEER' }, 400);
+  }
   if (row.purpose === 'cheer') {
     const rec = await recordCheer(c, {
       viewId: row.token,
@@ -196,6 +220,17 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
     }
     cheerCount = rec.cheerCount;
   }
+  // V1.1: a real direct-link visit is real revenue. Safe value V = floor(gross × 0.90–0.95):
+  //   ec_recharge / energy cheer → 100 % of V backs the viewer's EC
+  //   creator cheer → 55 / 15 / 5 / 5 to the creator side, the 20 % slice backs the viewer's EC
+  const safeV = safeValue(c.env, backingGross(country, v));
+  let viewerBacking = safeV;
+  let backingSource: 'ad_charge' | 'cheer_pool' = 'ad_charge';
+  if (row.purpose === 'cheer' && row.target_user_id) {
+    cheerSplit = await settleCheerRevenue(c.env, { creatorId: row.target_user_id, viewerId: me.userId, valueMicroUsd: safeV, sourceId: `cheer:${row.token}` });
+    viewerBacking = cheerSplit.viewerBackingMicroUsd;
+    backingSource = 'cheer_pool';
+  }
 
   await logAdImpression(c.env.DB, {
     userId: me.userId,
@@ -208,7 +243,7 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
     ecBp: v.ecBp,
     slot,
   });
-  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp, `direct:${slot}:${row.token}`) : null;
+  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp, `direct:${slot}:${row.token}`, { microUsd: viewerBacking, source: backingSource, country }) : null;
   if (row.purpose === 'cheer') cheerStatus = await loadStatus(c, row.target_type, row.target_id, row.target_user_id);
   return c.json({
     success: true,
@@ -225,6 +260,9 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
     ticketsAwarded: ec?.ticketsAwarded ?? 0,
     cheerCount,
     status: cheerStatus,
+    valueMicroUsd: safeV,
+    creatorMicroUsd: cheerSplit?.creatorMicroUsd ?? 0,
+    ecBackingMicroUsd: ec?.backedAddedMicroUsd ?? 0,
   });
 });
 
@@ -337,6 +375,8 @@ adNetworksRouter.all('/postback/monetag', async (c) => {
     ecBp: creditBp,
     slot,
   });
-  const ec = creditBp > 0 ? await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`) : null;
+  // V1.1: real revenue (P1 estimated_price or the slot's eCPM) backs the EC it credits, after the haircut
+  const pbGross = p1 ? value.effectiveMicroUsd : backingGross(country, value as { format: string; effectiveMicroUsd: number });
+  const ec = creditBp > 0 ? await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`, { microUsd: safeValue(c.env, pbGross), source: 'ad_charge', country }) : null;
   return c.json({ ok: true, note, valueSource: p1 ? 'network' : 'country_ecpm_mult', effectiveMicroUsd: value.effectiveMicroUsd, ecProgressPct: Math.round(creditBp / 100), energyTickets: ec?.energyTickets ?? null }, 200);
 });

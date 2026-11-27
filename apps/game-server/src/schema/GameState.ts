@@ -45,6 +45,8 @@ export class PlayerState extends Schema {
   @type('number') sessionEarningsMicroUsd: number = 0;
   // Head bounty: 5 % of every reward this player earns; claimed by whoever eliminates them
   @type('number') bountyMicroUsd: number = 0;
+  // V1.1: real backed value of this player's live Energy Ticket — exactly what a kill on them pays (0 after settled)
+  @type('number') ticketMicroUsd: number = 0;
   // Medkits carried (slot 4). Healing is a 4 s stationary cast validated by the server.
   @type('number') medkits: number = 0;
 
@@ -81,7 +83,7 @@ export class ChestState extends Schema {
   @type('number') z: number = 0;
   @type('number') health: number = 50;
   @type('number') maxHealth: number = 50;
-  @type('number') rewardMicroUsd: number = 50_000; // $0.05
+  @type('number') rewardMicroUsd: number = 0; // V1.1: the dead player's ticket value (no fixed reward)
   @type('boolean') isDeathDrop: boolean = false;
   // The dead player's head bounty carried inside their suicide / environmental-death chest
   @type('number') bountyMicroUsd: number = 0;

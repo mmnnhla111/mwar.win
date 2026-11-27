@@ -15,6 +15,7 @@ import { isLocalDev, safeEqual } from '../utils/guards';
 import { getStaffRoles } from '../middleware/staff';
 import { authMiddleware } from '../middleware/auth';
 import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
+import { safeValue } from '../utils/energy-tickets';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, parseAdFormat, utcDateKey, type AdValueSource } from '../utils/ad-value';
 
 export const adsRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
@@ -202,7 +203,7 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
     return c.json({ error: 'count must be 1..10' }, 400);
   }
   if (format === 'banner') {
-    // Anti-AFK: last real input within 40 s, then the atomic per-user 18 s gate (a batch of N needs N gaps)
+    // Anti-AFK: last real input within 40 s, then the atomic per-user 28 s gate (a batch of N needs N gaps)
     const idle = bannerIdleMs(body);
     if (idle !== null) return c.json(idlePausedBody(idle), 400);
     const wait = await claimBannerGate(c.env.DB, user.userId, count, now);
@@ -246,7 +247,12 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
   const ecBpEach = format === 'video_5s' ? 0 : ecProgressBpFor(format, parityValue, country, video30Ref);
   await logAdImpression(c.env.DB, { userId: user.userId, provider, country, format, purpose, microUsd: value.microUsd, source: value.source, ecBp: ecBpEach }, count);
   const ecBp = ecBpEach * count;
-  const ec = ecBp > 0 ? await creditEcProgress(c.env, user.userId, ecBp, `${provider}:${format}${count > 1 ? `x${count}` : ''}`) : null;
+  // V1.1: a simulated (test-mode) ad earns no revenue, so the EC it charges can only be backed by the
+  // Energy Pool's unspent balance (capped atomically; an empty pool charges 0-value EC)
+  const wantBacking = ecBp > 0 ? safeValue(c.env, value.microUsd) * count : 0;
+  const ec = ecBp > 0
+    ? await creditEcProgress(c.env, user.userId, ecBp, `${provider}:${format}${count > 1 ? `x${count}` : ''}`, { microUsd: wantBacking, source: 'ad_charge', country, fromPool: true })
+    : null;
   return c.json({
     success: true,
     simulation: true,
@@ -262,5 +268,7 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
     energy_progress_pct: ec?.energyProgressPct,
     ticketsAwarded: ec?.ticketsAwarded ?? 0,
     ticketsFull: ec?.full ?? false,
+    backedMicroUsd: ec?.backedAddedMicroUsd ?? 0,
+    pendingEcMicroUsd: ec?.pendingEcMicroUsd,
   });
 });

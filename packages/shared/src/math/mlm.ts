@@ -10,6 +10,7 @@ import {
   MLM_LEVEL_RATES,
 } from '../constants';
 import { toMicroUsdBigInt } from './currency';
+import { roundCoinShare } from './coin';
 
 export interface MlmUpline {
   userId: string;
@@ -138,7 +139,7 @@ export interface RewardSplitResult {
   uplinePayouts: Array<{ depth: 1 | 2 | 3 | 4 | 5; userId: string; bps: bigint; amountMicroUsd: bigint }>;
   /** Upline levels with nobody in them (their share rolls over to the platform). */
   unclaimedLevels: Array<{ depth: 1 | 2 | 3 | 4 | 5; amountMicroUsd: bigint }>;
-  /** Unclaimed upline shares + integer-division remainder (to the platform). */
+  /** Unclaimed upline shares + rounding remainder (to the platform). */
   platformRolloverMicroUsd: bigint;
   /** platformFee + platformRollover — everything the platform/system ledger receives. */
   platformTotalMicroUsd: bigint;
@@ -147,11 +148,15 @@ export interface RewardSplitResult {
 }
 
 /**
- * 100 % Revenue / Reward Split of a verified reward value V (kill bounty, chest, ad revenue):
+ * 100 % Revenue / Reward Split of a verified reward value V (a victim's Energy Ticket value, a cheer ad):
  *   earner 55 % · uplines L1 5 % / L2 4 % / L3 3 % / L4 2 % / L5 1 % · head bounty 5 % · platform 5 %
  *   · Energy Recharge Reserve Pool 20 %.
- * Each share is floor(V × rate). Missing upline levels and rounding remainders go to the platform, so
- * earner + uplines + bounty + energyPool + platformTotal == V always (throws otherwise).
+ * V1.1 rounding: every non-platform share is `roundCoinShare(V, rate)` (fraction >= 0.7 µUSD = 0.007 C
+ * rounds up, otherwise down). The platform receives everything else (its 5 % + missing upline levels +
+ * rounding), and is never below floor(V × 5 %): if rounded-up shares would push it under that floor,
+ * 1 µUSD is trimmed from the largest non-platform share until it is not. So
+ *   earner + uplines + bounty + energyPool + platformTotal === V   (exactly; throws otherwise)
+ * and nobody is ever paid even 1 µUSD more than V in total.
  */
 export function calculateRewardSplit(grossAmount: bigint | number | string, uplines: MlmUpline[] = []): RewardSplitResult {
   const gross = toMicroUsdBigInt(grossAmount);
@@ -169,35 +174,54 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
   };
   if (gross <= 0n) return zero;
 
-  const share = (bps: bigint) => (gross * bps) / REWARD_SPLIT_TOTAL_BPS;
-  const earner = share(REWARD_EARNER_BPS);
-  const bounty = share(REWARD_BOUNTY_BPS);
-  const platformFee = share(REWARD_PLATFORM_BPS);
-  const energyPool = share(REWARD_ENERGY_POOL_BPS);
+  const share = (bps: bigint) => roundCoinShare(gross, bps);
+  const platformFloor = (gross * REWARD_PLATFORM_BPS) / REWARD_SPLIT_TOTAL_BPS;
 
   const byDepth = new Map<number, string>();
   for (const u of uplines) if (u.depth >= 1 && u.depth <= 5) byDepth.set(u.depth, u.userId);
 
-  const uplinePayouts: RewardSplitResult['uplinePayouts'] = [];
+  // Allocated (non-platform) shares, in trim-priority order for ties: earner, energy pool, bounty, L1..L5
+  const slots: Array<{ key: string; amount: bigint }> = [
+    { key: 'earner', amount: share(REWARD_EARNER_BPS) },
+    { key: 'energy', amount: share(REWARD_ENERGY_POOL_BPS) },
+    { key: 'bounty', amount: share(REWARD_BOUNTY_BPS) },
+  ];
   const unclaimedLevels: RewardSplitResult['unclaimedLevels'] = [];
-  let uplineAllocated = 0n;
   for (let depth = 1; depth <= 5; depth++) {
     const d = depth as 1 | 2 | 3 | 4 | 5;
     const amount = share(REWARD_UPLINE_BPS[d]);
+    if (byDepth.has(depth)) slots.push({ key: `L${depth}`, amount });
+    else unclaimedLevels.push({ depth: d, amountMicroUsd: amount });
+  }
+  const allocated = () => slots.reduce((a, s) => a + s.amount, 0n);
+  // Never let the rounding push the platform under its 5 % floor (or the total over V)
+  let guard = 0;
+  while (gross - allocated() < platformFloor) {
+    let big = slots[0];
+    for (const s of slots) if (s.amount > big.amount) big = s;
+    if (big.amount <= 0n || ++guard > 64) break;
+    big.amount -= 1n;
+  }
+  const get = (k: string) => slots.find((s) => s.key === k)?.amount ?? 0n;
+  const earner = get('earner');
+  const bounty = get('bounty');
+  const energyPool = get('energy');
+  const uplinePayouts: RewardSplitResult['uplinePayouts'] = [];
+  let uplineAllocated = 0n;
+  for (let depth = 1; depth <= 5; depth++) {
     const userId = byDepth.get(depth);
-    if (userId) {
-      uplinePayouts.push({ depth: d, userId, bps: REWARD_UPLINE_BPS[d], amountMicroUsd: amount });
-      uplineAllocated += amount;
-    } else {
-      unclaimedLevels.push({ depth: d, amountMicroUsd: amount });
-    }
+    if (!userId) continue;
+    const d = depth as 1 | 2 | 3 | 4 | 5;
+    const amount = get(`L${depth}`);
+    uplinePayouts.push({ depth: d, userId, bps: REWARD_UPLINE_BPS[d], amountMicroUsd: amount });
+    uplineAllocated += amount;
   }
 
-  // Everything not explicitly allocated (empty upline levels + rounding dust) rolls over to the platform
-  const rollover = gross - earner - bounty - platformFee - energyPool - uplineAllocated;
-  const platformTotal = platformFee + rollover;
+  const platformTotal = gross - earner - bounty - energyPool - uplineAllocated;
+  const platformFee = platformFloor;
+  const rollover = platformTotal - platformFee;
   const total = earner + bounty + energyPool + uplineAllocated + platformTotal;
-  if (total !== gross || rollover < 0n) {
+  if (total !== gross || rollover < 0n || platformTotal < platformFloor) {
     throw new Error(`Reward split invariant failed: distributed ${total} != gross ${gross}`);
   }
   return {
@@ -218,4 +242,15 @@ export function calculateRewardSplit(grossAmount: bigint | number | string, upli
 export function earnerAndBountyShares(grossMicroUsd: number): { earner: number; bounty: number } {
   const r = calculateRewardSplit(Math.max(0, Math.floor(grossMicroUsd)));
   return { earner: Number(r.earnerMicroUsd), bounty: Number(r.bountyMicroUsd) };
+}
+
+/**
+ * "ให้กำลังใจ" Cheer split (V1.1) of the safe ad value V a viewer generated for a creator:
+ * the creator is the earner (55 % wallet · 5 % head bounty), the creator's uplines get 15 %, the
+ * platform 5 % (+ missing tiers / rounding) and the 20 % Energy Pool slice is credited to the pool AND
+ * immediately drawn as the viewer's EC backing (pending_ec_micro_usd). Total allocated === V (never 120 %).
+ */
+export function calculateCheerSplit(valueMicroUsd: bigint | number | string, creatorUplines: MlmUpline[] = []) {
+  const split = calculateRewardSplit(valueMicroUsd, creatorUplines);
+  return { ...split, viewerEcBackingMicroUsd: split.energyPoolMicroUsd };
 }

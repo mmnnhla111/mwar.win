@@ -27,7 +27,7 @@ export const idlePausedBody = (idleMs: number) => ({
 
 /**
  * Atomically claims the per-user banner slot in D1: succeeds only if the last accepted banner request
- * was at least count × 18 s ago. Returns null on success or the seconds to wait.
+ * was at least count × 28 s ago (V1.1: banner cycles are 30–45 s). Returns null on success or the seconds to wait.
  */
 export async function claimBannerGate(db: D1Database, userId: string, count: number, nowSec = Math.floor(Date.now() / 1000)): Promise<number | null> {
   const need = Math.max(1, count) * AD_BANNER_MIN_GAP_SECONDS;

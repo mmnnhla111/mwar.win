@@ -47,8 +47,9 @@ export const GAME_TICK_RATE_HZ = 20;
 export const GAME_TICK_INTERVAL_MS = 50; // 50ms per tick
 export const CHEST_EVENT_INTERVAL_SEC = 15;
 export const CHEST_EVENT_INTERVAL_MS = 15_000;
-export const CHEST_REWARD_BASE_MICRO_USD = 50_000n; // $0.05 per chest
-export const KILL_REWARD_BASE_MICRO_USD = 100_000n; // $0.10 per kill
+// V1.1 (zero-deficit): there is NO fixed kill / chest reward any more. A kill (or the opening of a
+// suicide / environmental-death chest) pays exactly the victim's Energy Ticket value
+// (user_energy_tickets.backed_micro_usd — real ad revenue after the safety haircut), split 55/15/5/5/20.
 export const GAME_BATCH_SYNC_INTERVAL_SEC = 10;
 export const GAME_BATCH_SYNC_INTERVAL_MS = 10_000;
 
@@ -161,10 +162,19 @@ export * from './adEcpm';
 // ---- EC recharge from ads (bot kills give 0 EC / 0 Micro-USD) --------------------------------
 /** EC progress is stored in basis points: 10 000 bp = 100 % = +1 Energy Ticket. */
 export const EC_PROGRESS_BP_PER_TICKET = 10_000;
-/** Passive banner: one verified impression every 20 s while the tab is visible. */
-export const AD_BANNER_INTERVAL_SECONDS = 20;
-/** Server-side minimum gap between two banner impressions of one user (network slack). */
-export const AD_BANNER_MIN_GAP_SECONDS = 18;
+/**
+ * Passive banner (V1.1): one verified impression per randomized 30–45 s cycle while the tab is visible
+ * (`nextBannerIntervalSeconds()`, re-randomized after every completed cycle).
+ */
+export const AD_BANNER_INTERVAL_MIN_SECONDS = 30;
+export const AD_BANNER_INTERVAL_MAX_SECONDS = 45;
+/** Server-side minimum gap between two banner impressions of one user (network slack under the 30 s floor). */
+export const AD_BANNER_MIN_GAP_SECONDS = 28;
+/** A random banner cycle length in whole seconds: Math.floor(30 + rand × 16) → 30..45. */
+export function nextBannerIntervalSeconds(rand: () => number = Math.random): number {
+  const r = Math.min(0.999999, Math.max(0, Number(rand()) || 0));
+  return Math.floor(AD_BANNER_INTERVAL_MIN_SECONDS + r * (AD_BANNER_INTERVAL_MAX_SECONDS - AD_BANNER_INTERVAL_MIN_SECONDS + 1));
+}
 /** Anti-AFK: charging screens pause after this long without mouse / touch / key input (or a hidden tab). */
 export const AD_IDLE_PAUSE_MS = 35_000;
 /** Anti-AFK: the API rejects a banner ping whose last verified input is older than this (400 idle_paused). */
@@ -189,3 +199,22 @@ export const CHEER_DAILY_CAP = 15;
 export const CHEER_PER_TARGET_DAILY_CAP = 3;
 export const CHEER_TARGET_TYPES = ['post', 'profile', 'energy'] as const;
 export type CheerTargetType = (typeof CHEER_TARGET_TYPES)[number];
+
+// ---- V1.1 zero-deficit ticket-backed economy ------------------------------------------------------
+/** Energy Ticket sources (user_energy_tickets.source_type). */
+export const ENERGY_TICKET_SOURCES = ['ad_charge', 'cheer_pool', 'signup_promo', 'admin_grant'] as const;
+export type EnergyTicketSource = (typeof ENERGY_TICKET_SOURCES)[number];
+export const ENERGY_TICKET_STATUSES = ['available', 'in_match', 'settled'] as const;
+export type EnergyTicketStatus = (typeof ENERGY_TICKET_STATUSES)[number];
+/** An in_match ticket nobody settled (game server crash) is forfeited to the platform after this long. */
+export const STALE_MATCH_TICKET_SECONDS = 6 * 3600;
+/**
+ * Conservative ad safety haircut, in basis points of gross ad revenue: default 92 % (−8 %), always
+ * clamped to 90 %–95 % (−10 % … −5 %) so a ticket can never be worth more than the ad that backs it.
+ */
+export const AD_SAFETY_MULTIPLIER_DEFAULT_BP = 9_200;
+export const AD_SAFETY_MULTIPLIER_MIN_BP = 9_000;
+export const AD_SAFETY_MULTIPLIER_MAX_BP = 9_500;
+/** Rounding rule for C (1 C = 100 µUSD, 0.01 C = 1 µUSD): a fraction ≥ 0.7 µUSD (0.007 C) rounds up. */
+export const COIN_ROUND_UP_FRACTION = 0.7;
+

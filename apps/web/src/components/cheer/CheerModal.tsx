@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CheerAdFormat, CheerOption, CheerStatus, CheerTargetType } from '@mwar/shared';
-import { MAX_ENERGY_TICKETS } from '@mwar/shared';
+import { MAX_ENERGY_TICKETS, formatCoinsAndUsd } from '@mwar/shared';
 import { Modal, Spinner, btn } from '../ui/Card';
 import { Icon } from '../ui/Icon';
 import { completeCheer, getCheerStatus, startCheer } from '../../lib/api';
@@ -19,7 +19,7 @@ type Phase =
   | { kind: 'menu' }
   | { kind: 'watching'; viewId: string; format: CheerAdFormat; total: number; endsAt: number; /** ms left, frozen while the anti-AFK pause is up */ pausedLeft?: number }
   | { kind: 'claiming'; format: CheerAdFormat }
-  | { kind: 'done'; format: CheerAdFormat; addedPct: number; ticketsAwarded: number };
+  | { kind: 'done'; format: CheerAdFormat; addedPct: number; ticketsAwarded: number; /** V1.1 µUSD backing your EC */ backing?: number; /** µUSD credited to the creator */ creator?: number };
 
 const FORMAT_ICON: Record<CheerAdFormat, string> = { video_30s: '🎬', video_15s: '⚡', banner: '🪧' };
 
@@ -64,7 +64,15 @@ export function CheerModal({
   const liveBanner = adCfg?.adMode === 'live' && adCfg.adsterraEnabled ? adCfg.banner300x250 : null;
   const direct = useDirectLinkVisit((r) => {
     if (r.status) setStatus(r.status);
-    setPhase({ kind: 'done', format: r.format === 'video_30s' ? 'video_30s' : 'video_15s', addedPct: r.ecProgressAddedPct, ticketsAwarded: r.ticketsAwarded });
+    const money = r as { ecBackingMicroUsd?: number; creatorMicroUsd?: number };
+    setPhase({
+      kind: 'done',
+      format: r.format === 'video_30s' ? 'video_30s' : 'video_15s',
+      addedPct: r.ecProgressAddedPct,
+      ticketsAwarded: r.ticketsAwarded,
+      backing: Number(money.ecBackingMicroUsd) || 0,
+      creator: Number(money.creatorMicroUsd) || 0,
+    });
     if (typeof r.energyTickets === 'number') {
       patch((b) => ({ ...b, user: { ...b.user, energyTickets: r.energyTickets!, maxEnergyTickets: r.maxEnergyTickets, energyProgressPct: r.energyProgressPct } }));
     }
@@ -115,7 +123,7 @@ export function CheerModal({
       try {
         const r = await completeCheer(viewId);
         setStatus(r.status);
-        setPhase({ kind: 'done', format, addedPct: r.ecProgressAddedPct, ticketsAwarded: r.ticketsAwarded });
+        setPhase({ kind: 'done', format, addedPct: r.ecProgressAddedPct, ticketsAwarded: r.ticketsAwarded, backing: r.ecBackingMicroUsd ?? 0, creator: r.creatorMicroUsd ?? 0 });
         patch((b) => ({ ...b, user: { ...b.user, energyTickets: r.energyTickets, maxEnergyTickets: r.maxEnergyTickets, energyProgressPct: r.energyProgressPct } }));
         onCheered?.(r.cheerCount);
       } catch (e: any) {
@@ -323,11 +331,21 @@ export function CheerModal({
 
         {phase.kind === 'done' && (
           <div className="rounded-2xl bg-[#FFFBEA] border border-[#FDE68A] px-4 py-4 text-center" data-cheer-done>
-            <div className="text-3xl">💛</div>
+            <div className="mx-auto w-12 h-12 rounded-full bg-[#FFE135] text-stone-900 flex items-center justify-center"><Icon name="cheer" size={28} /></div>
             <div className="mt-1 font-extrabold text-stone-900">{t('cheer.thanks')}</div>
             <div className="text-sm text-stone-600">
               {phase.ticketsAwarded > 0 ? t('cheer.gotTickets', { n: phase.ticketsAwarded }) : t('cheer.gotProgress', { pct: Math.round(phase.addedPct * 10) / 10 })}
             </div>
+            {/* V1.1: show the real money behind the cheer in C (2 decimals) and $ */}
+            {!!phase.creator && phase.creator > 0 && (
+              <div className="mt-1 text-xs font-semibold text-emerald-700" data-cheer-creator-got>
+                {t('cheer2.creatorGot', { name: targetName || '', v: formatCoinsAndUsd(phase.creator) })}
+              </div>
+            )}
+            <div className="mt-1 text-xs text-stone-500" data-cheer-backing>
+              {t('cheer2.backed', { v: formatCoinsAndUsd(phase.backing ?? 0) })}
+            </div>
+            {targetType !== 'energy' && <div className="mt-1 text-[11px] text-stone-400">{t('cheer2.split')}</div>}
             <div className="mt-3 flex justify-center gap-2">
               {status && status.dailyRemaining > 0 && (
                 <button className={btn.soft} onClick={() => setPhase({ kind: 'menu' })}>
@@ -358,10 +376,13 @@ export function CheerButton({
   className = '',
   label,
   compactLabel = false,
+  targetUserId,
 }: {
   targetType: CheerTargetType;
   targetId?: string | null;
   targetName?: string | null;
+  /** Owner of the post / profile: the button is never rendered for the signed-in user's own content. */
+  targetUserId?: string | null;
   count?: number;
   onCheered?: (cheerCount: number | null) => void;
   className?: string;
@@ -370,11 +391,15 @@ export function CheerButton({
   compactLabel?: boolean;
 }) {
   const { t } = useTranslation();
+  const { boot } = useSession();
   const [open, setOpen] = useState(false);
+  // V1.1: no self-cheer — never render the Cheer button on your own post or profile (the API refuses it too)
+  const meId = boot?.user.id;
+  if (targetType !== 'energy' && meId && (targetUserId === meId || (targetType === 'profile' && targetId === meId))) return null;
   return (
     <>
       <button onClick={() => setOpen(true)} className={className} data-cheer-button={targetType}>
-        <Icon name="cheer" size={18} /> <span className={compactLabel ? 'hidden sm:inline whitespace-nowrap' : 'whitespace-nowrap'}>{label || t('cheer.button')}</span>
+        <Icon name={targetType === 'energy' ? 'bolt' : 'cheer'} size={18} /> <span className={compactLabel ? 'hidden sm:inline whitespace-nowrap' : 'whitespace-nowrap'}>{label || t('cheer.button')}</span>
         {count ? <span className="text-xs font-extrabold opacity-70">{count}</span> : null}
       </button>
       {open && <CheerModal open={open} onClose={() => setOpen(false)} targetType={targetType} targetId={targetId} targetName={targetName} onCheered={onCheered} />}

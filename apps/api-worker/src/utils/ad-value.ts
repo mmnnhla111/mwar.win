@@ -1,7 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { getStatisticalAdMicroUsd, type AdFormat, EC_PROGRESS_BP_PER_TICKET, MAX_ENERGY_TICKETS } from '@mwar/shared';
+import { getStatisticalAdMicroUsd, type AdFormat, EC_PROGRESS_BP_PER_TICKET } from '@mwar/shared';
 import type { Env } from '../types';
-import { logFinancialTransaction } from './audit-logger';
 
 export type AdValueSource = 'network' | 'yesterday_avg' | 'country_ecpm';
 export const AD_FORMATS: AdFormat[] = ['banner', 'video_5s', 'video_15s', 'video_30s'];
@@ -106,47 +105,5 @@ export async function logAdImpression(
   return ids[0];
 }
 
-/**
- * Credit EC progress to the user's real D1 balance. Every 10 000 bp converts into +1 Energy
- * Ticket (up to MAX_ENERGY_TICKETS = 300). When tickets are already full the progress bar stays capped below 100 %.
- */
-export async function creditEcProgress(env: Env, userId: string, addBp: number, sourceId: string) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const u = await env.DB
-      .prepare('SELECT energy_tickets, max_energy_tickets, energy_progress_bp FROM users WHERE id = ?1')
-      .bind(userId)
-      .first<{ energy_tickets: number | null; max_energy_tickets: number | null; energy_progress_bp: number | null }>();
-    if (!u) return null;
-    const maxTickets = Math.min(u.max_energy_tickets ?? MAX_ENERGY_TICKETS, MAX_ENERGY_TICKETS);
-    const prevBp = u.energy_progress_bp ?? 0;
-    let tickets = u.energy_tickets ?? MAX_ENERGY_TICKETS;
-    let bp = prevBp + Math.max(0, Math.round(addBp));
-    let ticketsAwarded = 0;
-    while (bp >= EC_PROGRESS_BP_PER_TICKET && tickets < maxTickets) {
-      bp -= EC_PROGRESS_BP_PER_TICKET;
-      tickets += 1;
-      ticketsAwarded += 1;
-    }
-    if (tickets >= maxTickets) bp = Math.min(bp, EC_PROGRESS_BP_PER_TICKET - 1);
-    const res = await env.DB
-      .prepare(
-        `UPDATE users SET energy_tickets = ?1, energy_progress_bp = ?2, energy_progress_pct = ?3
-         WHERE id = ?4 AND energy_progress_bp = ?5 AND COALESCE(energy_tickets, ?6) = ?7`
-      )
-      .bind(tickets, bp, Math.floor(bp / 100), userId, prevBp, MAX_ENERGY_TICKETS, u.energy_tickets ?? MAX_ENERGY_TICKETS)
-      .run();
-    if ((res.meta?.changes ?? 0) !== 1) continue; // concurrent update: re-read and retry
-    await logFinancialTransaction(env, {
-      id: 0,
-      transaction_id: `ec_ad_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
-      user_id: userId,
-      action_type: 'AD_EC_RECHARGE',
-      amount_micro_usd: 0n,
-      balance_after_micro_usd: 0n,
-      source_game_id: `${sourceId}:+${addBp}bp:t${tickets}`,
-      created_at: new Date().toISOString(),
-    });
-    return { energyTickets: tickets, maxEnergyTickets: maxTickets, energyProgressBp: bp, energyProgressPct: bp / 100, ticketsAwarded, full: tickets >= maxTickets };
-  }
-  throw new Error('EC progress update conflicted, try again');
-}
+/** V1.1: EC progress now carries its real µUSD backing — see utils/energy-tickets.ts. */
+export { creditEcProgress } from './energy-tickets';

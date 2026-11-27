@@ -928,5 +928,18 @@
   "spectate.hint.mobile": "幽灵观战 • 摇杆：移动 • 按钮：上升 / 下降 • 拖动：转向",
   "spectate.hint.desktop": "幽灵观战 • WASD：移动 • Space / E：上升 • Shift / C：下降 • 拖动鼠标：转向",
   "spectate.fly.up": "向上飞",
-  "spectate.fly.down": "向下飞"
+  "spectate.fly.down": "向下飞",
+  "cheer2.rechargeOwn": "充值 EC",
+  "cheer2.creatorGot": "{name} 获得 {v}",
+  "cheer2.backed": "你的 EC 由 {v} 的真实广告收益支撑",
+  "cheer2.split": "分配：创作者 55% · 其团队 15% · 悬赏 5% · 平台 5% · 你的 EC 20%",
+  "econ.hud.roundEarned": "本局收益",
+  "econ.hud.headBounty": "悬赏金",
+  "econ.hud.bountyHint": "你每笔收益的 5% —— 归击败你的玩家所有",
+  "econ.hud.ticket": "票 {v}",
+  "econ.hud.ticketHint": "支撑你能量票的真实广告价值 —— 击败你的玩家将获得它",
+  "econ.feed.kill": "{killer} 击败了 {victim}（+{v}）",
+  "econ.feed.bounty": "含 {v} 悬赏金",
+  "econ.feed.chest": "{name} 开启了悬赏宝箱（+{v}）",
+  "econ.death.summary": "本局：{kills} 击杀 · {v}"
 }

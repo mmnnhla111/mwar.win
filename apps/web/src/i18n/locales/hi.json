@@ -928,5 +928,18 @@
   "spectate.hint.mobile": "घोस्ट दर्शक • जॉयस्टिक: चलें • बटन: ऊपर / नीचे • खींचें: देखें",
   "spectate.hint.desktop": "घोस्ट दर्शक • WASD: चलें • Space / E: ऊपर • Shift / C: नीचे • माउस खींचें: देखें",
   "spectate.fly.up": "ऊपर उड़ें",
-  "spectate.fly.down": "नीचे उड़ें"
+  "spectate.fly.down": "नीचे उड़ें",
+  "cheer2.rechargeOwn": "EC रिचार्ज करें",
+  "cheer2.creatorGot": "{name} को {v} मिले",
+  "cheer2.backed": "आपका EC असली विज्ञापन मूल्य {v} से समर्थित है",
+  "cheer2.split": "बँटवारा: क्रिएटर 55% · उनकी टीम 15% · हेड बाउंटी 5% · प्लेटफ़ॉर्म 5% · आपका EC 20%",
+  "econ.hud.roundEarned": "इस राउंड की कमाई",
+  "econ.hud.headBounty": "हेड बाउंटी",
+  "econ.hud.bountyHint": "आपके हर इनाम का 5% — जो आपको हराएगा उसे मिलेगा",
+  "econ.hud.ticket": "टिकट {v}",
+  "econ.hud.ticketHint": "आपके एनर्जी टिकट के पीछे असली विज्ञापन मूल्य — आपको हराने वाले खिलाड़ी को यही मिलता है",
+  "econ.feed.kill": "{killer} ने {victim} को हराया (+{v})",
+  "econ.feed.bounty": "{v} हेड बाउंटी सहित",
+  "econ.feed.chest": "{name} ने बाउंटी चेस्ट लिया (+{v})",
+  "econ.death.summary": "इस राउंड: {kills} किल · {v}"
 }

@@ -7,8 +7,6 @@ import {
   GAME_BATCH_SYNC_INTERVAL_MS,
   AFK_WARNING_SECONDS,
   AFK_KICK_SECONDS,
-  CHEST_REWARD_BASE_MICRO_USD,
-  KILL_REWARD_BASE_MICRO_USD,
   CHEST_LIFETIME_MS,
   HEADSHOT_RATIO_FLAG,
   HEADSHOT_MIN_SAMPLE_HITS,
@@ -142,6 +140,22 @@ interface SessionMeta {
   flagged: string | null;
   /** Micro-USD already sent (or queued) for this session — clawed back on an AFK kick. */
   earned: number;
+  /**
+   * V1.1 ticket stake from the signed entry token: the user_energy_tickets row locked for this entry
+   * and its real backed µUSD. A kill on this player pays exactly `ticketValue` (once): `ticketLive`
+   * turns false when the stake is settled (killed, chest, forfeit) — later deaths pay no ticket value.
+   */
+  ticketId: string;
+  ticketValue: number;
+  ticketLive: boolean;
+}
+
+/** A victim's stake taken at death (travels with the kill payout or the death chest). */
+interface TicketStake {
+  victimId: string;
+  victimSession: string;
+  ticketId: string;
+  value: number;
 }
 
 /** Combat death → respawn delay (ELIMINATED overlay on the client). */
@@ -154,8 +168,22 @@ const MEDKIT_CAST_MS = 4000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const TICKET_ID_RE = /^tkt_[A-Za-z0-9_-]{8,80}$/;
+
+export interface EntryTokenClaims {
+  uid: string;
+  un: string;
+  eid: string;
+  bty: number;
+  rc: string;
+  /** V1.1: first locked ticket row id ('' for a token without a ticket → the seat's death pays nothing). */
+  tid: string;
+  /** V1.1: the ticket's real backed µUSD (what killing this player pays). */
+  tv: number;
+}
+
 /** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
-export function verifyEntryToken(token: unknown, secret: string): { uid: string; un: string; eid: string; bty: number; rc: string } | null {
+export function verifyEntryToken(token: unknown, secret: string): EntryTokenClaims | null {
   if (typeof token !== 'string' || !token.includes('.')) return null;
   const [body, sig] = token.split('.');
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
@@ -165,12 +193,16 @@ export function verifyEntryToken(token: unknown, secret: string): { uid: string;
     if (typeof json.exp !== 'number' || json.exp < Date.now() / 1000) return null;
     if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid)) return null;
     const bty = Number(json.bty);
+    const tv = Number(json.tv);
+    const tid = typeof json.tid === 'string' && TICKET_ID_RE.test(json.tid) ? json.tid : '';
     return {
       uid: json.uid,
       un: String(json.un ?? ''),
       eid: String(json.eid ?? ''),
       bty: Number.isFinite(bty) && bty > 0 ? Math.floor(bty) : 0,
       rc: typeof json.rc === 'string' ? json.rc : '',
+      tid,
+      tv: tid && Number.isFinite(tv) && tv > 0 ? Math.floor(tv) : 0,
     };
   } catch {
     return null;
@@ -184,7 +216,11 @@ export class ShootingRoom extends Room<GameState> {
   /** sessionId → last relayed gunshot time (minimap blip rate limit). */
   private lastFireBlip = new Map<string, number>();
   /** chestId → head bounty of the player whose suicide / environmental death dropped the chest. */
-  private chestBounty = new Map<string, { victimId: string; victimSession: string; amount: number }>();
+  private chestBounty = new Map<string, { victimId: string; victimSession: string; amount: number; ticketId: string }>();
+  /** chestId → ticket stake of the player whose suicide / environmental death dropped the chest. */
+  private chestStake = new Map<string, TicketStake>();
+  /** Unique id per queued payout item (the Worker de-duplicates re-sent batches with it). */
+  private payoutSeq = 0;
   /** "killerUserId>victimUserId" → recent kill timestamps (Layer 3 kill-farming check). */
   private pairKills = new Map<string, number[]>();
   private usedEntryIds = new Set<string>();
@@ -668,14 +704,21 @@ export class ShootingRoom extends Room<GameState> {
       killer.kills += 1;
       const collusion = this.isCollusionKill(killerSessionId, targetSessionId, killer, target);
       if (collusion) console.warn(`[AntiCheat L3] kill ${killer.id} -> ${target.id} pays 0 (${collusion})`);
-      const killReward = collusion
-        ? 0
-        : this.queuePayout(killerSessionId, killer, Number(KILL_REWARD_BASE_MICRO_USD), 'GAME_KILL', {
-            victimId: target.id,
-            victimSession: targetSessionId,
-          });
+      // V1.1: the kill is worth exactly the victim's live ticket value (real ad backing), never a constant
+      const stake = this.takeStake(targetSessionId, target);
+      let killReward = 0;
+      if (stake && !collusion) {
+        killReward = this.queuePayout(killerSessionId, killer, stake.value, 'GAME_KILL', {
+          victimId: target.id,
+          victimSession: targetSessionId,
+          ticketId: stake.ticketId,
+        });
+      }
+      // Collusion kill / unpaid or flagged killer / 0-value ticket: the stake goes to the platform
+      if (stake && !this.stakeQueued(stake.ticketId)) this.queueTicketForfeit(stake, collusion ? 'collusion' : 'unpaid_kill');
       // The killer claims the victim's whole accumulated head bounty (never on a collusion kill)
-      const bountyClaimed = collusion ? 0 : this.queueBountyClaim(killerSessionId, killer, target.bountyMicroUsd, target.id);
+      const vm = this.meta.get(targetSessionId);
+      const bountyClaimed = collusion ? 0 : this.queueBountyClaim(killerSessionId, killer, target.bountyMicroUsd, target.id, vm?.ticketId ?? '');
       if (bountyClaimed > 0) target.bountyMicroUsd = 0;
 
       this.broadcast('player_killed', {
@@ -685,6 +728,8 @@ export class ShootingRoom extends Room<GameState> {
         victimUsername: target.username,
         rewardMicroUsd: killReward + bountyClaimed,
         bountyClaimedMicroUsd: bountyClaimed,
+        /** The victim's ticket value V that was split 55/15/5/5/20 (0 = no live ticket). */
+        ticketMicroUsd: stake && this.stakeQueued(stake.ticketId) ? stake.value : 0,
       });
     } else {
       // 2. Suicide / Non-Player death:
@@ -733,22 +778,36 @@ export class ShootingRoom extends Room<GameState> {
 
       // Layer 2: chest-collect rate above room mean + 3σ → chest destroyed with no reward, account marked
       let reward = 0;
+      // V1.1: the chest holds the dead player's ticket stake (its real backed value) — nothing else
+      const stake = this.chestStake.get(chestId);
+      this.chestStake.delete(chestId);
       if (this.chestRateAnomalous(topSession)) {
         const m = this.meta.get(topSession);
         if (m) m.flagged = m.flagged ?? 'chest_rate_3sigma';
         console.warn(`[AntiCheat L2] ${winner.id} chest rate > mean+3σ — chest voided`);
       } else {
         winner.chestsCollected += 1;
-        reward = this.queuePayout(topSession, winner, chest.rewardMicroUsd, 'CHEST_OPEN', { chestId, isDeathDrop: chest.isDeathDrop, topDamage });
+        // Opening your own suicide chest never turns your own ticket into cash
+        if (stake && stake.victimId !== winner.id) {
+          reward = this.queuePayout(topSession, winner, stake.value, 'CHEST_OPEN', {
+            chestId,
+            isDeathDrop: chest.isDeathDrop,
+            topDamage,
+            victimId: stake.victimId,
+            ticketId: stake.ticketId,
+          });
+        }
         const cb = this.chestBounty.get(chestId);
         if (cb && cb.victimId !== winner.id) {
-          const got = this.queueBountyClaim(topSession, winner, cb.amount, cb.victimId);
+          const got = this.queueBountyClaim(topSession, winner, cb.amount, cb.victimId, cb.ticketId);
           if (got > 0) {
             reward += got;
             this.chestBounty.delete(chestId);
           }
         }
       }
+      // Voided chest / own chest / unpaid opener: the stake goes to the platform
+      if (stake && !this.stakeQueued(stake.ticketId)) this.queueTicketForfeit(stake, 'chest_unclaimed');
       this.returnChestBounty(chestId);
 
       this.broadcast('chest_destroyed', {
@@ -763,16 +822,22 @@ export class ShootingRoom extends Room<GameState> {
     const chestId = `death_chest_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     // The dead player's head bounty drops into their chest (claimed by whoever opens it)
     if (victim && victimSession && victim.bountyMicroUsd > 0 && UUID_RE.test(victim.id)) {
-      this.chestBounty.set(chestId, { victimId: victim.id, victimSession, amount: victim.bountyMicroUsd });
-      victim.bountyMicroUsd = 0;
+      const vm = this.meta.get(victimSession);
+      if (vm?.ticketId) {
+        this.chestBounty.set(chestId, { victimId: victim.id, victimSession, amount: victim.bountyMicroUsd, ticketId: vm.ticketId });
+        victim.bountyMicroUsd = 0;
+      }
     }
+    // V1.1: ... and so does their live ticket stake (the chest's only cash value)
+    const stake = victim && victimSession ? this.takeStake(victimSession, victim) : null;
+    if (stake) this.chestStake.set(chestId, stake);
     const chest = new ChestState();
     chest.id = chestId;
     chest.x = Math.round(x);
     chest.y = Math.round(y);
     chest.z = Math.round(z);
     chest.health = 30; // Easier to break
-    chest.rewardMicroUsd = Number(CHEST_REWARD_BASE_MICRO_USD) * 2; // Double reward for player loot drops
+    chest.rewardMicroUsd = stake?.value ?? 0; // the dead player's ticket value (0 = no live paid ticket)
     chest.isDeathDrop = true;
     chest.bountyMicroUsd = this.chestBounty.get(chestId)?.amount ?? 0;
     chest.spawnedAt = Date.now();
@@ -891,6 +956,9 @@ export class ShootingRoom extends Room<GameState> {
         this.state.chests.delete(id);
         this.chestDamage.delete(id);
         this.returnChestBounty(id);
+        const stake = this.chestStake.get(id);
+        this.chestStake.delete(id);
+        if (stake) this.queueTicketForfeit(stake, 'chest_expired');
         this.broadcast('chest_expired', { chestId: id });
       }
     });
@@ -961,9 +1029,15 @@ export class ShootingRoom extends Room<GameState> {
   private forfeitRoundEarnings(sessionId: string, player: PlayerState) {
     const m = this.meta.get(sessionId);
     let unsent = 0;
+    const voided: TicketStake[] = [];
     this.pendingPayouts = this.pendingPayouts.filter((p) => {
       if (p.userId === player.id && (p.actionType === 'GAME_KILL' || p.actionType === 'CHEST_OPEN')) {
         unsent += earnerAndBountyShares(p.amountMicroUsd).earner; // only the 55 % was ever credited
+        // The victim's ticket of a dropped kill still has to be closed: its value goes to the platform
+        const md = (p.metadata || {}) as Record<string, unknown>;
+        if (typeof md.ticketId === 'string' && typeof md.victimId === 'string') {
+          voided.push({ victimId: md.victimId, victimSession: String(md.victimSession ?? ''), ticketId: md.ticketId, value: p.amountMicroUsd });
+        }
         return false;
       }
       if (p.userId === player.id && p.actionType === 'BOUNTY_CLAIM') {
@@ -972,10 +1046,14 @@ export class ShootingRoom extends Room<GameState> {
       }
       return true;
     });
+    for (const v of voided) this.queueTicketForfeit(v, 'afk_claw');
     const alreadyPaid = (m?.earned ?? 0) - unsent;
     if (alreadyPaid > 0 && UUID_RE.test(player.id)) {
-      this.pendingPayouts.push({ userId: player.id, amountMicroUsd: alreadyPaid, actionType: 'AFK_FORFEIT', gameId: this.gameId, metadata: { reason: 'afk_30min' } });
+      this.pendingPayouts.push({ userId: player.id, amountMicroUsd: alreadyPaid, actionType: 'AFK_FORFEIT', gameId: this.gameId, metadata: { reason: 'afk_30min', pid: this.nextPid() } });
     }
+    // The AFK player's own live ticket goes to the platform too (zero-deficit: never refunded)
+    const own = this.takeStake(sessionId, player);
+    if (own) this.queueTicketForfeit(own, 'afk_kick');
     if (m) m.earned = 0;
     player.sessionEarningsMicroUsd = 0;
   }
@@ -1062,8 +1140,11 @@ export class ShootingRoom extends Room<GameState> {
       headshots: 0,
       flagged: null,
       earned: 0,
+      ticketId: paid && entry ? entry.tid : '',
+      ticketValue: paid && entry ? entry.tv : 0,
+      ticketLive: !!(paid && entry && entry.tid),
     });
-    return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0 } : { userId: null };
+    return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0, ticket: paid ? entry.tv : 0 } : { userId: null };
   }
 
   /** Queue a payout only for verified paid seats that are not flagged by anti-cheat. */
@@ -1079,17 +1160,52 @@ export class ShootingRoom extends Room<GameState> {
     // Layer 2 telemetry for the cashout audit: the shooter's session hit / headshot totals so far
     const sm = this.meta.get(sessionId);
     const telemetry = sm ? { hits: sm.hits, headshots: sm.headshots } : {};
-    this.pendingPayouts.push({ userId: player.id, amountMicroUsd: amount, actionType, gameId: this.gameId, metadata: { ...metadata, ...telemetry } });
+    this.pendingPayouts.push({ userId: player.id, amountMicroUsd: amount, actionType, gameId: this.gameId, metadata: { ...metadata, ...telemetry, pid: this.nextPid() } });
     return earner;
   }
 
-  /** Queue the transfer of a victim's accumulated head bounty to the claimer (paid seats only). */
-  private queueBountyClaim(sessionId: string, claimer: PlayerState, amount: number, victimId: string) {
+  private nextPid() {
+    return `${this.gameId}:${++this.payoutSeq}`;
+  }
+
+  /**
+   * V1.1: take a player's live ticket stake at the moment it is decided (death). Returns null for
+   * guests / spectators / tokens without a ticket / a stake that was already settled this match.
+   */
+  private takeStake(sessionId: string, player: PlayerState): TicketStake | null {
     const m = this.meta.get(sessionId);
-    if (!m?.paid || m.flagged || !UUID_RE.test(claimer.id) || !UUID_RE.test(victimId) || claimer.id === victimId || amount <= 0) return 0;
+    if (!m?.paid || !m.ticketLive || !m.ticketId || !UUID_RE.test(player.id)) return null;
+    m.ticketLive = false;
+    player.ticketMicroUsd = 0;
+    return { victimId: player.id, victimSession: sessionId, ticketId: m.ticketId, value: Math.max(0, Math.floor(m.ticketValue)) };
+  }
+
+  /** The stake ended without a payout: tell the Worker so the ticket is closed (its backing → platform). */
+  private queueTicketForfeit(stake: TicketStake, reason: string) {
+    this.pendingPayouts.push({
+      userId: stake.victimId,
+      amountMicroUsd: Math.max(0, Math.floor(stake.value)),
+      actionType: 'TICKET_FORFEIT',
+      gameId: this.gameId,
+      metadata: { ticketId: stake.ticketId, reason, pid: this.nextPid() },
+    });
+  }
+
+  /** A GAME_KILL / CHEST_OPEN payout for this stake is waiting in the queue (synchronously just queued). */
+  private stakeQueued(ticketId: string) {
+    return this.pendingPayouts.some(
+      (p) => (p.actionType === 'GAME_KILL' || p.actionType === 'CHEST_OPEN') && (p.metadata as Record<string, unknown> | undefined)?.ticketId === ticketId
+    );
+  }
+
+  /** Queue the transfer of a victim's accumulated head bounty to the claimer (paid seats only). */
+  private queueBountyClaim(sessionId: string, claimer: PlayerState, amount: number, victimId: string, victimTicketId: string) {
+    const m = this.meta.get(sessionId);
+    // V1.1: only a victim who entered with a paid ticket has a claimable bounty here (the Worker checks it)
+    if (!m?.paid || m.flagged || !UUID_RE.test(claimer.id) || !UUID_RE.test(victimId) || claimer.id === victimId || amount <= 0 || !victimTicketId) return 0;
     m.earned += amount;
     claimer.sessionEarningsMicroUsd += amount;
-    this.pendingPayouts.push({ userId: claimer.id, amountMicroUsd: Math.floor(amount), actionType: 'BOUNTY_CLAIM', gameId: this.gameId, metadata: { victimId } });
+    this.pendingPayouts.push({ userId: claimer.id, amountMicroUsd: Math.floor(amount), actionType: 'BOUNTY_CLAIM', gameId: this.gameId, metadata: { victimId, ticketId: victimTicketId, pid: this.nextPid() } });
     return amount;
   }
 
@@ -1140,7 +1256,7 @@ export class ShootingRoom extends Room<GameState> {
   onJoin(
     client: Client,
     options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string; spectator?: boolean },
-    auth?: { userId: string | null; username?: string; bounty?: number }
+    auth?: { userId: string | null; username?: string; bounty?: number; ticket?: number }
   ) {
     console.log(`[ShootingRoom] Player joined: ${client.sessionId} (${options.username || 'Anon'})`);
     const player = new PlayerState();
@@ -1149,6 +1265,7 @@ export class ShootingRoom extends Room<GameState> {
     player.sessionId = client.sessionId;
     player.username = (auth?.username || options.username || `Player_${client.sessionId.substring(0, 4)}`).slice(0, 24);
     player.bountyMicroUsd = auth?.bounty ?? 0; // accumulated head bounty from the database
+    player.ticketMicroUsd = auth?.ticket ?? 0; // V1.1: this player's live ticket value (what a kill on them pays)
     player.avatarId = options.avatarId || 'specops';
 
     const chosenPrimary = options.primaryWeapon || 'ak47';
@@ -1185,8 +1302,16 @@ export class ShootingRoom extends Room<GameState> {
       player.isSpectator = true;
       player.isGhost = true;
       player.health = 0;
+      player.ticketMicroUsd = 0;
       const sm = this.meta.get(client.sessionId);
-      if (sm) sm.paid = false;
+      if (sm) {
+        // A spectator seat is never paid: a ticket that came with it is closed (→ platform) at once
+        if (sm.ticketLive && sm.ticketId && UUID_RE.test(player.id)) {
+          this.queueTicketForfeit({ victimId: player.id, victimSession: client.sessionId, ticketId: sm.ticketId, value: sm.ticketValue }, 'spectator');
+        }
+        sm.paid = false;
+        sm.ticketLive = false;
+      }
     }
 
     this.state.players.set(client.sessionId, player);
@@ -1231,6 +1356,10 @@ export class ShootingRoom extends Room<GameState> {
       }
     }
 
+    // V1.1: the player left (or the 20 s reconnect window expired) alive with a live ticket → the
+    // zero-deficit choice: the ticket is not refunded, its backing goes to the platform
+    const stake = this.takeStake(client.sessionId, player);
+    if (stake) this.queueTicketForfeit(stake, player.afkKicked ? 'afk_kick' : 'left');
     this.state.players.delete(client.sessionId);
     this.meta.delete(client.sessionId);
     this.state.activePlayersCount = this.state.players.size;
@@ -1248,6 +1377,11 @@ export class ShootingRoom extends Room<GameState> {
   }
 
   async onDispose() {
+    // V1.1: unopened death chests still hold ticket stakes → close them (backing → platform)
+    for (const [id, stake] of this.chestStake) {
+      this.chestStake.delete(id);
+      this.queueTicketForfeit(stake, 'room_closed');
+    }
     // Flush any remaining payouts before room disposal (retried while the Worker is unreachable)
     await this.drainPayouts();
     if (this.redis) {

@@ -59,20 +59,28 @@ test('no uplines: platform gets 5 % + 15 %', () => {
   assert.equal(sumOf(r), 100_000n);
 });
 
-test('integer remainders go to the platform; sum is exactly V for many odd values', () => {
+test('rounding remainders go to the platform; sum is exactly V for many odd values', () => {
+  const round07 = (v, pct) => {
+    const n = BigInt(v) * BigInt(pct);
+    return n % 100n >= 70n ? n / 100n + 1n : n / 100n;
+  };
   for (const v of [1, 7, 99, 101, 333, 12_345, 999_999, 1_000_003, 8_500, 350]) {
     for (const ups of [[], full, full.slice(0, 2)]) {
       const r = calculateRewardSplit(v, ups);
       assert.equal(sumOf(r), BigInt(v), `V=${v} uplines=${ups.length}`);
-      assert.equal(r.earnerMicroUsd, (BigInt(v) * 55n) / 100n);
-      assert.equal(r.energyPoolMicroUsd, (BigInt(v) * 20n) / 100n);
+      // V1.1 0.007 C rule: each share rounds up only from a 0.7 µUSD fraction (at most 1 µUSD trimmed)
+      assert.ok(round07(v, 55) - r.earnerMicroUsd <= 1n && r.earnerMicroUsd <= round07(v, 55));
+      assert.ok(round07(v, 20) - r.energyPoolMicroUsd <= 1n && r.energyPoolMicroUsd <= round07(v, 20));
       assert.ok(r.platformRolloverMicroUsd >= 0n);
+      assert.ok(r.platformTotalMicroUsd >= (BigInt(v) * 5n) / 100n);
     }
   }
   const r = calculateRewardSplit(333, full);
-  // floor: 183 / 16,13,9,6,3 / 16 / 16 / 66 → 328, remainder 5 → platform
+  // 183.15→183 / 16.65→16, 13.32→13, 9.99→10, 6.66→6, 3.33→3 / 16.65→16 / 66.6→66 → 313, platform 20
   assert.equal(r.earnerMicroUsd, 183n);
-  assert.equal(r.platformRolloverMicroUsd, 5n);
+  assert.deepEqual(r.uplinePayouts.map((p) => p.amountMicroUsd), [16n, 13n, 10n, 6n, 3n]);
+  assert.equal(r.platformTotalMicroUsd, 20n);
+  assert.equal(r.platformRolloverMicroUsd, 4n);
 });
 
 test('zero / negative values split to nothing', () => {
