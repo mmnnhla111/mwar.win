@@ -316,7 +316,7 @@ while true; do
       \\"tunnelHostname\\": \\"game.mwar.win\\"
     }" >/dev/null 2>&1 || true
 
-  sleep 180
+  sleep 30  # V1.1 R2: the API treats a game node as online for 90 s after its last heartbeat
 done
 HEARTEOF
 chmod +x /opt/mwar-node/heartbeat.sh

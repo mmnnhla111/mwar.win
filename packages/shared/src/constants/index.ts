@@ -218,3 +218,25 @@ export const AD_SAFETY_MULTIPLIER_MAX_BP = 9_500;
 /** Rounding rule for C (1 C = 100 µUSD, 0.01 C = 1 µUSD): a fraction ≥ 0.7 µUSD (0.007 C) rounds up. */
 export const COIN_ROUND_UP_FRACTION = 0.7;
 
+
+// ---- V1.1 Round 2: Paid-EC death prompt · Fast & Mini 90/10 · offline room hiding --------------
+/**
+ * Fast & Mini (free, 0 EC): a kill pays the VICTIM's own banner pot — the safe (after-haircut) value of
+ * the banner impressions that victim's account had verified during this life — split 90 % shooter /
+ * 10 % platform (no uplines, no head bounty, no Energy Pool).
+ */
+export const FAST_MINI_SHOOTER_BPS = 9_000n;
+export const FAST_MINI_PLATFORM_BPS = 1_000n;
+/**
+ * The same µUSD is never used twice: a Fast & Mini banner impression's safe value S is split ONCE into
+ *   pot  = floor(S × 50 %)  → the player's Fast & Mini pot (a killer wins 90 % of it, the platform 10 %)
+ *   EC   = S − pot          → normal EC backing (pending_ec_micro_usd); the EC % credited is scaled the same way
+ * so pot + EC backing === S exactly (see splitFastMiniBanner).
+ */
+export const FAST_MINI_BANNER_POT_BP = 5_000;
+/** A Fast & Mini pot nobody closed (game-server crash) is closed by the daily cron after this long. */
+export const FAST_MINI_POT_STALE_SECONDS = 6 * 3600;
+/** A game node counts as online when its heartbeat (role all / game) is at most this old. */
+export const GAME_NODE_FRESH_SECONDS = 90;
+/** Paid-EC rooms: the "Play again (-1 EC)" token for the same life can be re-issued for this long. */
+export const RESTAKE_REISSUE_SECONDS = 120;

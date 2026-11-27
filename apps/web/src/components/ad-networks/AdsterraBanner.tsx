@@ -4,6 +4,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { AdBannerSpec } from '@mwar/shared';
 import { AD_BANNER_INTERVAL_MIN_SECONDS, nextBannerIntervalSeconds } from '@mwar/shared';
 import { apiFetch } from '../../lib/api';
+import { bannerBatchSize, bannerContextPayload } from '../../lib/bannerContext';
 
 /** Impression-cycle progress (30–45 s cycles) kept across an anti-AFK pause (banner unmounted) so charging resumes where it left off. */
 const carryMs: Record<string, number> = {};
@@ -69,7 +70,7 @@ export function AdsterraBanner({
       if (pending <= 0) return;
       const count = Math.min(10, pending);
       pending -= count;
-      apiFetch('/api/ads/impression', { method: 'POST', body: JSON.stringify({ slot: pingSlot, count }), keepalive })
+      apiFetch('/api/ads/impression', { method: 'POST', body: JSON.stringify({ slot: pingSlot, count, ...bannerContextPayload() }), keepalive })
         .then((r) => onResultRef.current?.(r))
         .catch(() => {});
     };
@@ -80,7 +81,7 @@ export function AdsterraBanner({
         visibleSince = Date.now();
         cycleMs = nextBannerIntervalSeconds() * 1000;
         pending += 1;
-        if (pending >= 3) flush();
+        if (pending >= bannerBatchSize(3)) flush();
       }
     }, 1000);
     const onVis = () => {

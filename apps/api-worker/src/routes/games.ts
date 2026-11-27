@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { FPS_ROOMS, SOCIAL_PAGE_SIZE, ROOM_MODE_ENGINE, MAP_LABELS, ROOM_MODES } from '@mwar/shared';
+import { FPS_ROOMS, SOCIAL_PAGE_SIZE, ROOM_MODE_ENGINE, MAP_LABELS, ROOM_MODES, GAME_NODE_FRESH_SECONDS } from '@mwar/shared';
 import type {
   FpsRosterEntry,
   FpsRoomsResponse,
@@ -191,6 +191,40 @@ export async function getLiveRoomsSnapshot(c: Context<any>): Promise<LiveSnapsho
   });
 }
 
+/**
+ * V1.1 R2: are any Ubuntu game servers up? True when a game node (role 'all' or 'game') sent a heartbeat
+ * in the last 90 s (POST /api/nodes/heartbeat writes game_nodes.last_heartbeat = unixepoch()), OR the live
+ * GET /rooms health check of the game server answered (edge-cached 15 s). The node lookup is not cached,
+ * so a node that stops reporting drops out after 90 s.
+ */
+export async function freshGameNodeCount(env: Env): Promise<number> {
+  try {
+    const r = await env.DB
+      .prepare("SELECT COUNT(*) AS n FROM game_nodes WHERE role IN ('all', 'game') AND last_heartbeat IS NOT NULL AND unixepoch() - last_heartbeat <= ?1")
+      .bind(GAME_NODE_FRESH_SECONDS)
+      .first<{ n: number }>();
+    return Number(r?.n ?? 0);
+  } catch {
+    return 0; // table missing (very old schema): rely on the live check only
+  }
+}
+
+export async function gameServersOnline(c: Context<any>, snapshot?: LiveSnapshot): Promise<boolean> {
+  const [nodes, snap] = await Promise.all([freshGameNodeCount(c.env as Env), snapshot ? Promise.resolve(snapshot) : getLiveRoomsSnapshot(c)]);
+  return nodes > 0 || snap.serverOnline;
+}
+
+/** Room list body for the lobby: live PvP rooms are hidden completely (never mocked) while every game server is offline. */
+export async function fpsRoomsBody(c: Context<any>): Promise<FpsRoomsResponse> {
+  const snapshot = await getLiveRoomsSnapshot(c);
+  const online = await gameServersOnline(c, snapshot);
+  const configs = (await loadRooms(c, 'fps')).filter((r) => r.isActive);
+  const all = configs.map((cfg) => roomToLive(cfg, snapshot.rooms.find((r) => r.id === cfg.roomCode)));
+  const liveRooms = online ? all.filter((r) => r.multiplayer) : [];
+  const rooms = all.filter((r) => !r.multiplayer || online);
+  return { rooms, liveRooms, gameServersOnline: online, serverOnline: online, updatedAt: snapshot.updatedAt };
+}
+
 const MODE_LABELS: Record<RoomMode, string> = {
   warzone: 'Warzone',
   skirmish: 'Skirmish',
@@ -209,7 +243,8 @@ export function roomToLive(cfg: GameRoomConfig, live?: LiveRoom): FpsRoomLive {
     map: MAP_LABELS[cfg.mapSize],
     mapSize: cfg.mapSize,
     capacity: solo ? null : cfg.maxPlayers,
-    costEc: solo ? 0 : cfg.entryCostEc,
+    // V1.1 R2: Fast & Mini is always free (0 EC), whatever the registry row says
+    costEc: solo || cfg.mode === 'fast_mini' ? 0 : cfg.entryCostEc,
     multiplayer: !solo,
     rules: cfg.rules,
     maxSpectators: cfg.maxSpectators,
@@ -243,7 +278,8 @@ gamesRouter.get('/', async (c) => {
     }));
     return { games: items, updatedAt: Date.now() };
   });
-  return c.json(data);
+  // Server status is read per request (90 s heartbeat window), outside the 20 s directory cache
+  return c.json({ ...data, gameServersOnline: await gameServersOnline(c) });
 });
 
 /** GET /api/games/rooms-config — room registry for the game servers (no secrets inside). */
@@ -298,9 +334,9 @@ gamesRouter.get('/media/:kind/:file', async (c) => {
  * GET /api/games/fps/rooms?room=TH-02&cursor=0 — that room's live roster, 10 per page.
  */
 gamesRouter.get('/fps/rooms', async (c) => {
-  const snapshot = await getLiveRoomsSnapshot(c);
   const roomId = c.req.query('room');
   if (roomId) {
+    const snapshot = await getLiveRoomsSnapshot(c);
     const live = snapshot.rooms.find((r) => r.id === roomId);
     if (!live) return c.json({ error: 'Room not found' }, 404);
     const start = Math.max(0, Number(c.req.query('cursor')) || 0);
@@ -309,8 +345,5 @@ gamesRouter.get('/fps/rooms', async (c) => {
     const body: FpsRoomRosterResponse = { roomId, items, nextCursor: next, total: live.roster.length };
     return c.json(body);
   }
-  const configs = (await loadRooms(c, 'fps')).filter((r) => r.isActive);
-  const rooms = configs.map((cfg) => roomToLive(cfg, snapshot.rooms.find((r) => r.id === cfg.roomCode)));
-  const body: FpsRoomsResponse = { rooms, serverOnline: snapshot.serverOnline, updatedAt: snapshot.updatedAt };
-  return c.json(body);
+  return c.json(await fpsRoomsBody(c));
 });

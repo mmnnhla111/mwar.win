@@ -122,7 +122,13 @@ export type FinancialActionType =
   /** V1.1: an Energy Ticket minted with its real backed µUSD value (informational, no wallet change). */
   | 'TICKET_MINT'
   /** V1.1: an in_match ticket that ended without a payout — its backing goes to the platform (informational). */
-  | 'TICKET_FORFEIT';
+  | 'TICKET_FORFEIT'
+  /** V1.1 R2: an unused "Play again" ticket returned to available (informational, no wallet change). */
+  | 'TICKET_RETURN'
+  /** V1.1 R2: part of a Fast & Mini banner's safe value credited to the viewer's pot (informational). */
+  | 'FAST_MINI_POT_CREDIT'
+  /** V1.1 R2: a closed Fast & Mini pot's unpaid remainder kept by the platform (informational). */
+  | 'FAST_MINI_POT_FORFEIT';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
@@ -198,7 +204,8 @@ export interface ChestEntity {
 export interface BatchPayoutItem {
   userId: string;
   amountMicroUsd: number;
-  actionType: FinancialActionType;
+  /** Financial action, or a V1.1 R2 game-server-only settlement item (no amount is trusted for these). */
+  actionType: FinancialActionType | 'FAST_MINI_KILL' | 'FAST_MINI_CLOSE';
   gameId: string;
   metadata?: Record<string, unknown>;
 }

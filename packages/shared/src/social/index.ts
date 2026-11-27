@@ -428,7 +428,7 @@ export const FPS_ROOMS: readonly FpsRoomDef[] = [
     capacity: 30,
     costEc: 1,
     multiplayer: true,
-    rules: ['30-player free-for-all on the 240 m map', 'Respawn 3 s after each death', 'Kill bounty paid on every elimination'],
+    rules: ['30-player free-for-all on the 240 m map', 'After each death: play again for 1 EC or back to lobby', 'Kill bounty paid on every elimination'],
   },
   {
     id: 'TH-03',
@@ -438,9 +438,9 @@ export const FPS_ROOMS: readonly FpsRoomDef[] = [
     map: 'Metro Block (240m)',
     mapSize: 'small',
     capacity: 16,
-    costEc: 1,
+    costEc: 0,
     multiplayer: true,
-    rules: ['Close-quarters fights on the 240 m block', 'Respawn 3 s after each death', 'Kill bounty paid on every elimination'],
+    rules: ['Close-quarters fights on the 240 m block', 'Free entry (0 EC) — play again free after each death', 'Kills pay 90 % of the victim\'s banner pot'],
   },
   {
     id: 'SOLO',
@@ -471,7 +471,13 @@ export interface FpsRoomLive extends FpsRoomDef {
 }
 
 export interface FpsRoomsResponse {
+  /** Every room the lobby may show: Practice + live PvP rooms (Practice only while game servers are offline). */
   rooms: FpsRoomLive[];
+  /** V1.1 R2: live multiplayer rooms only — always [] when no game server is online (never mock rooms). */
+  liveRooms: FpsRoomLive[];
+  /** V1.1 R2: a game node (role all / game) sent a heartbeat in the last 90 s, or the live /rooms check answered. */
+  gameServersOnline: boolean;
+  /** Legacy alias of gameServersOnline. */
   serverOnline: boolean;
   updatedAt: number;
 }

@@ -25,8 +25,9 @@ const FILTERS: { id: FpsRoomFilter; label: string }[] = [
 
 const AUTO_REFRESH_MS = 45_000;
 
+/** V1.1 R2: until the API confirms a live game server (game_nodes heartbeat ≤ 90 s) only Practice is listed — never mock rooms. */
 function offlineRooms(): FpsRoomLive[] {
-  return FPS_ROOMS.map((r) => ({ ...r, rules: [...r.rules], players: 0, spectators: 0, isFull: false }));
+  return FPS_ROOMS.filter((r) => !r.multiplayer).map((r) => ({ ...r, rules: [...r.rules], players: 0, spectators: 0, isFull: false }));
 }
 
 function matches(room: FpsRoomLive, f: FpsRoomFilter) {
@@ -79,9 +80,11 @@ export default function FpsLobbyPage() {
     setLoading(true);
     try {
       const r = await getFpsRooms();
-      setRooms(r.rooms);
-      setServerOnline(r.serverOnline);
+      const online = (r.gameServersOnline ?? r.serverOnline) !== false;
+      setRooms(online ? r.rooms : r.rooms.filter((x) => !x.multiplayer));
+      setServerOnline(online);
     } catch {
+      setRooms(offlineRooms());
       setServerOnline(false);
     } finally {
       setLoading(false);
@@ -120,6 +123,11 @@ export default function FpsLobbyPage() {
             <Icon name="refresh" size={17} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
+        {serverOnline === false && (
+          <p className="mt-2 text-[11px] font-semibold text-stone-500" data-rooms-offline>
+            {t('rooms.offlineNotice')}
+          </p>
+        )}
         <div className="mt-3 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
           {FILTERS.map((f) => (
             <button

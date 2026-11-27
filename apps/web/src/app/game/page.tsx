@@ -3,7 +3,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
-import { apiFetch, progressQuest } from '../../lib/api';
+import { apiFetch, getFpsRooms, progressQuest } from '../../lib/api';
+import { setFastMiniBannerPot } from '../../lib/bannerContext';
+import { DeathSummaryOverlay, type DeathPromptData } from '../../game/ui/DeathSummary';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { formatCoins2, formatCoinsAndUsd, formatUsdPrecise } from '@mwar/shared';
 import { QuestSpectateIcon } from '../../components/icons';
@@ -286,6 +288,22 @@ export default function GamePage() {
   const [hitMarker, setHitMarker] = useState<{ at: number; kill: boolean; head: boolean } | null>(null);
   const [roundBanner, setRoundBanner] = useState<string | null>(null);
   const [videoAd, setVideoAd] = useState<null | 'video_15s' | 'video_30s'>(null);
+  // V1.1 R2: Death & Round Summary prompt (server rooms never auto-respawn), Fast & Mini seat + banner pot
+  const [deathPrompt, setDeathPrompt] = useState<DeathPromptData | null>(null);
+  const [deathBusy, setDeathBusy] = useState(false);
+  const [deathError, setDeathError] = useState<string | null>(null);
+  const [fastMiniSeat, setFastMiniSeat] = useState(false);
+  const [fastMiniPot, setFastMiniPot] = useState(0);
+  const [ecChargedPct, setEcChargedPct] = useState(0);
+  const [ecSpent, setEcSpent] = useState(0);
+  const [serversOffline, setServersOffline] = useState(false);
+  const netRef = useRef<{ room: Room | null; roomName: string; roomCode: string | null; entryId: string | null; restakeWait: ((r: any) => void) | null }>({
+    room: null,
+    roomName: 'mini_30',
+    roomCode: null,
+    entryId: null,
+    restakeWait: null,
+  });
   const adCfg = useAdConfig();
   const [kbLockSupported, setKbLockSupported] = useState(false);
 
@@ -1255,19 +1273,51 @@ export default function GamePage() {
         const roomName =
           arenaMode === 'spectator' ? readSpectateRoom() : arenaMode === 'standard_100' ? 'standard_100' : arenaMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
         const roomCode = readRoomCode();
+        netRef.current.roomName = roomName;
+        netRef.current.roomCode = roomCode;
+        if (roomName === 'fast_mini') setFastMiniSeat(true);
+        // V1.1 R2: no live game server online (game_nodes heartbeat ≤ 90 s / health check) → Practice only.
+        try {
+          const live = await getFpsRooms();
+          if (live && live.gameServersOnline === false) {
+            setServersOffline(true);
+            setFastMiniSeat(false);
+            feed(`🛰️ ${tRef.current('rooms.offlineFeed')}`);
+            if (!destroyed) startBotMode('offline');
+            return;
+          }
+        } catch {
+          // API unreachable: still try the game server directly
+        }
         // Paid arena: spend the room's EC cost for a signed entry ticket. Without one you still play, unpaid.
         let entryToken: string | undefined;
         // Spectators never spend EC and never enter a paid seat
         if (meData?.user && !isGhostSpectator) {
           try {
-            const enter = await apiFetch<{ entryToken: string | null; energyTickets: number; free?: boolean }>('/api/game/enter', {
+            const enter = await apiFetch<{ entryToken: string | null; energyTickets: number; free?: boolean; fastMini?: boolean; entryId?: string }>('/api/game/enter', {
               method: 'POST',
               body: JSON.stringify({ mode: roomName, roomCode: roomCode || undefined }),
             });
             entryToken = enter.entryToken || undefined;
+            netRef.current.entryId = enter.entryId ?? null;
             setHudStats((prev) => ({ ...prev, energyTickets: enter.energyTickets }));
-            feed(enter.free ? '🎮 Free room: no EC used, no cash rewards' : `⚡ EC used to enter the paid arena (${enter.energyTickets} left)`);
-          } catch {
+            if (enter.fastMini && enter.entryId) {
+              // Fast & Mini: 0 EC; this seat's banner impressions fund its own pot (what a killer can win)
+              setFastMiniBannerPot(enter.entryId);
+              setFastMiniSeat(true);
+              feed(`🎯 ${tRef.current('fastmini.enterFeed')}`);
+            } else {
+              if (!enter.free && entryToken) setEcSpent((n) => n + 1);
+              feed(enter.free ? '🎮 Free room: no EC used, no cash rewards' : `⚡ EC used to enter the paid arena (${enter.energyTickets} left)`);
+            }
+          } catch (e) {
+            if ((e as { code?: string })?.code === 'GAME_SERVERS_OFFLINE') {
+              setServersOffline(true);
+              setFastMiniSeat(false);
+              feed(`🛰️ ${tRef.current('rooms.offlineFeed')}`);
+              if (!destroyed) startBotMode('offline');
+              return;
+            }
             feed('⚡ No Energy Tickets — playing unpaid. Practice mode recharges EC.');
           }
         }
@@ -1306,6 +1356,7 @@ export default function GamePage() {
           return;
         }
         currentRoom = roomInstance;
+        netRef.current.room = roomInstance;
         setRoom(roomInstance);
         setConnectionStatus('connected');
 
@@ -1455,11 +1506,48 @@ export default function GamePage() {
 
         roomInstance.onMessage('player_respawned', (data: any) => {
           if (isGhostSpectator) return;
+          setDeathPrompt(null);
+          setDeathBusy(false);
+          setDeathError(null);
           if ([data?.x, data?.y, data?.z].every((v: unknown) => typeof v === 'number')) respawnPlayer({ x: data.x, y: data.y, z: data.z });
           else respawnPlayer();
         });
+        // V1.1 R2: no automatic respawn in server rooms — the Death & Round Summary prompt decides
         roomInstance.onMessage('player_eliminated', (data: any) => {
-          if (data?.killerUsername) feed(`☠️ Eliminated by ${data.killerUsername} — respawning…`);
+          if (data?.killerUsername) feed(`☠️ ${tRef.current('death.byKiller', { name: String(data.killerUsername) })}`);
+          if (isGhostSpectator) return;
+          if (typeof data?.entryId === 'string' && data.entryId) netRef.current.entryId = data.entryId;
+          firingRef.current = false;
+          if (document.pointerLockElement) document.exitPointerLock?.();
+          setDeathBusy(false);
+          setDeathError(null);
+          setDeathPrompt({
+            mode: data?.respawnMode === 'restake' ? 'restake' : 'free',
+            fastMini: !!data?.fastMini,
+            killer: typeof data?.killerUsername === 'string' ? data.killerUsername : null,
+            kills: Number(data?.kills) || 0,
+            earningsMicroUsd: Number(data?.sessionEarningsMicroUsd) || 0,
+            bountyMicroUsd: Number(data?.bountyMicroUsd) || 0,
+            bountyLostMicroUsd: Number(data?.bountyLostMicroUsd) || 0,
+            freeAt: Date.now() + Math.max(0, Number(data?.respawnInMs) || 3000),
+          });
+        });
+        roomInstance.onMessage('restake_required', () => {
+          setDeathPrompt((prev) => (prev ? { ...prev, mode: 'restake' } : prev));
+        });
+        roomInstance.onMessage('restake_result', (data: any) => {
+          const w = netRef.current.restakeWait;
+          netRef.current.restakeWait = null;
+          if (data?.ok && typeof data.entryId === 'string') netRef.current.entryId = data.entryId;
+          w?.(data);
+        });
+        roomInstance.onMessage('fast_mini_reward', (data: any) => {
+          feed(`🎯 ${tRef.current('fastmini.rewardFeed', { v: formatCoinsAndUsd(Number(data?.shooterMicroUsd) || 0) })}`);
+        });
+        roomInstance.onMessage('fast_mini_pot_lost', (data: any) => {
+          const v = Number(data?.valueMicroUsd) || 0;
+          setFastMiniPot((p) => Math.max(0, p - v));
+          feed(`💸 ${tRef.current('fastmini.potLostFeed', { v: formatCoinsAndUsd(v) })}`);
         });
         roomInstance.onMessage('player_fired', (data: any) => {
           if (typeof data?.x === 'number' && typeof data?.z === 'number') addBlip(data.x, data.z);
@@ -2267,11 +2355,8 @@ export default function GamePage() {
         if (player.respawnTimer <= 0 && botMode) {
           if (deployedRef.current) reopenLoadoutRef.current();
         }
-        // Multiplayer: the server respawns us after 3 s (player_respawned); nudge it once as a fallback
-        else if (player.respawnTimer <= -0.5 && currentRoom && !respawnRequested) {
-          respawnRequested = true;
-          currentRoom.send('player_respawn', {});
-        }
+        // Multiplayer (V1.1 R2): never respawn automatically — the death prompt sends
+        // player_restake (Paid-EC, -1 EC) or player_respawn (free) when the player chooses.
       }
       // No passive HP regeneration in any mode — heal with medkits (slot 4)
 
@@ -2672,6 +2757,8 @@ export default function GamePage() {
       guard.exitFullscreen();
       guardRef.current = null;
       currentRoom?.leave();
+      netRef.current.room = null;
+      setFastMiniBannerPot(null);
       bots?.dispose();
       remotePlayers.forEach((rp) => {
         rp.rig.dispose();
@@ -2700,6 +2787,8 @@ export default function GamePage() {
     { slot: 'grenade', key: '3', label: hudStats.grenades > 0 ? 'FRAG' : null, ammo: `x${hudStats.grenades}` },
   ];
   const applyEcResult = (r: AdEcResult) => {
+    if (typeof r.ecProgressAddedPct === 'number' && r.ecProgressAddedPct > 0) setEcChargedPct((p) => p + (r.ecProgressAddedPct as number));
+    if (typeof r.fastMiniPotMicroUsd === 'number') setFastMiniPot(r.fastMiniPotMicroUsd);
     if (r.format === 'banner' && typeof r.ecProgressAddedPct === 'number' && r.ecProgressAddedPct > 0) {
       const n = r.impressions ?? 1;
       setEcToast(`${n > 1 ? `${n} banner impressions` : 'Banner impression'} credited (+${r.ecProgressAddedPct.toFixed(1)}% EC)`);
@@ -2723,10 +2812,53 @@ export default function GamePage() {
     firingRef.current = false;
     setVideoAd(f);
   };
-  // Bottom banner ad: only in Solo Bot / Practice and Ghost Spectator (never in paid PvP)
-  // Also shown over the Solo / Practice loadout screen (first deploy and after every death) so the
-  // impression clock keeps running while the player picks a new weapon / operator.
-  const showAdBanner = (isBotMode || isGhostSpectator) && !loadingWorld;
+  // Bottom banner ad: Solo Bot / Practice, Ghost Spectator, Fast & Mini (loadout + play — it funds the
+  // seat's own pot) and the Paid-EC death prompt (V1.1 R2). Never during paid PvP combat.
+  // Also shown over the loadout screen so the impression clock keeps running while the player picks a weapon.
+  const showAdBanner = (isBotMode || isGhostSpectator || fastMiniSeat || !!deathPrompt) && !loadingWorld;
+  const bannerOnTop = showLoadout || !!deathPrompt;
+
+  // V1.1 R2: "Play again (-1 EC)" — lock a NEW ticket through the Worker, then hand the server its signed token
+  const restakeNow = async () => {
+    const n = netRef.current;
+    if (!n.room || !n.entryId || deathBusy) return;
+    setDeathBusy(true);
+    setDeathError(null);
+    try {
+      const enter = await apiFetch<{ entryToken: string; entryId: string; energyTickets: number; reissued?: boolean }>('/api/game/enter', {
+        method: 'POST',
+        body: JSON.stringify({ mode: n.roomName, roomCode: n.roomCode || undefined, restakeAfter: n.entryId }),
+      });
+      setHudStats((prev) => ({ ...prev, energyTickets: enter.energyTickets }));
+      if (!enter.reissued) setEcSpent((x) => x + 1);
+      const room = n.room;
+      const result = await new Promise<any>((resolve) => {
+        n.restakeWait = resolve;
+        room.send('player_restake', { entryToken: enter.entryToken });
+        setTimeout(() => {
+          if (n.restakeWait === resolve) {
+            n.restakeWait = null;
+            resolve({ ok: false, reason: 'timeout' });
+          }
+        }, 8000);
+      });
+      if (!result?.ok) setDeathError(t('death.restakeFailed'));
+    } catch (e) {
+      const code = (e as { code?: string })?.code;
+      if (code === 'NO_EC') {
+        setHudStats((prev) => ({ ...prev, energyTickets: 0 }));
+        setDeathError(t('death.noEc'));
+      } else if (code === 'ALREADY_RESTAKED') setDeathError(t('death.alreadyRestaked'));
+      else if (code === 'GAME_SERVERS_OFFLINE') setDeathError(t('rooms.offline'));
+      else setDeathError(t('death.restakeFailed'));
+    } finally {
+      setDeathBusy(false);
+    }
+  };
+  const freePlayAgain = () => netRef.current.room?.send('player_respawn', {});
+  const backToLobby = () => {
+    window.location.href = '/games/fps';
+  };
   // Anti-AFK (spec §5.3): Practice / Solo bots and Ghost Spectator only — never in paid PvP rooms.
   // 35 s without input or a hidden tab pauses the 30–45 s banner clock and unmounts the banner.
   const chargeGuard = useIdleChargeGuard({ enabled: showAdBanner });
@@ -2907,12 +3039,37 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Death overlay */}
-      {!hudStats.alive && !isGhostSpectator && (
+      {serversOffline && (
+        <div className="absolute top-1 left-1/2 -translate-x-1/2 z-[46] pointer-events-none text-[10px] font-bold text-slate-300 bg-slate-950/70 border border-slate-700/60 rounded-full px-3 py-1 whitespace-nowrap" data-servers-offline>
+          🛰️ {t('rooms.offlineNotice')}
+        </div>
+      )}
+
+      {/* V1.1 R2: server rooms — Death & Round Summary prompt (no automatic respawn) */}
+      {!isBotMode && !isGhostSpectator && deathPrompt && (
+        <DeathSummaryOverlay
+          data={deathPrompt}
+          energyTickets={hudStats.energyTickets}
+          maxEnergyTickets={hudStats.maxEnergyTickets}
+          ecChargedPct={ecChargedPct}
+          ecSpent={ecSpent}
+          potMicroUsd={fastMiniPot}
+          busy={deathBusy}
+          error={deathError}
+          bottomPad={showAdBanner ? (isMobile ? 80 : 92) : 0}
+          onRestake={restakeNow}
+          onFreePlay={freePlayAgain}
+          onCharge={() => openVideoAd('video_30s')}
+          onLobby={backToLobby}
+        />
+      )}
+
+      {/* Death overlay — Practice / solo bots keep the countdown auto-respawn */}
+      {!hudStats.alive && !isGhostSpectator && (isBotMode || !deathPrompt) && (
         <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
           <div className="bg-slate-950/80 border border-rose-500/60 rounded-3xl px-8 py-5 text-center">
-            <div className="text-rose-400 font-black text-xl tracking-widest">ELIMINATED — Respawning…</div>
-            <div className="text-slate-300 text-xs font-bold mt-1">Back in the fight in {Math.max(1, hudStats.respawnIn)}s</div>
+            <div className="text-rose-400 font-black text-xl tracking-widest">{isBotMode ? 'ELIMINATED — Respawning…' : t('death.title')}</div>
+            {isBotMode && <div className="text-slate-300 text-xs font-bold mt-1">Back in the fight in {Math.max(1, hudStats.respawnIn)}s</div>}
             {!isBotMode && (
               <div className="mt-2 text-xs font-bold text-emerald-300 font-mono" data-death-summary>
                 {t('econ.death.summary', { kills: hudStats.kills, v: formatCoinsAndUsd(hudStats.earningsMicroUsd) })}
@@ -3412,12 +3569,12 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Compact bottom banner ad slot — Solo Bot / Practice and Ghost Spectator only (never paid PvP) */}
+      {/* Compact bottom banner ad slot — Solo Bot / Practice, Ghost Spectator, Fast & Mini, Paid-EC death prompt */}
       {showAdBanner && chargeGuard.paused && <ChargePausedModal reason={chargeGuard.paused} onResume={chargeGuard.resume} />}
 
       {showAdBanner && !bannerPaused && (
-        <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 ${showLoadout ? 'z-[45]' : 'z-[15]'} pointer-events-auto flex flex-col items-center`}>
-          {showLoadout && (
+        <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 ${bannerOnTop ? 'z-[45]' : 'z-[15]'} pointer-events-auto flex flex-col items-center`} data-bottom-banner>
+          {bannerOnTop && (
             <div className="mb-1 text-[11px] font-black text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] whitespace-nowrap">
               ⚡ {hudStats.energyTickets} / {hudStats.maxEnergyTickets} EC • {(Math.floor(hudStats.ecProgress * 10) / 10).toFixed(1)}%{pendingBanners > 0 ? ` (+${pendingBanners} ad${pendingBanners > 1 ? 's' : ''} pending)` : ''}
               {ecToast && <span className="ml-2 font-semibold text-yellow-200/70">{ecToast}</span>}

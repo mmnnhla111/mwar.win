@@ -8,6 +8,9 @@ import {
   PLATFORM_FEE_PERCENT,
   NET_POOL_PERCENT,
   MLM_LEVEL_RATES,
+  FAST_MINI_SHOOTER_BPS,
+  FAST_MINI_PLATFORM_BPS,
+  FAST_MINI_BANNER_POT_BP,
 } from '../constants';
 import { toMicroUsdBigInt } from './currency';
 import { roundCoinShare } from './coin';
@@ -253,4 +256,55 @@ export function earnerAndBountyShares(grossMicroUsd: number): { earner: number; 
 export function calculateCheerSplit(valueMicroUsd: bigint | number | string, creatorUplines: MlmUpline[] = []) {
   const split = calculateRewardSplit(valueMicroUsd, creatorUplines);
   return { ...split, viewerEcBackingMicroUsd: split.energyPoolMicroUsd };
+}
+
+export interface FastMiniSplitResult {
+  grossMicroUsd: bigint;
+  /** 90 % — credited to the shooter's wallet. */
+  shooterMicroUsd: bigint;
+  /** 10 % + rounding — platform / system (never below floor(V × 10 %)). */
+  platformMicroUsd: bigint;
+  /** Always 0 in Fast & Mini (listed so callers can assert it). */
+  uplinesMicroUsd: bigint;
+  bountyMicroUsd: bigint;
+  energyPoolMicroUsd: bigint;
+  /** Must equal grossMicroUsd exactly. */
+  totalMicroUsd: bigint;
+}
+
+/**
+ * V1.1 Round 2 — Fast & Mini split of a victim's banner pot V (integer µUSD):
+ *   shooter 90 % = roundCoinShare(V, 9 000) (0.007 C rule), clamped so shooter <= V − floor(V × 10 %)
+ *   platform = V − shooter (its 10 % floor + the rounding remainder)
+ *   uplines 0 · head bounty 0 · Energy Pool 0
+ * so shooter + platform === V and platform >= floor(V × 10 %) for every V (throws otherwise).
+ */
+export function calculateFastMiniSplit(valueMicroUsd: bigint | number | string): FastMiniSplitResult {
+  const gross = toMicroUsdBigInt(valueMicroUsd);
+  const zero: FastMiniSplitResult = { grossMicroUsd: 0n, shooterMicroUsd: 0n, platformMicroUsd: 0n, uplinesMicroUsd: 0n, bountyMicroUsd: 0n, energyPoolMicroUsd: 0n, totalMicroUsd: 0n };
+  if (gross <= 0n) return zero;
+  const platformFloor = (gross * FAST_MINI_PLATFORM_BPS) / REWARD_SPLIT_TOTAL_BPS;
+  let shooter = roundCoinShare(gross, FAST_MINI_SHOOTER_BPS);
+  if (shooter > gross - platformFloor) shooter = gross - platformFloor;
+  if (shooter < 0n) shooter = 0n;
+  const platform = gross - shooter;
+  const total = shooter + platform;
+  if (total !== gross || platform < platformFloor) throw new Error(`Fast & Mini split invariant failed: ${shooter} + ${platform} != ${gross}`);
+  return { grossMicroUsd: gross, shooterMicroUsd: shooter, platformMicroUsd: platform, uplinesMicroUsd: 0n, bountyMicroUsd: 0n, energyPoolMicroUsd: 0n, totalMicroUsd: total };
+}
+
+/**
+ * V1.1 Round 2 — one Fast & Mini banner credit (safe value S after the haircut, EC progress ecBp the
+ * banner would normally earn) is divided ONCE between the player's Fast & Mini pot and their normal EC
+ * backing, so no µUSD is counted twice:
+ *   potMicroUsd = floor(S × potBp / 10 000), ecMicroUsd = S − potMicroUsd   (pot + EC === S)
+ *   ecBp is scaled by the same EC share (rounded down), so EC tickets keep their country backing rate.
+ */
+export function splitFastMiniBanner(safeMicroUsd: number, ecBp: number, potBp: number = FAST_MINI_BANNER_POT_BP): { potMicroUsd: number; ecMicroUsd: number; ecBp: number } {
+  const s = Math.max(0, Math.floor(Number(safeMicroUsd) || 0));
+  const bp = Math.max(0, Math.floor(Number(ecBp) || 0));
+  const share = Math.min(10_000, Math.max(0, Math.floor(Number(potBp) || 0)));
+  const pot = Number((BigInt(s) * BigInt(share)) / 10_000n);
+  const ec = s - pot;
+  return { potMicroUsd: pot, ecMicroUsd: ec, ecBp: Math.floor((bp * (10_000 - share)) / 10_000) };
 }
