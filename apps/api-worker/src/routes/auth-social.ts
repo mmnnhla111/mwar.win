@@ -25,6 +25,7 @@ import { authMiddleware } from '../middleware/auth';
 import { edgeCachedJson } from '../utils/edge-cache';
 import { safeEqual } from '../utils/guards';
 import { recordDeviceLink } from '../utils/ledger';
+import { signupTicketStmt } from '../utils/energy-tickets';
 
 /**
  * Telegram Login + LINE Login: the only way to open an account.
@@ -264,6 +265,7 @@ async function completeOAuth(c: Ctx, idn: ProviderIdentity, opts: CompleteOpts):
         c.env.DB.prepare(
           'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
         ).bind(userId, t),
+        signupTicketStmt(c.env.DB, userId, t), // V1.1: starter 1 EC = a 0-backed promo ticket
         c.env.DB.prepare(
           `INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id, provider_username, provider_display_name, provider_avatar_url, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)`

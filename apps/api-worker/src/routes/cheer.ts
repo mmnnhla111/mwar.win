@@ -14,16 +14,37 @@ import {
   MAX_ENERGY_TICKETS,
   INITIAL_ENERGY_TICKETS,
   getStatisticalAdMicroUsd,
+  calculateCheerSplit,
 } from '@mwar/shared';
 import type { CheerAdFormat, CheerTargetType, CheerOption, CheerStatus, CheerResult, CheerUnavailableReason } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, utcDateKey } from '../utils/ad-value';
-import { logFinancialTransaction } from '../utils/audit-logger';
-import { ENERGY_POOL_ACCOUNT_ID } from '../utils/guards';
 import { getAdConfig, pickDirectLink, valueSlot } from '../utils/ad-networks';
+import { applyRewardSplit } from '../utils/reward-split';
+import { safeValue } from '../utils/energy-tickets';
 
 type Ctx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
+
+/**
+ * V1.1 exact 100 % Cheer split of a REAL ad's safe value V (Viewer A cheers Creator B):
+ *   55 % → B's wallet (CHEER_REWARD) · 15 % → B's 5 uplines (5/4/3/2/1, daily-mission gated, missing →
+ *   platform) · 5 % → B's head bounty · 5 % → platform · 20 % → Energy Pool, drawn at once as Viewer A's
+ *   EC backing (pending_ec_micro_usd). Creator + uplines + bounty + platform + viewer backing === V.
+ * The caller credits A's EC progress with `viewerBackingMicroUsd` (source 'cheer_pool', not from the pool again).
+ */
+export async function settleCheerRevenue(env: Env, v: { creatorId: string; viewerId: string; valueMicroUsd: number; sourceId: string }) {
+  const V = Math.max(0, Math.floor(v.valueMicroUsd));
+  if (V <= 0 || !v.creatorId || v.creatorId === v.viewerId) return { valueMicroUsd: 0, creatorMicroUsd: 0, viewerBackingMicroUsd: 0 };
+  const split = await applyRewardSplit(env, {
+    earnerId: v.creatorId,
+    grossMicroUsd: V,
+    actionType: 'CHEER_REWARD',
+    sourceId: v.sourceId,
+    energyPoolPassThrough: true,
+  });
+  return { valueMicroUsd: V, creatorMicroUsd: Number(split.earnerMicroUsd), viewerBackingMicroUsd: Number(split.energyPoolMicroUsd) };
+}
 
 /**
  * "ให้กำลังใจ" Cheer — support a post / creator (or just recharge from the EC panel) by watching an ad.
@@ -155,6 +176,8 @@ cheerRouter.post('/start', async (c) => {
   const { format, targetType } = parsed.data;
   const target = await resolveTarget(c, targetType, parsed.data.targetId);
   if (!target.ok) return c.json({ error: target.error }, target.status);
+  // V1.1: never cheer your own post / profile
+  if (target.targetUserId && target.targetUserId === me.userId) return c.json({ error: 'You cannot cheer your own content', code: 'SELF_CHEER' }, 400);
   const status = await loadStatus(c, targetType, target.targetId, target.targetUserId);
   const opt = status.options.find((o) => o.format === format)!;
   if (!opt.available) return c.json({ error: 'This cheer is not available right now', code: 'CHEER_LIMIT', reason: opt.reason, status }, 429);
@@ -193,6 +216,7 @@ cheerRouter.post('/', async (c) => {
     .bind(parsed.data.viewId, me.userId)
     .first<{ id: string; ad_format: CheerAdFormat; started_at: number; completed_at: number | null; target_type: CheerTargetType; target_id: string | null; target_user_id: string | null }>();
   if (!view) return c.json({ error: 'Unknown cheer session — start the ad first' }, 400);
+  if (view.target_user_id && view.target_user_id === me.userId) return c.json({ error: 'You cannot cheer your own content', code: 'SELF_CHEER' }, 400);
   if (view.completed_at) return c.json({ error: 'This cheer was already counted' }, 409);
   const now = nowSec();
   const need = durationOf(view.ad_format) - 1;
@@ -219,16 +243,13 @@ cheerRouter.post('/', async (c) => {
   const { eventId, cheerCount } = rec;
 
   await logAdImpression(c.env.DB, { userId: me.userId, provider: 'mwar_cheer', country, format: view.ad_format, purpose: 'ec_recharge', microUsd: valueMicroUsd, source: source as any, ecBp: bp });
-  const ec = await creditEcProgress(c.env, me.userId, bp, `cheer:${view.target_type}:${view.target_id || '-'}:${view.ad_format}`);
-  await logFinancialTransaction(c.env, {
-    transaction_id: `tx_cheer_${now}_${crypto.randomUUID().slice(0, 8)}`,
-    user_id: ENERGY_POOL_ACCOUNT_ID,
-    action_type: 'ENERGY_POOL_DRAW',
-    amount_micro_usd: BigInt(valueMicroUsd),
-    balance_after_micro_usd: 0n,
-    source_game_id: `cheer:${eventId}`,
-    related_user_id: me.userId,
-  });
+  // V1.1: this is the in-app (test-mode) sponsor card — no network pays for it, so it creates NO money:
+  // the creator gets the cheer count only, and the viewer's EC backing is drawn from the Energy Pool
+  // (the 20 % slice a real cheer would give; the whole safe value for an EC-panel cheer), capped by
+  // what the pool holds. Real cheers (direct link) pay the creator: see settleCheerRevenue().
+  const safeV = safeValue(c.env, valueMicroUsd);
+  const wantBacking = view.target_user_id ? Number(calculateCheerSplit(safeV).viewerEcBackingMicroUsd) : safeV;
+  const ec = await creditEcProgress(c.env, me.userId, bp, `cheer:${eventId}`, { microUsd: wantBacking, source: 'cheer_pool', country, fromPool: true });
 
   const status = await loadStatus(c, view.target_type, view.target_id, view.target_user_id);
   const body: CheerResult = {
@@ -241,6 +262,9 @@ cheerRouter.post('/', async (c) => {
     ticketsAwarded: ec?.ticketsAwarded ?? 0,
     cheerCount,
     status,
+    valueMicroUsd: 0,
+    creatorMicroUsd: 0,
+    ecBackingMicroUsd: ec?.backedAddedMicroUsd ?? 0,
   };
   return c.json(body);
 });
@@ -248,8 +272,8 @@ cheerRouter.post('/', async (c) => {
 /**
  * Count one cheer: the cheer_events row is inserted with every limit checked inside the same
  * INSERT … SELECT (parallel claims can never pass a cap), then the session is closed and the target's
- * cheer_count goes up. Simulated cheers are backed by the Energy Pool; real network ads are not
- * (the network pays the revenue). Used by the simulated Cheer claim and the direct-link claim.
+ * cheer_count goes up. Self-cheers are refused inside the same INSERT. Used by the simulated Cheer
+ * claim and the direct-link claim (money moves are done by the caller).
  */
 export async function recordCheer(
   c: Ctx,
@@ -313,14 +337,8 @@ export async function recordCheer(
   }
 
   const stmts = [c.env.DB.prepare('UPDATE ad_video_views SET completed_at = ?1 WHERE id = ?2 AND completed_at IS NULL').bind(now, v.viewId)];
-  if (v.drawEnergyPool) {
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO system_balances (id, energy_pool_drawn_micro_usd, updated_at) VALUES ('global', ?1, ?2)
-         ON CONFLICT(id) DO UPDATE SET energy_pool_drawn_micro_usd = energy_pool_drawn_micro_usd + ?1, updated_at = ?2`
-      ).bind(v.valueMicroUsd, now)
-    );
-  }
+  // V1.1: no blind pool draw here any more — EC backing is drawn (capped by the pool) in creditEcProgress
+  void v.drawEnergyPool;
   if (v.targetType === 'post') stmts.push(c.env.DB.prepare('UPDATE social_posts SET cheer_count = cheer_count + 1 WHERE id = ?1').bind(v.targetId));
   if (v.targetUserId) stmts.push(c.env.DB.prepare('UPDATE users SET cheer_count = cheer_count + 1 WHERE id = ?1').bind(v.targetUserId));
   if (v.targetType === 'post') stmts.push(c.env.DB.prepare('SELECT cheer_count AS n FROM social_posts WHERE id = ?1').bind(v.targetId));

@@ -53,4 +53,10 @@ export interface CheerResult {
   ticketsAwarded: number;
   cheerCount: number | null;
   status: CheerStatus;
+  /** V1.1: safe (after-haircut) µUSD value V of this cheer and how it was split. */
+  valueMicroUsd?: number;
+  /** 55 % credited to the cheered creator's wallet. */
+  creatorMicroUsd?: number;
+  /** 20 % slice that backs the viewer's EC (pending_ec_micro_usd). */
+  ecBackingMicroUsd?: number;
 }

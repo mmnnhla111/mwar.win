@@ -187,7 +187,7 @@ function ProfileView() {
                   <button onClick={copyRef} className={btn.primary}>
                     <Icon name="link" size={16} /> {copied ? t('common.copied') : t('profile.copyRef')}
                   </button>
-                  <CheerButton targetType="energy" label={t('cheer.rechargeBtn')} className={btn.soft} />
+                  <CheerButton targetType="energy" label={t('cheer2.rechargeOwn')} className={btn.soft} />
                 </>
               ) : (
                 p.isBlocked ? (
@@ -205,6 +205,7 @@ function ProfileView() {
                   <CheerButton
                     targetType="profile"
                     targetId={p.id}
+                    targetUserId={p.id}
                     targetName={displayName(p)}
                     className={`${btn.soft} !bg-[#FFF6C2] !text-[#8A6A00]`}
                     onCheered={(n) => n !== null && update({ ...state, profile: { ...p, cheerCount: n } })}

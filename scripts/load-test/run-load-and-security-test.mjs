@@ -9,6 +9,9 @@
  *     receives the 10-second batch payouts, or uses --game-url (then server-side metrics are off).
  *   - Combat validation room: fire-rate limit, damage clamp, self / ghost / unknown targets, forged,
  *     replayed, expired and wrong-room entry tokens, same-IP collusion kill → exact payout check.
+ *     V1.1: entry tokens carry the victim's ticket (tid + backed value tv). A kill pays EXACTLY the
+ *     victim's ticket value, killing a guest pays nothing, every ticket is closed exactly once
+ *     (GAME_KILL / CHEST_OPEN / TICKET_FORFEIT) and the total paid never exceeds the total backing.
  *   - Wave 1: --players (default 1,000) bots across mini_30 / standard_100 / fast_mini rooms in
  *     worker threads. Every bot moves at 10 Hz and fires at 2 Hz (35 % hit). Checks 20 Hz tick + patch
  *     stability (server side), event-loop delay, client patch intervals, and that every paid kill /
@@ -25,6 +28,9 @@
  *     unknown bot-exchange token.
  *   - Monetag S2S postback: missing / wrong secret → 403, right secret → 200, duplicate ignored.
  *   - Layer-2 media gate: photo > 300 KB and an unreadable MP4 → 422 MEDIA_GATE.
+ *   - V1.1 ticket economy: 0-backed signup ticket, FIFO entry lock + token value, pool-backed mint,
+ *     GAME_KILL capped at the victim's ticket, re-sent / parallel batches never pay twice, wrong-owner
+ *     ticket rejected, forfeit → platform, self-cheer → 400, Energy Pool never overdrawn.
  *   Account setup (staff roles, balances, listings) needs direct D1 access, so PART B runs only
  *   against a LOCAL worker (wrangler dev, `--d1-local`, the default for 127.0.0.1 / localhost).
  *   Never point it at production: it creates test accounts and moves test balances.
@@ -36,7 +42,7 @@
  *   --game-url=ws://host:port      use a running game server (no probe, no leak check)
  *   --api=http://127.0.0.1:8787    api-worker under test (PART B)
  *   --worker-dir=apps/api-worker   where `wrangler d1 execute core_db --local` runs
- *   --tg-bot-token=…  --postback-secret=…   must match the worker's .dev.vars (local test values)
+ *   --tg-bot-token=…  --postback-secret=…  --internal-secret=…   must match the worker's .dev.vars (local test values)
  *   --report=path.json             write the full JSON report (default: OS temp dir)
  *   --server-cpu-prof=dir          also write a V8 CPU profile of the game server (.cpuprofile)
  *
@@ -66,11 +72,25 @@ const uuid = () => crypto.randomUUID();
 // ------------------------------------------------------------------------------------------------
 // Shared helpers
 // ------------------------------------------------------------------------------------------------
-/** Same format as the API worker's /api/game/enter token (verified by verifyEntryToken). */
-function mintEntryToken(secret, { uid, un, eid = uuid(), bty = 0, rc = '', exp = Math.floor(Date.now() / 1000) + 3600 }) {
-  const body = Buffer.from(JSON.stringify({ uid, un, eid, bty, rc, exp })).toString('base64url');
+/**
+ * Same format as the API worker's /api/game/enter token (verified by verifyEntryToken).
+ * V1.1: `tid` = the locked user_energy_tickets row, `tv` = its real backed µUSD (what a kill pays).
+ */
+function mintEntryToken(secret, { uid, un, eid = uuid(), bty = 0, rc = '', tid = `tkt_${uuid()}`, tv = 0, exp = Math.floor(Date.now() / 1000) + 3600 }) {
+  const body = Buffer.from(JSON.stringify({ uid, un, eid, bty, rc, tid, tv, tn: 1, exp })).toString('base64url');
   return `${body}.${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
 }
+
+/**
+ * Realistic ticket values (µUSD): 0 = signup promo, 1 / 7 / 33 = odd dust, the rest = 30 s videos /
+ * banner charges after the 0.92 haircut in different countries (BD 1 840, TH 7 820, US 29 440, …).
+ */
+const TICKET_VALUES = [0, 1, 7, 33, 230, 1840, 2760, 3496, 7820, 13800, 22080, 29440];
+/** 0.007 C rule (fraction >= 0.7 µUSD rounds up) for the 55 % shooter share the HUD shows. */
+const earnerShare = (v) => {
+  const n = BigInt(v) * 5500n;
+  return Number(n % 10000n >= 7000n ? n / 10000n + 1n : n / 10000n);
+};
 
 function newHist() {
   return { b: new Array(1001).fill(0), n: 0, sum: 0, max: 0 };
@@ -141,8 +161,8 @@ if (!isMainThread) {
       else if (type === 'player_killed' && isObserver) {
         const t = roomTally.get(room.roomId);
         t.killEvents++;
-        const killReward = Number(msg.rewardMicroUsd || 0) - Number(msg.bountyClaimedMicroUsd || 0);
-        if (killReward > 0) t.paidKills++;
+        // V1.1: a paid kill is one that settles the victim's ticket (ticketMicroUsd = V > 0)
+        if (Number(msg.ticketMicroUsd || 0) > 0) t.paidKills++;
         if (Number(msg.bountyClaimedMicroUsd || 0) > 0) {
           t.bountyClaims++;
           t.bountyMicroUsd += Number(msg.bountyClaimedMicroUsd);
@@ -232,6 +252,7 @@ if (isMainThread) {
     workerDir: path.resolve(ROOT, String(args['worker-dir'] || 'apps/api-worker')),
     tgBotToken: String(args['tg-bot-token'] || process.env.TELEGRAM_BOT_TOKEN || '123456789:TESTtokenABC'),
     postbackSecret: String(args['postback-secret'] || process.env.AD_POSTBACK_SECRET || 'test-postback'),
+    internalSecret: String(args['internal-secret'] || process.env.INTERNAL_API_SECRET || 'test-internal'),
     report: args.report ? path.resolve(String(args.report)) : path.join(os.tmpdir(), `mwar-load-security-${Date.now()}.json`),
   };
   OPT.d1Local = args['d1-local'] !== undefined ? args['d1-local'] !== 'false' : /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(OPT.api);
@@ -407,9 +428,13 @@ if (isMainThread) {
     const uidD = uuid();
     const uidE = uuid();
     const uidF = uuid();
-    const tokA = mintEntryToken(secret, { uid: uidA, un: 'lt_alpha' });
+    const uidV = uuid();
+    // V1.1 tickets: A, D, V hold paid tickets with real backed values
+    const T = { A: { tid: `tkt_${uuid()}`, tv: 2760 }, D: { tid: `tkt_${uuid()}`, tv: 7820 }, V: { tid: `tkt_${uuid()}`, tv: 29440 } };
+    const tokA = mintEntryToken(secret, { uid: uidA, un: 'lt_alpha', ...T.A });
     const forgedB = mintEntryToken('not-the-server-secret', { uid: uidB, un: 'lt_forged' });
-    const tokD = mintEntryToken(secret, { uid: uidD, un: 'lt_sameip' });
+    const tokD = mintEntryToken(secret, { uid: uidD, un: 'lt_sameip', ...T.D });
+    const tokV = mintEntryToken(secret, { uid: uidV, un: 'lt_victim', ...T.V });
     const expiredE = mintEntryToken(secret, { uid: uidE, un: 'lt_expired', exp: Math.floor(Date.now() / 1000) - 60 });
     const wrongRoomF = mintEntryToken(secret, { uid: uidF, un: 'lt_wrongroom', rc: 'OTHER_ROOM' });
 
@@ -421,7 +446,8 @@ if (isMainThread) {
     const D = await join('198.51.100.10', { entryToken: tokD, deviceId: 'dev-sameip' }); // same IP as A
     const E = await join('198.51.100.13', { entryToken: expiredE, deviceId: 'dev-expired' });
     const F = await join('198.51.100.14', { entryToken: wrongRoomF, deviceId: 'dev-wrongroom' });
-    const all = [A, B, C, D, E, F];
+    const V = await join('198.51.100.15', { entryToken: tokV, deviceId: 'dev-victim' });
+    const all = [A, B, C, D, E, F, V];
     for (const r of all) r.onMessage('*', () => {});
     const kills = [];
     A.onMessage('player_killed', (m) => kills.push(m));
@@ -432,6 +458,7 @@ if (isMainThread) {
     check(S, 'forged entry token → guest seat (identity not taken from token)', p(B)?.id.startsWith('guest_'), p(B)?.id);
     check(S, 'expired entry token → guest seat', p(E)?.id.startsWith('guest_'), p(E)?.id);
     check(S, 'valid token → player id from the signed token', p(A)?.id === uidA);
+    check(S, 'V1.1: the signed ticket value is the value on the player (state.ticketMicroUsd)', p(V)?.ticketMicroUsd === T.V.tv && p(B)?.ticketMicroUsd === 0, `V ${p(V)?.ticketMicroUsd} · guest ${p(B)?.ticketMicroUsd}`);
 
     // Fire-rate limit: 30 shots in one burst, only the first may land (AK-47: 100 ms, 80 ms tolerance)
     for (let i = 0; i < 30; i++) A.send('player_shoot', { targetType: 'player', targetId: B.sessionId, damage: 10 });
@@ -452,10 +479,21 @@ if (isMainThread) {
     await sleep(150);
     check(S, 'self-shot / unknown player / unknown chest ignored', p(A).health === 100 && p(B).health === hB2, `shooter health ${p(A).health}`);
 
-    // Head shot 9999 → clamped to 68 → B (≤ 56 hp) dies: a PAID kill for A
+    // Head shot 9999 → clamped to 68 → B (≤ 56 hp) dies. B is a guest (forged token, no ticket): pays 0
     A.send('player_shoot', { targetType: 'player', targetId: B.sessionId, damage: 9999, headshot: true });
     await sleep(250);
-    check(S, 'clamped head shot kills the victim (paid kill #1)', p(B).isGhost === true && kills.length === 1, `kills seen ${kills.length}`);
+    check(S, 'clamped head shot kills the victim', p(B).isGhost === true && kills.length === 1, `kills seen ${kills.length}`);
+    check(S, 'V1.1: killing a guest (no ticket) pays nothing — no fixed kill reward', Number(kills[0]?.rewardMicroUsd) === 0 && Number(kills[0]?.ticketMicroUsd) === 0, `reward ${kills[0]?.rewardMicroUsd}`);
+
+    // A kills V (paid ticket, 29 440 µUSD): the kill is worth exactly V's ticket, A sees the 55 % share
+    await sleep(160);
+    A.send('player_shoot', { targetType: 'player', targetId: V.sessionId, damage: 68, headshot: true });
+    await sleep(160);
+    A.send('player_shoot', { targetType: 'player', targetId: V.sessionId, damage: 68, headshot: true });
+    await sleep(250);
+    const kV = kills[kills.length - 1];
+    check(S, 'V1.1: paid kill is worth exactly the victim ticket (55 % to the shooter)', p(V).isGhost && kV?.victimId === uidV && Number(kV?.ticketMicroUsd) === T.V.tv && Number(kV?.rewardMicroUsd) === earnerShare(T.V.tv), `ticket ${kV?.ticketMicroUsd} · shooter +${kV?.rewardMicroUsd} (expected ${earnerShare(T.V.tv)})`);
+    check(S, 'V1.1: a settled ticket is gone from the victim (respawn is worth 0)', p(V).ticketMicroUsd === 0);
 
     // Ghost cannot shoot
     B.send('player_shoot', { targetType: 'player', targetId: A.sessionId, damage: 34 });
@@ -485,9 +523,25 @@ if (isMainThread) {
 
     await Promise.allSettled(all.map((r) => r.leave(true)));
     await settle(mock, 12_000);
-    const mine = mock.items.filter((it) => [uidA, uidB, uidD, uidE, uidF].includes(it.userId));
+    const mine = mock.items.filter((it) => [uidA, uidB, uidD, uidE, uidF, uidV].includes(it.userId));
     const killsA = mine.filter((it) => it.userId === uidA && it.actionType === 'GAME_KILL');
-    check(S, 'batch settlement: exactly one GAME_KILL (A → B) reached the Worker', mine.length === 1 && killsA.length === 1 && Number(killsA[0].amountMicroUsd) === 100_000, `${mine.length} item(s): ${mine.map((m) => `${m.actionType}:${m.amountMicroUsd}`).join(', ')}`);
+    const money = mine.filter((it) => it.actionType !== 'TICKET_FORFEIT');
+    const forfeits = mine.filter((it) => it.actionType === 'TICKET_FORFEIT');
+    const fTid = (tid) => forfeits.filter((f) => f.metadata?.ticketId === tid);
+    check(
+      S,
+      'batch settlement: exactly one GAME_KILL (A → V) = V\'s ticket value, with its ticket id',
+      money.length === 1 && killsA.length === 1 && Number(killsA[0].amountMicroUsd) === T.V.tv && killsA[0].metadata?.ticketId === T.V.tid && killsA[0].metadata?.victimId === uidV,
+      `${mine.length} item(s): ${mine.map((m) => `${m.actionType}:${m.amountMicroUsd}`).join(', ')}`
+    );
+    check(
+      S,
+      'V1.1: collusion victim A and unpaid-killer victim D → their tickets forfeited (platform), once each',
+      forfeits.length === 2 && fTid(T.A.tid).length === 1 && fTid(T.A.tid)[0].metadata?.reason === 'collusion' && fTid(T.D.tid).length === 1 && fTid(T.D.tid)[0].userId === uidD,
+      forfeits.map((f) => `${f.userId === uidA ? 'A' : f.userId === uidD ? 'D' : '?'}:${f.metadata?.reason}`).join(', ')
+    );
+    const pids = mine.map((m) => m.metadata?.pid);
+    check(S, 'V1.1: every payout item carries a unique payout id (Worker de-duplicates re-sent batches)', pids.every((x) => typeof x === 'string') && new Set(pids).size === pids.length);
     check(S, 'payout batch re-queued after a 503 from the Worker', mock.injected503 >= 1 && killsA.length === 1, `${mock.injected503} injected 503(s)`);
     check(S, 'payout requests carry the internal secret', mock.badSecret === 0);
   }
@@ -510,9 +564,12 @@ if (isMainThread) {
       const mode = r < 5 ? 'mini_30' : r < 9 ? 'standard_100' : 'fast_mini';
       const uid = uuid();
       const un = `lt_${label}_${i}`;
-      bots.push({ mode, uid, un, token: mintEntryToken(secret, { uid, un }), ip: `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`, deviceId: `lt-dev-${label}-${i}` });
+      const tid = `tkt_${uuid()}`;
+      const tv = TICKET_VALUES[i % TICKET_VALUES.length];
+      bots.push({ mode, uid, un, tid, tv, token: mintEntryToken(secret, { uid, un, tid, tv }), ip: `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`, deviceId: `lt-dev-${label}-${i}` });
     }
     const uids = new Set(bots.map((b) => b.uid));
+    const ticketOf = new Map(bots.map((b) => [b.uid, b]));
     const slices = Array.from({ length: OPT.workers }, () => []);
     bots.forEach((b, i) => slices[i % OPT.workers].push(b));
     const rampMs = Math.min(20_000, players * 12);
@@ -587,6 +644,25 @@ if (isMainThread) {
     const items = mock.items.slice(itemsBefore).filter((it) => uids.has(it.userId));
     const kills = items.filter((it) => it.actionType === 'GAME_KILL');
     const claims = items.filter((it) => it.actionType === 'BOUNTY_CLAIM');
+    const chestsOpened = items.filter((it) => it.actionType === 'CHEST_OPEN');
+    const forfeits = items.filter((it) => it.actionType === 'TICKET_FORFEIT');
+    // V1.1: every ticket closed exactly once (GAME_KILL / CHEST_OPEN name the victim's ticket, TICKET_FORFEIT the holder's)
+    const closes = new Map();
+    for (const it of [...kills, ...chestsOpened, ...forfeits]) {
+      const tid = it.metadata?.ticketId;
+      closes.set(tid, (closes.get(tid) || 0) + 1);
+    }
+    const unknownTickets = [...closes.keys()].filter((tid) => !bots.some((b) => b.tid === tid));
+    const twice = [...closes.values()].filter((n) => n > 1).length;
+    const neverClosed = bots.filter((b) => !closes.has(b.tid)).length;
+    const killExact = [...kills, ...chestsOpened].every((k) => {
+      const v = ticketOf.get(k.metadata?.victimId);
+      return v && k.metadata?.ticketId === v.tid && Number(k.amountMicroUsd) === v.tv && v.tv > 0 && k.userId !== v.uid;
+    });
+    const forfeitExact = forfeits.every((f) => ticketOf.get(f.userId)?.tid === f.metadata?.ticketId && Number(f.amountMicroUsd) === ticketOf.get(f.userId)?.tv);
+    const bountyLinked = claims.every((b) => ticketOf.get(b.metadata?.victimId)?.tid === b.metadata?.ticketId);
+    const totalBacking = bots.reduce((a, b) => a + b.tv, 0);
+    const totalPaid = [...kills, ...chestsOpened].reduce((a, k) => a + Number(k.amountMicroUsd), 0);
     const strangers = mock.items.slice(itemsBefore).filter((it) => !uids.has(it.userId));
     const client = histSummary(patchHist);
 
@@ -599,7 +675,8 @@ if (isMainThread) {
       msgsSentPerSec: Math.round(st.msgsSent / durationSec),
       server: server && { tickGapMs: server.tickGapMs, tickCostMs: server.tickCostMs, patchGapMs: server.patchGapMs, patchCostMs: server.patchCostMs, eventLoopDelayMs: server.eventLoopDelayMs, heapUsedMB: server.heapUsedMB, rssMB: server.rssMB },
       clientPatchIntervalMs: client,
-      combat: { killEvents: observed.kills, paidKillsAnnounced: observed.paid, gameKillPayouts: kills.length, bountyClaimsAnnounced: observed.bounty, bountyClaimPayouts: claims.length, positionRejected: st.positionRejected, afkKicked: st.afkKicked },
+      combat: { killEvents: observed.kills, paidKillsAnnounced: observed.paid, gameKillPayouts: kills.length, chestPayouts: chestsOpened.length, ticketForfeits: forfeits.length, bountyClaimsAnnounced: observed.bounty, bountyClaimPayouts: claims.length, positionRejected: st.positionRejected, afkKicked: st.afkKicked },
+      tickets: { total: bots.length, totalBackingMicroUsd: totalBacking, paidOutMicroUsd: totalPaid, closedTwice: twice, neverClosed, unknown: unknownTickets.length },
       heapTimelineMB: samples.map((s) => s.heapUsedMB),
     };
     console.log(`  rooms ${wave.rooms} ${JSON.stringify(wave.roomsByMode)} · ${wave.msgsSentPerSec} msg/s from clients · kills ${observed.kills}`);
@@ -618,7 +695,11 @@ if (isMainThread) {
     check(S, 'combat produced kills', observed.kills > 0, `${observed.kills} kills, ${observed.paid} paid`);
     check(S, 'every announced paid kill settled exactly once', kills.length === observed.paid, `announced ${observed.paid} · received ${kills.length}`);
     check(S, 'every announced bounty claim settled exactly once', claims.length === observed.bounty, `announced ${observed.bounty} · received ${claims.length}`);
-    check(S, 'payout amounts valid (GAME_KILL = 100,000 µUSD, integer µUSD, known players)', kills.every((k) => Number(k.amountMicroUsd) === 100_000) && items.every((i) => Number.isInteger(Number(i.amountMicroUsd)) && Number(i.amountMicroUsd) > 0) && strangers.length === 0);
+    check(S, 'V1.1: every GAME_KILL / CHEST_OPEN = the victim\'s ticket value (no fixed 100,000), right ticket id', killExact && kills.length > 0, `${kills.length} kills, ${chestsOpened.length} chests`);
+    check(S, 'V1.1: every ticket closed exactly once (killed / chest / forfeited on leave)', twice === 0 && neverClosed === 0 && unknownTickets.length === 0, `${closes.size}/${bots.length} closed · ${twice} twice · ${neverClosed} never · ${unknownTickets.length} unknown`);
+    check(S, 'V1.1: TICKET_FORFEIT names the holder\'s own ticket; bounty claims name the victim\'s ticket', forfeitExact && bountyLinked, `${forfeits.length} forfeits · ${claims.length} bounty claims`);
+    check(S, 'V1.1: zero deficit — total paid out ≤ total ticket backing', totalPaid <= totalBacking, `paid ${totalPaid} µUSD of ${totalBacking} µUSD backing`);
+    check(S, 'payout amounts valid (integer µUSD ≥ 0, money items > 0, known players)', items.every((i) => Number.isInteger(Number(i.amountMicroUsd)) && Number(i.amountMicroUsd) >= 0 && (i.actionType === 'TICKET_FORFEIT' || Number(i.amountMicroUsd) > 0)) && strangers.length === 0);
     return wave;
   }
 
@@ -836,7 +917,117 @@ if (isMainThread) {
     const small = await upload(jpeg(20 * 1024), 'ok.jpg', 'image/jpeg');
     check('media', 'positive control: 20 KB photo accepted', small.status >= 200 && small.status < 300, `${small.status}`);
 
+    // ---- B6. V1.1 zero-deficit ticket economy ------------------------------------------------------
+    await ticketEconomy({ call, signup, sqlFile, sqlQuery, run });
+
     note('security', `test accounts use usernames lt${run}* in the LOCAL D1 only`);
+  }
+
+  /** PART B6 — tickets, payouts and cheers against the local worker (D1 checked directly). */
+  async function ticketEconomy({ call, signup, sqlFile, sqlQuery, run }) {
+    const S = 'tickets';
+    const q1 = (sql) => sqlQuery(sql)[0] || {};
+    const K = await signup('tk_killer');
+    const Vc = await signup('tk_victim');
+    const X = await signup('tk_other');
+    const Sc = await signup('tk_selfcheer');
+
+    // 1. sign-up: exactly one 0-backed promo ticket
+    const st = q1(`SELECT COUNT(*) AS n, COALESCE(SUM(backed_micro_usd),0) AS v, MIN(source_type) AS src FROM user_energy_tickets WHERE user_id = '${Vc.id}' AND status = 'available'`);
+    check(S, 'sign-up starter EC = one 0-backed signup_promo ticket', Number(st.n) === 1 && Number(st.v) === 0 && st.src === 'signup_promo', JSON.stringify(st));
+
+    // 2. pool-backed mint: progress 95 % + 2 simulated banners crosses 100 % → ticket backed from the pool
+    const pool0 = q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d FROM system_balances WHERE id = 'global'");
+    const now = Math.floor(Date.now() / 1000);
+    sqlFile([
+      `UPDATE system_balances SET energy_pool_micro_usd = energy_pool_micro_usd + 1000000 WHERE id = 'global';`,
+      `UPDATE users SET energy_progress_bp = 9500, energy_progress_pct = 95, pending_ec_micro_usd = 0 WHERE id = '${Vc.id}';`,
+    ]);
+    const poolA = q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d FROM system_balances WHERE id = 'global'");
+    const ban = await call('/api/ads/simulate-view', { method: 'POST', token: Vc.token, body: { format: 'banner', purpose: 'ec_recharge', count: 2, lastActiveAt: Date.now(), clientNow: Date.now() } });
+    const minted = sqlQuery(`SELECT backed_micro_usd AS v, source_type AS src FROM user_energy_tickets WHERE user_id = '${Vc.id}' AND status = 'available' ORDER BY created_at, id`);
+    const uV = q1(`SELECT pending_ec_micro_usd AS pending, energy_tickets AS n FROM users WHERE id = '${Vc.id}'`);
+    const poolB = q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d FROM system_balances WHERE id = 'global'");
+    const drawn = Number(poolB.d) - Number(poolA.d);
+    const mintedV = minted.reduce((a, r) => a + Number(r.v), 0);
+    const safeEach = Math.floor((Number(ban.body.adValueMicroUsd) * 9200) / 10000);
+    check(
+      S,
+      'simulated ad: EC backing drawn from the Energy Pool = floor(gross × 0.92) × 2, minted ticket + pending = drawn',
+      ban.status === 200 && ban.body.ticketsAwarded === 1 && drawn === safeEach * 2 && mintedV + Number(uV.pending) === drawn && Number(uV.n) === 2,
+      `HTTP ${ban.status} · gross ${ban.body.adValueMicroUsd}/banner (${ban.body.country}) · drawn ${drawn} · tickets ${minted.map((r) => r.v).join('+')} · pending ${uV.pending}`
+    );
+    check(S, 'Energy Pool never overdrawn (pool − drawn ≥ 0)', Number(poolB.p) - Number(poolB.d) >= 0, `pool ${poolB.p} drawn ${poolB.d} (before test: ${pool0.p}/${pool0.d})`);
+
+    // 3. entry: FIFO lock, the token carries the ticket id + value
+    const decode = (tok) => JSON.parse(Buffer.from(String(tok).split('.')[0], 'base64url').toString('utf8'));
+    const e1 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
+    const t1 = e1.body.entryToken ? decode(e1.body.entryToken) : {};
+    const e2 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
+    const t2 = e2.body.entryToken ? decode(e2.body.entryToken) : {};
+    const e3 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
+    check(S, 'entry #1 locks the oldest ticket (the 0-backed promo) and signs its value', e1.status === 200 && /^tkt_/.test(t1.tid) && t1.tv === 0, `HTTP ${e1.status} tid ${t1.tid} tv ${t1.tv}`);
+    check(S, 'entry #2 locks the minted ticket: token tv = its backed µUSD', e2.status === 200 && t2.tv === Number(minted[minted.length - 1]?.v) && t2.tv > 0, `tv ${t2.tv}`);
+    check(S, 'no ticket left → 402 NO_EC', e3.status === 402 && e3.body.code === 'NO_EC', `${e3.status}`);
+    const st2 = q1(`SELECT status, match_id FROM user_energy_tickets WHERE id = '${t2.tid}'`);
+    check(S, 'locked ticket is in_match with the entry id', st2.status === 'in_match' && st2.match_id === t2.eid, JSON.stringify(st2));
+    const eK = await call('/api/game/enter', { method: 'POST', token: K.token, body: { mode: 'mini_30' } }); // the killer has entered too
+    const tK = eK.body.entryToken ? decode(eK.body.entryToken) : {};
+
+    // 4. batch payouts: V = the victim's ticket, never the game server's amount; exactly once
+    const gameId = `game_lt_${run}`;
+    const batch = (payouts) => call('/api/game/batch-payout', { method: 'POST', body: { gameId, timestamp: Math.floor(Date.now() / 1000), secret: OPT.internalSecret, payouts } });
+    const wallet = (id) => q1(`SELECT w.balance_micro_usd AS bal, w.bounty_micro_usd AS bty, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = w.user_id) AS ledger FROM wallets w WHERE w.user_id = '${id}'`);
+    const sys0 = q1("SELECT platform_micro_usd AS pl, energy_pool_micro_usd AS p FROM system_balances WHERE id = 'global'");
+    const kill = { userId: K.id, amountMicroUsd: 100_000, actionType: 'GAME_KILL', gameId, metadata: { victimId: Vc.id, ticketId: t2.tid, pid: `${gameId}:1` } };
+    const r1 = await batch([kill]);
+    const w1 = wallet(K.id);
+    const tkt = q1(`SELECT status, settle_action, settled_to_user_id AS to_id, settled_micro_usd AS paid FROM user_energy_tickets WHERE id = '${t2.tid}'`);
+    const sys1 = q1("SELECT platform_micro_usd AS pl, energy_pool_micro_usd AS p FROM system_balances WHERE id = 'global'");
+    check(
+      S,
+      'GAME_KILL claiming 100,000 µUSD pays only the victim ticket: shooter = 55 % of V (0.007 C rounding)',
+      r1.status === 200 && r1.body.ticketsSettled === 1 && Number(w1.bal) === earnerShare(t2.tv) && Number(tkt.paid) === t2.tv && tkt.status === 'settled' && tkt.to_id === K.id,
+      `HTTP ${r1.status} · V ${t2.tv} · shooter +${w1.bal} (expected ${earnerShare(t2.tv)}) · ticket ${tkt.status}/${tkt.settle_action}`
+    );
+    const credited = Number(w1.bal) + Number(w1.bty) + (Number(sys1.pl) - Number(sys0.pl)) + (Number(sys1.p) - Number(sys0.p));
+    check(S, 'split conservation: shooter + bounty + platform + pool (+ uplines 0) === V', credited === t2.tv, `${credited} vs ${t2.tv}`);
+    const r2 = await batch([kill]);
+    const r3 = await Promise.all(Array.from({ length: 5 }, () => batch([{ ...kill, metadata: { ...kill.metadata, pid: undefined } }])));
+    const w2 = wallet(K.id);
+    check(S, 're-sent + 5 parallel copies of the batch never pay twice', r2.status === 200 && r2.body.duplicates === 1 && r3.every((r) => r.status === 200) && Number(w2.bal) === Number(w1.bal), `balance ${w1.bal} → ${w2.bal}; dup ${r2.body.duplicates}`);
+    check(S, 'wallet_ledger equals balance after ticket payouts (Layer 1)', Number(w2.bal) === Number(w2.ledger), `${w2.bal} vs ${w2.ledger}`);
+
+    // 5. wrong owner / killer without entry / unknown ticket → rejected; forfeit → platform once
+    const eX = await call('/api/game/enter', { method: 'POST', token: X.token, body: { mode: 'mini_30' } });
+    const tX = eX.body.entryToken ? decode(eX.body.entryToken) : {};
+    const wrong = await batch([
+      { userId: K.id, amountMicroUsd: 5000, actionType: 'GAME_KILL', gameId, metadata: { victimId: Vc.id, ticketId: tX.tid, pid: `${gameId}:w1` } }, // ticket of X, not of the victim
+      { userId: Sc.id, amountMicroUsd: 5000, actionType: 'GAME_KILL', gameId, metadata: { victimId: X.id, ticketId: tX.tid, pid: `${gameId}:w2` } }, // earner never entered a paid arena
+      { userId: K.id, amountMicroUsd: 5000, actionType: 'GAME_KILL', gameId, metadata: { victimId: X.id, ticketId: `tkt_${uuid()}`, pid: `${gameId}:w3` } }, // unknown ticket
+      { userId: K.id, amountMicroUsd: 5000, actionType: 'BOUNTY_CLAIM', gameId, metadata: { victimId: X.id, pid: `${gameId}:w4` } }, // no ticket named
+      { userId: K.id, amountMicroUsd: 5000, actionType: 'AD_WATCH', gameId, metadata: {} }, // never from a game server
+    ]);
+    const w3 = wallet(K.id);
+    check(S, 'wrong-owner / no-entry / unknown-ticket / ticketless bounty / AD_WATCH items pay nothing', wrong.status === 200 && wrong.body.ticketsSettled === 0 && Number(w3.bal) === Number(w2.bal) && Number(wallet(Sc.id).bal) === 0, `rejected ${wrong.body.rejectedTicket} + ${wrong.body.rejectedItems} · balance ${w3.bal}`);
+    const fz = await batch([{ userId: X.id, amountMicroUsd: 0, actionType: 'TICKET_FORFEIT', gameId, metadata: { ticketId: tX.tid, reason: 'left', pid: `${gameId}:f1` } }]);
+    const fz2 = await batch([{ userId: X.id, amountMicroUsd: 0, actionType: 'TICKET_FORFEIT', gameId, metadata: { ticketId: tX.tid, reason: 'left', pid: `${gameId}:f2` } }]);
+    const tXs = q1(`SELECT status, settle_action FROM user_energy_tickets WHERE id = '${tX.tid}'`);
+    check(S, 'TICKET_FORFEIT (left alive) closes the ticket once — never refunded', fz.body.ticketsForfeited === 1 && fz2.body.duplicates === 1 && tXs.status === 'settled' && String(tXs.settle_action).startsWith('TICKET_FORFEIT'), JSON.stringify(tXs));
+    const late = await batch([{ userId: K.id, amountMicroUsd: 5000, actionType: 'GAME_KILL', gameId, metadata: { victimId: X.id, ticketId: tX.tid, pid: `${gameId}:w5` } }]);
+    check(S, 'a kill on an already-forfeited ticket pays nothing', late.body.ticketsSettled === 0 && Number(wallet(K.id).bal) === Number(w2.bal));
+    void tK;
+
+    // 6. self-cheer → 400 (post / profile / direct link); cheering someone else still works
+    const selfP = await call('/api/ads/cheer/start', { method: 'POST', token: Sc.token, body: { format: 'video_30s', targetType: 'profile', targetId: Sc.id } });
+    const selfDl = await call('/api/ads/direct-link/start', { method: 'POST', token: Sc.token, body: { purpose: 'cheer', seconds: 30, targetType: 'profile', targetId: Sc.id } });
+    const other = await call('/api/ads/cheer/start', { method: 'POST', token: Sc.token, body: { format: 'video_30s', targetType: 'profile', targetId: X.id } });
+    check(S, 'self-cheer rejected with 400 (cheer/start + direct-link/start)', selfP.status === 400 && selfP.body.code === 'SELF_CHEER' && selfDl.status === 400 && selfDl.body.code === 'SELF_CHEER', `${selfP.status}/${selfP.body.code} · ${selfDl.status}/${selfDl.body.code}`);
+    check(S, 'positive control: cheering another creator starts (200)', other.status === 200 && /^cheer_/.test(other.body.viewId || ''), `${other.status}`);
+    const forged = await call('/api/ads/cheer', { method: 'POST', token: Sc.token, body: { viewId: other.body.viewId } });
+    check(S, 'claiming a cheer before the ad ends → 425 (no EC, no money)', forged.status === 425, `${forged.status}`);
+    const poolEnd = q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d FROM system_balances WHERE id = 'global'");
+    check(S, 'Energy Pool still never overdrawn at the end', Number(poolEnd.p) - Number(poolEnd.d) >= 0, `pool ${poolEnd.p} drawn ${poolEnd.d}`);
   }
 
   // ==============================================================================================
@@ -863,7 +1054,7 @@ if (isMainThread) {
   );
   cleanup();
   const failed = results.filter((r) => !r.ok);
-  const report = { at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000), options: { ...OPT, tgBotToken: undefined, postbackSecret: undefined }, passed: results.filter((r) => r.ok && !r.note).length, failed: failed.length, results, metrics, host: { cpus: os.cpus().length, cpu: os.cpus()[0]?.model, memGB: Math.round(os.totalmem() / 2 ** 30), node: process.version } };
+  const report = { at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000), options: { ...OPT, tgBotToken: undefined, postbackSecret: undefined, internalSecret: undefined }, passed: results.filter((r) => r.ok && !r.note).length, failed: failed.length, results, metrics, host: { cpus: os.cpus().length, cpu: os.cpus()[0]?.model, memGB: Math.round(os.totalmem() / 2 ** 30), node: process.version } };
   fs.writeFileSync(OPT.report, JSON.stringify(report, null, 2));
   console.log(`\n${report.passed} passed, ${failed.length} failed in ${report.seconds} s — report: ${OPT.report}`);
   if (failed.length) for (const f of failed) console.log(`  FAIL [${f.section}] ${f.name} ${f.info}`);

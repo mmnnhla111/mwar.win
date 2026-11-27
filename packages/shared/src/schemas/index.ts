@@ -88,10 +88,15 @@ export const AdPostbackSchema = z.object({
 // Game Server Batch Sync Schema
 export const BatchPayoutItemSchema = z.object({
   userId: z.string().uuid(),
-  amountMicroUsd: z.number().int().positive(),
+  // V1.1: 0 is allowed only for TICKET_FORFEIT (the Worker always uses the ticket row's value)
+  amountMicroUsd: z.number().int().nonnegative(),
   // AFK_FORFEIT is a debit: the round earnings of a player kicked after 30 min AFK
   // BOUNTY_CLAIM: metadata.victimId's accumulated head bounty goes to userId (killer / chest opener)
-  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM']),
+  // GAME_KILL / CHEST_OPEN: metadata.ticketId + metadata.victimId — V = the victim's ticket value (capped
+  //   at user_energy_tickets.backed_micro_usd, settled exactly once)
+  // TICKET_FORFEIT: userId's in_match ticket (metadata.ticketId) ended without a payout (left / AFK /
+  //   collusion kill / unopened chest) → its backing goes to the platform
+  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT']),
   gameId: z.string(),
   metadata: z.record(z.any()).optional(),
 });

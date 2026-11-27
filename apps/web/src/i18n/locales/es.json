@@ -887,5 +887,18 @@
   "admin.cashout.done.approve": "Solicitud {id} aprobada",
   "admin.cashout.done.reject": "Solicitud {id} rechazada y reembolsada",
   "admin.cashout.done.rerun": "Auditoría repetida para {id}",
-  "admin.cashout.pg.lagging": "Sincronizando"
+  "admin.cashout.pg.lagging": "Sincronizando",
+  "cheer2.rechargeOwn": "Recargar EC",
+  "cheer2.creatorGot": "{name} recibió {v}",
+  "cheer2.backed": "Tu EC está respaldado por {v} de valor publicitario real",
+  "cheer2.split": "Reparto: 55% creador · 15% su equipo · 5% recompensa · 5% plataforma · 20% tu EC",
+  "econ.hud.roundEarned": "Ganado en la ronda",
+  "econ.hud.headBounty": "Recompensa por tu cabeza",
+  "econ.hud.bountyHint": "5% de cada recompensa que ganas — se paga a quien te elimine",
+  "econ.hud.ticket": "Boleto {v}",
+  "econ.hud.ticketHint": "Valor publicitario real detrás de tu Boleto de Energía: lo que gana quien te elimine",
+  "econ.feed.kill": "{killer} eliminó a {victim} (+{v})",
+  "econ.feed.bounty": "incl. {v} de recompensa",
+  "econ.feed.chest": "{name} abrió un Cofre de recompensa (+{v})",
+  "econ.death.summary": "Esta ronda: {kills} bajas · {v}"
 }

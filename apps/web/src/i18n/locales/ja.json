@@ -887,5 +887,18 @@
   "admin.cashout.done.approve": "申請 {id} を承認しました",
   "admin.cashout.done.reject": "申請 {id} を却下し返金しました",
   "admin.cashout.done.rerun": "{id} を再審査しました",
-  "admin.cashout.pg.lagging": "同期中"
+  "admin.cashout.pg.lagging": "同期中",
+  "cheer2.rechargeOwn": "EC をチャージ",
+  "cheer2.creatorGot": "{name} さんが {v} を受け取りました",
+  "cheer2.backed": "あなたの EC は実際の広告価値 {v} に裏付けられています",
+  "cheer2.split": "配分: クリエイター 55% · そのチーム 15% · 懸賞金 5% · プラットフォーム 5% · あなたの EC 20%",
+  "econ.hud.roundEarned": "ラウンド獲得",
+  "econ.hud.headBounty": "懸賞金",
+  "econ.hud.bountyHint": "獲得した報酬の 5% — あなたを倒したプレイヤーに支払われます",
+  "econ.hud.ticket": "チケット {v}",
+  "econ.hud.ticketHint": "あなたのエナジーチケットを裏付ける実際の広告価値 — あなたを倒したプレイヤーが得る額",
+  "econ.feed.kill": "{killer} が {victim} を撃破 (+{v})",
+  "econ.feed.bounty": "懸賞金 {v} を含む",
+  "econ.feed.chest": "{name} が懸賞チェストを獲得 (+{v})",
+  "econ.death.summary": "このラウンド: {kills} キル · {v}"
 }

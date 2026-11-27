@@ -11,6 +11,7 @@
 2. **Stateless Game Servers with Zero DB Overhead:** เครื่อง Game Server (Mini PC / VPS) มีหน้าที่ประมวลผลฟิสิกส์ การยิง และสถานะห้องสดใน **RAM (Colyseus) และ Local Redis** เท่านั้น **ห้ามลงฐานข้อมูล PostgreSQL บนเครื่องเกม** เพื่อรักษาความเร็วระดับมิลลิวินาที ($< 20\text{ ms}$) และทำให้การขยับขยาย Node เกมทำได้ง่ายเพียงแค่สั่งรัน Docker Container เพิ่ม
 3. **Decoupled Financial Audit Log System:** ระบบบันทึก Log การเงิน (`logs_YYYY_MM`) แยกออกไปรันบน **Self-Hosted PostgreSQL** บนเครื่อง Mini PC / Ubuntu Server ผ่าน **Cloudflare Tunnel (`cloudflared`)** และมี **Cloudflare Queues** เป็นถังพักข้อมูลฉุกเฉิน หากไฟดับหรือเน็ตบ้านหลุด ข้อมูล Log จะไม่สูญหายแม้แต่บรรทัดเดียว
 4. **Micro-USD Precise Accounting:** ข้อมูลตัวเลขเงินทั้งหมดในฐานข้อมูล SQLite/D1 และ PostgreSQL จะถูกบันทึกเป็น **จำนวนเต็ม (Integer)** ในหน่วย **Micro-USD** ($1\text{ USD} = 1,000,000\text{ Micro-USD}$) ป้องกันปัญหาคลาดเคลื่อนของจุดทศนิยม ($Floating\ Point\ Error$) ในการคำนวณส่วนแบ่ง $5\%$ และ $95\%$
+5. **Zero-Deficit Ticket-Backed Economy (V1.1, 2026-11-27):** ระบบ **ไม่จ่ายเงินที่ไม่มีรายได้จริงรองรับแม้แต่ 1 Micro-USD** — ทุก Energy Ticket (EC) ถูกบันทึกเป็นแถวใน `user_energy_tickets` พร้อมมูลค่าที่รองรับจริง (`backed_micro_usd`) ซึ่งมาจากรายได้โฆษณาจริงหลังหัก **Safety Haircut 0.90–0.95 (ค่าเริ่มต้น 0.92, env `AD_SAFETY_MULTIPLIER`)** หรือดึงจาก Energy Pool ที่มีเงินอยู่จริง (ห้ามดึงเกินยอดคงเหลือ — เช็กใน SQL แบบ atomic) การฆ่าผู้เล่นได้มูลค่า **เท่ากับตั๋วของเหยื่อพอดี** (ไม่มีค่าหัวคงที่ $0.10 อีกต่อไป) แต่ละตั๋วถูกปิดบัญชี (settle) **ได้ครั้งเดียว** และผลรวมทุกการจ่าย ≤ มูลค่าที่รองรับเสมอ หน่วยแสดงผล **1 C = 100 Micro-USD** (ทศนิยม 2 ตำแหน่ง = 1 Micro-USD) ปัดเศษด้วยกฎ **0.007 C** (§7.1)
 
 ---
 
@@ -118,7 +119,40 @@ CREATE TABLE withdrawal_requests (
     processed_at INTEGER
 );
 CREATE INDEX idx_withdrawal_status ON withdrawal_requests(status);
+
+-- 6. (V1.1, migration 0021) Energy Ticket แบบมีมูลค่ารองรับ — 1 แถว = 1 EC
+--    users.energy_tickets = จำนวนแถว status 'available' (ซิงก์ในทุก batch ที่แก้ตั๋ว)
+CREATE TABLE user_energy_tickets (
+    id TEXT PRIMARY KEY,                          -- 'tkt_<uuid>' (อยู่ใน entry token ที่เซ็น HMAC: tid / tv)
+    user_id TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type IN ('ad_charge','cheer_pool','signup_promo','admin_grant')),
+    country_code TEXT NOT NULL DEFAULT 'GLOBAL',  -- request.cf.country ตอนชาร์จ
+    backed_micro_usd INTEGER NOT NULL CHECK (backed_micro_usd >= 0), -- มูลค่ารายได้จริงที่รองรับ (หลัง haircut)
+    status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available','in_match','settled')), -- CHECK นี้คือตัวกันจ่ายซ้ำ
+    match_id TEXT,                                -- arena_entries.id ตอนล็อกเข้าห้อง
+    created_at INTEGER NOT NULL,
+    consumed_at INTEGER,                          -- เวลาล็อกเข้าห้อง (POST /api/game/enter)
+    settled_at INTEGER,
+    settle_action TEXT,                           -- GAME_KILL | CHEST_OPEN | TICKET_FORFEIT[:reason] | STALE_FORFEIT | ADMIN_REVOKE
+    settled_to_user_id TEXT,                      -- ผู้ยิง / ผู้เปิดหีบ (NULL = เข้า Platform)
+    settled_micro_usd INTEGER,                    -- มูลค่าที่จ่ายผ่านสูตร 55/15/5/5/20
+    settle_ref TEXT                               -- game id
+);
+-- index: (user_id, status, created_at) ล็อกแบบ FIFO · (match_id) · (status, consumed_at) cron กวาดตั๋วค้าง
+
+-- 7. (V1.1) EC progress ที่ยังไม่ครบ 1 ตั๋ว ถือมูลค่ารองรับค้างไว้ที่นี่ (ไม่สูญ ไม่เสก)
+ALTER TABLE users ADD COLUMN pending_ec_micro_usd INTEGER NOT NULL DEFAULT 0;
+
+-- 8. (V1.1) ใบรับ payout id ของ item ที่ไม่ผูกกับตั๋ว (BOUNTY_CLAIM, AFK_FORFEIT) — ส่งซ้ำ = duplicate
+CREATE TABLE game_payout_receipts (
+    payout_id TEXT PRIMARY KEY,                   -- metadata.pid ของแต่ละ item
+    game_id TEXT,
+    created_at INTEGER NOT NULL
+);
 ```
+
+* **Backfill (0021):** EC เดิมของผู้ใช้แต่ละคนแปลงเป็นแถวตั๋ว ถ้า Energy Pool คงเหลือ (`energy_pool_micro_usd − energy_pool_drawn_micro_usd`) พอสำหรับทุกตั๋ว จะให้มูลค่า 1,800 Micro-USD/ตั๋ว (วิดีโอ 30 วินาทีที่ถูกที่สุดในตาราง eCPM 2,000 × 0.90, source `admin_grant`) และบวกเข้า `energy_pool_drawn_micro_usd` มิฉะนั้นทุกตั๋วเป็น 0 (`signup_promo` — เล่นได้แต่ฆ่าแล้วไม่มีเงิน)
+* **วงจรตั๋ว:** `available` → `/api/game/enter` ล็อกตั๋วเก่าสุด (FIFO) เป็น `in_match` และเซ็น `tid` + `tv` (backed) ลง entry token → `/api/game/batch-payout` ปิดเป็น `settled` ครั้งเดียว (guard `CASE … 'conflict'` ทำให้ทั้ง D1 batch rollback ถ้าตั๋วไม่ใช่ `in_match` ของเหยื่อคนนั้น)
 
 ### 4.2 Cloudflare D1: `chat_YYYY_MM`
 
@@ -219,9 +253,13 @@ $$\text{Calculated Balance} = \sum \text{Earnings (Game, Ads, MLM)} - \sum \text
 ## 7. สูตรแบ่งรายได้ / รางวัล 100% (Revenue / Reward Split) — อัปเดต 2026-11-25
 
 > แทนที่สูตรเดิม 75 / 15 / 5 / 5 (2026-11-23) ด้วยสูตร **55 / 15 / 5 / 5 / 20** ที่มีบ่อพลังงาน (Energy Recharge Reserve Pool)
+>
+> **V1.1 (2026-11-27):** ปัดเศษด้วยกฎ 0.007 C, มูลค่า Kill = ตั๋วของเหยื่อ (ไม่มี $0.10 คงที่), Safety Haircut 0.92, Cheer 55/15/5/5/20 โดย 20% รองรับ EC ของผู้ดู, แบนเนอร์สุ่ม 30–45 วินาที — ดู §7.5–§7.7
 
 ### 7.1 สูตรแบ่ง 100% ของมูลค่ารางวัล ($V$)
-สำหรับทุก **100%** ของรายได้โฆษณาที่ตรวจสอบแล้ว หรือมูลค่ารางวัล ($V$, หน่วย Micro-USD จำนวนเต็ม) เช่น ค่าหัวจากการยิง (Kill), หีบสมบัติ (Chest), การดูโฆษณา (Ad):
+สำหรับทุก **100%** ของรายได้โฆษณาที่ตรวจสอบแล้ว หรือมูลค่ารางวัล ($V$, หน่วย Micro-USD จำนวนเต็ม) เช่น มูลค่าตั๋วของเหยื่อเมื่อถูกยิง (Kill), หีบสมบัติจากการตาย (Chest = ตั๋วของผู้ตาย), การให้กำลังใจ (Cheer):
+
+> **กฎปัดเศษ V1.1 (0.007 C):** ทุกส่วนที่ไม่ใช่ Platform = `roundCoinShare(V, rate)` — ถ้าเศษ ≥ 0.7 Micro-USD (= 0.007 C) ปัดขึ้น ไม่ถึงปัดลง (คำนวณด้วย BigInt) Platform ได้ส่วนที่เหลือทั้งหมด (5% + ชั้นที่ขาด + เศษ) และ **ไม่ต่ำกว่า `floor(V × 5%)`** — ถ้าการปัดขึ้นทำให้ต่ำกว่านั้น จะตัด 1 Micro-USD จากส่วนที่ใหญ่ที่สุดจนกว่าจะไม่ต่ำกว่า ผลรวม = $V$ พอดีเสมอ (สูตร `Math.floor` ด้านล่างคือค่าเดิมก่อน V1.1 ใช้กับ V ที่หารลงตัว)
 
 1. **ผู้ยิง / ผู้ได้รับรางวัล (Shooter / Earner): $55\%$** — `Math.floor(V * 0.55)` เครดิตเข้ากระเป๋าผู้เล่นทันที
 2. **สายงาน 5 ชั้น (Uplines): $15\%$ รวม**
@@ -259,7 +297,8 @@ $V = 10.00\text{ USD} = 10,000,000\text{ Micro-USD}$ และมีสายง
 | **รวม** | **$100\%$** | **10,000,000** | **10.00** |
 
 *(ถ้ามีสายงานเพียงชั้นที่ 1–2 ส่วนของชั้นที่ 3–5 รวม $6\%$ = 600,000 จะเข้า Platform ทำให้ Platform ได้ $11\%$ = 1,100,000)*
-*(ตัวอย่างเศษ: $V = 333$ ครบ 5 ชั้น → 183 / 16·13·9·6·3 / 16 / 16 / 66 = 328 เศษ 5 เข้า Platform → Platform 21)*
+*(ตัวอย่างเศษ V1.1: $V = 333$ ครบ 5 ชั้น → ผู้ยิง 183 (183.15 ปัดลง) / ชั้น 16·13·**10**·6·3 (ชั้น 3 = 9.99 ปัดขึ้นตามกฎ 0.007 C) / ค่าหัว 16 / Energy Pool 66 → Platform 16 + เศษ 4 = **20** รวม 333)*
+*(ตัวอย่างตั๋วจริง: banner US 3,000 Micro-USD × 0.95 = 2,850 → ผู้ยิง 1,567 / ชั้น 142·114·85·57·28 / ค่าหัว 142 / Pool 570 / Platform 145 — แสดงผล "15.67 C ($0.0016)")*
 
 ### 7.3 Energy Ticket (EC) — ได้จากโฆษณาเท่านั้น — อัปเดต 2026-11-25
 
@@ -267,7 +306,7 @@ $V = 10.00\text{ USD} = 10,000,000\text{ Micro-USD}$ และมีสายง
 * **ไม่มีการชาร์จ EC อัตโนมัติ / รายชั่วโมง / ตามเวลา** ในทุกส่วน (`api-worker`, `game-server`, `web`) — ยกเลิก `ENERGY_RECHARGE_SECONDS` และ `secondsToNextRecharge` แล้ว
 * หลังสมัคร EC ได้จาก: วิดีโอรางวัล, impression แบนเนอร์ที่ตรวจแล้ว, การ "ให้กำลังใจ" (§7.4) หรือ Admin ปรับให้เท่านั้น
 * การฆ่าบอทในโหมด Practice / Solo Bot ได้ **0 EC และ 0 Micro-USD**
-* **แบนเนอร์** (Practice / Solo Bot และ Ghost Spectator): ทุก 20 วินาทีที่แท็บมองเห็น นับ 1 impression เพิ่ม EC % ตามมูลค่าแบนเนอร์เทียบกับวิดีโอ 30 วินาทีของประเทศเดียวกัน (100% = +1 EC)
+* **แบนเนอร์** (Practice / Solo Bot และ Ghost Spectator): ทุก **รอบสุ่ม 30–45 วินาที** (V1.1, `nextBannerIntervalSeconds()`, สุ่มใหม่ทุก impression) ที่แท็บมองเห็น นับ 1 impression — เซิร์ฟเวอร์บังคับระยะห่างขั้นต่ำ **28 วินาที** (`AD_BANNER_MIN_GAP_SECONDS`) และยังคงตัวกัน AFK 35 วินาที เพิ่ม EC % ตามมูลค่าแบนเนอร์เทียบกับวิดีโอ 30 วินาทีของประเทศเดียวกัน (100% = +1 EC)
 * **วิดีโอรางวัล**: 15 วินาที = +50%, 30 วินาที = +100% (1 EC)
 * **มูลค่าโฆษณา 3 ชั้น**: P1 ยอดจ่ายจริง → P2 ค่าเฉลี่ยเมื่อวาน (ประเทศ + รูปแบบ) → P3 ตาราง eCPM ตามประเทศ (`docs/AD_ECPM_BY_COUNTRY.md`)
 * ทุก ad event อยู่ใน `ad_impressions` และ EC ที่เพิ่มบันทึกเป็น `AD_EC_RECHARGE` ใน audit log มูลค่าโฆษณาที่ใช้ชาร์จ EC บันทึกเป็น `ENERGY_POOL_DRAW` และสะสมใน `system_balances.energy_pool_drawn_micro_usd`
@@ -281,12 +320,34 @@ $V = 10.00\text{ USD} = 10,000,000\text{ Micro-USD}$ และมีสายง
   * แบนเนอร์สปอนเซอร์ (Boost) 10 วินาที → EC % ตามมูลค่าแบนเนอร์ (ปิดได้ด้วย env `CHEER_DISABLED_FORMATS`)
   * แสดง "เหลือสิทธิ์วันนี้ X/15 ครั้ง" และสิทธิ์ต่อคนที่เหลือ ตัวเลือกที่ใช้ไม่ได้ถูกปิดพร้อมเหตุผล เมื่อครบโควตารายวันจะซ่อนตัวเลือกทั้งหมด
 * **การนับ (เซิร์ฟเวอร์เป็นคนจับเวลา):** `POST /api/ads/cheer/start` เปิด session ใน `ad_video_views` (purpose `cheer`) → ดูจนจบ → `POST /api/ads/cheer {viewId}` ถ้าเร็วกว่าเวลาโฆษณาได้ 425, ซ้ำได้ 409
-* เมื่อสำเร็จ: ผู้ให้กำลังใจได้ EC progress (`creditEcProgress`, log `AD_EC_RECHARGE`), เพิ่ม `social_posts.cheer_count` / `users.cheer_count` ของเจ้าของ, บันทึก `cheer_events` + `ad_impressions` (provider `mwar_cheer`) และ `ENERGY_POOL_DRAW`
+* เมื่อสำเร็จ: ผู้ให้กำลังใจได้ EC progress (`creditEcProgress`, log `AD_EC_RECHARGE`), เพิ่ม `social_posts.cheer_count` / `users.cheer_count` ของเจ้าของ, บันทึก `cheer_events` + `ad_impressions` (provider `mwar_cheer`) และ `ENERGY_POOL_DRAW` — การแบ่งเงิน V1.1 ดู §7.6
 * **กันบอท / จำกัดสิทธิ์ (บังคับใน D1 ด้วย INSERT … SELECT เงื่อนไขเดียว กันยิงพร้อมกัน):**
   1. คูลดาวน์อย่างน้อย **45 วินาที** ระหว่างการให้กำลังใจที่สำเร็จ (`CHEER_COOLDOWN_SECONDS`)
   2. สูงสุด **15 ครั้ง / ผู้ใช้ / วัน (UTC)** (`CHEER_DAILY_CAP`)
   3. สูงสุด **3 ครั้ง / ผู้ใช้ / ผู้สร้างคนเดียวกัน / วัน** นับรวมทุกโพสต์และโปรไฟล์ (`CHEER_PER_TARGET_DAILY_CAP`)
   4. ให้กำลังใจโพสต์ / โปรไฟล์ของตัวเองไม่ได้ (ใช้ปุ่มชาร์จพลังงานแทน), เปิด session ค้างได้ไม่เกิน 3 อันใน 2 นาที, session หมดอายุ 30 นาที
+     — V1.1: บังคับที่เซิร์ฟเวอร์ `POST /api/ads/cheer/start`, claim และ direct-link start/claim ตอบ **400 `SELF_CHEER`**; หน้าเว็บไม่แสดงปุ่มให้กำลังใจบนคอนเทนต์ของตัวเอง ไอคอนใหม่ "มือประคองหัวใจ" แทนนิ้วโป้ง
+
+### 7.5 Ticket-Backed Kill Economy (V1.1) — ใหม่ 2026-11-27
+
+* **มูลค่า Kill = `backed_micro_usd` ของตั๋วเหยื่อ ($V$)** ซึ่งเดินทางใน entry token ที่เซ็น HMAC (`tid`, `tv`) game server แนบ `ticketId` + `pid` (payout id ไม่ซ้ำ) ในทุก item
+* Worker (`/api/game/batch-payout`) ตรวจทุก `GAME_KILL` / `CHEST_OPEN` / `BOUNTY_CLAIM` กับแถวตั๋ว: ต้องเป็น `in_match` ของเหยื่อคนนั้น, ผู้รับต้องเข้าห้องภายใน 24 ชม., จ่าย `min(amount, backed)` (ส่วนเกินที่ server ขอมาไม่มีการจ่าย), settle ครั้งเดียว (ส่ง batch ซ้ำ / ขนานกัน = duplicate ไม่จ่ายซ้ำ), item ชนิดอื่น (เช่น `AD_WATCH`) ถูกปฏิเสธ
+* $V$ ถูกแบ่ง 55/15/5/5/20 ตาม §7.1 — ผู้ยิงได้ 55% ของตั๋วเหยื่อ (+ ค่าหัวสะสมของเหยื่อ)
+* **ตั๋วของคนที่ออก / ถูกเตะ AFK (การตัดสินใจ V1.1):** ตั๋ว `in_match` ของผู้เล่นที่ (ก) ออกจากห้องขณะยังมีชีวิตหลังหมดเวลา reconnect 20 วินาที, (ข) ถูกเตะ AFK, (ค) ย้ายไปที่นั่งผู้ชม, (ง) ถูกฆ่าแบบฮั้ว (Layer 3) หรือโดยผู้เล่นที่ไม่มีสิทธิ์รับเงิน (guest), (จ) ตายแล้วหีบไม่มีใครเปิด / หมดอายุ / เปิดหีบตัวเอง → **ถูกริบ (`TICKET_FORFEIT`) มูลค่าเข้า `system_balances.platform_micro_usd` และไม่คืน** (ตรงกับกฎเดิม: เข้าห้อง 1 ครั้ง = ใช้ 1 EC) ตั๋วที่ค้าง `in_match` เกิน 6 ชม. ถูก cron รายวันกวาดเข้า Platform (`STALE_FORFEIT`)
+* หลังตั๋วถูก settle ผู้เล่นยัง respawn ได้ในรอบเดียวกัน แต่การตายครั้งต่อไปมีมูลค่าตั๋ว 0 (ได้เฉพาะค่าหัวสะสม)
+* HUD แสดง Round Earned / Head Bounty / มูลค่าตั๋ว เป็น **C ทศนิยม 2 ตำแหน่ง + $** (`formatCoins2`, `formatUsdPrecise`)
+
+### 7.6 Safety Haircut & Cheer Split (V1.1)
+
+* **Safety Haircut:** มูลค่ารองรับ EC จากโฆษณาจริง = `floor(min(effective, gross ทางสถิติ) × AD_SAFETY_MULTIPLIER)` ช่วงที่ยอมรับ 0.90–0.95 (ค่าเริ่มต้น 0.92; ค่านอกช่วงถูก clamp) เช่น 3,000 → 2,760 (0.92) / 2,700–2,850
+* โฆษณา / Cheer แบบจำลอง (test mode) **ไม่สร้างเงินใหม่**: มูลค่ารองรับ EC ดึงจาก Energy Pool เฉพาะเมื่อมีคงเหลือพอ (เงื่อนไขอยู่ใน UPDATE เดียวกับการให้ EC — ไม่มีวันติดลบ)
+* **Cheer (ดูโฆษณาให้ผู้สร้าง):** มูลค่าโฆษณาหลัง haircut $V$ แบ่ง **55% ผู้สร้าง · 15% สายงานของผู้สร้าง · 5% ค่าหัว (ผู้สร้าง) · 5% Platform · 20% รองรับ EC ของผู้ดู** (`calculateCheerSplit()`, action `CHEER_REWARD`) — ส่วน 20% ผ่าน Energy Pool (เข้าและถูกดึงทันที, log `ENERGY_POOL_DRAW`) แล้วกลายเป็นตั๋ว `cheer_pool` ของผู้ดู ตัวอย่าง $V = 2,760$: ผู้สร้าง 1,518 / ชั้น 138·110·83·55·27 / ค่าหัว 138 / Platform 139 / EC ผู้ดู 552
+* EC progress (basis points) ที่ยังไม่ครบตั๋วเก็บมูลค่ารองรับไว้ใน `users.pending_ec_micro_usd` และแบ่งเข้าตั๋วที่ mint ตามสัดส่วน (`allocateEcProgress()`) — ผลรวมตั๋ว + pending = มูลค่าที่ได้รับเสมอ
+
+### 7.7 การทดสอบ (V1.1)
+
+* `pnpm --filter @mwar/shared test` — `packages/shared/test/ticket-economy.test.mjs` (กฎปัด 0.007 C, haircut, ตาราง eCPM × รูปแบบ × haircut × สายงาน, brute force V = 1–20,000 ว่ารวม = V และ Platform ≥ floor(5%), cheer split, `allocateEcProgress`, แบนเนอร์ 30–45 วินาที)
+* `scripts/load-test/run-load-and-security-test.mjs` — Part A: ทุก Kill/Chest = ตั๋วเหยื่อ, ทุกตั๋วปิดครั้งเดียว, จ่ายรวม ≤ มูลค่ารองรับ; Part B6 (กับ worker จริง): settle ครั้งเดียวแม้ส่ง batch ซ้ำ/ขนาน, ledger = balance, self-cheer 400, Energy Pool ไม่ติดลบ
 
 ---
 

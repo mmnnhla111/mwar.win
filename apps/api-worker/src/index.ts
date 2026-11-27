@@ -26,6 +26,7 @@ import { gamesRouter } from './routes/games';
 import { adminRouter } from './routes/admin';
 import { bootstrapHandler } from './routes/bootstrap';
 import { authMiddleware } from './middleware/auth';
+import { sweepStaleMatchTickets } from './utils/energy-tickets';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -181,6 +182,8 @@ export default {
     }
     await settleDailyMlm(env, yesterdayUtcDateKey());
     await releaseMarketplaceEscrow(env);
+    // V1.1: in_match tickets nobody settled for 6 h (game-server crash) → their backing to the platform
+    await sweepStaleMatchTickets(env).catch((e: unknown) => console.warn('[Cron] stale ticket sweep failed', e));
     await runRetentionJobs(env).catch((e: unknown) => console.warn('[Cron] retention failed', e));
     // Zero-bloat: finished moderation jobs (7 d), expired reset tokens, rejected posts + their R2 media
     await pruneModerationData(env).catch((e: unknown) => console.warn('[Cron] moderation prune failed', e));

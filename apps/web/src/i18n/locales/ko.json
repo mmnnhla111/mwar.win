@@ -887,5 +887,18 @@
   "admin.cashout.done.approve": "요청 {id} 승인됨",
   "admin.cashout.done.reject": "요청 {id} 거절 및 환불됨",
   "admin.cashout.done.rerun": "{id} 재심사 완료",
-  "admin.cashout.pg.lagging": "동기화 중"
+  "admin.cashout.pg.lagging": "동기화 중",
+  "cheer2.rechargeOwn": "EC 충전",
+  "cheer2.creatorGot": "{name}님이 {v}을(를) 받았어요",
+  "cheer2.backed": "내 EC는 실제 광고 수익 {v}로 보장돼요",
+  "cheer2.split": "분배: 크리에이터 55% · 그 팀 15% · 현상금 5% · 플랫폼 5% · 내 EC 20%",
+  "econ.hud.roundEarned": "이번 라운드 수익",
+  "econ.hud.headBounty": "현상금",
+  "econ.hud.bountyHint": "획득한 모든 보상의 5% — 나를 처치한 플레이어에게 지급",
+  "econ.hud.ticket": "티켓 {v}",
+  "econ.hud.ticketHint": "내 에너지 티켓을 뒷받침하는 실제 광고 가치 — 나를 처치한 플레이어가 받아요",
+  "econ.feed.kill": "{killer}님이 {victim}님을 처치 (+{v})",
+  "econ.feed.bounty": "현상금 {v} 포함",
+  "econ.feed.chest": "{name}님이 현상금 상자 획득 (+{v})",
+  "econ.death.summary": "이번 라운드: {kills}킬 · {v}"
 }

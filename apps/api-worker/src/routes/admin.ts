@@ -22,6 +22,7 @@ import { authMiddleware } from '../middleware/auth';
 import { requireStaff, getStaffRole, isEnvSuperAdmin } from '../middleware/staff';
 import { edgeCachePurge } from '../utils/edge-cache';
 import { GAMES_CACHE_KEYS, roomsCacheKey, rowToGame, rowToRoom } from './games';
+import { reconcileTicketRowsStmt, revokeSurplusTicketStmts } from '../utils/energy-tickets';
 
 /**
  * /api/admin — member directory + orphan marketplace listings, and the game / room registry.
@@ -175,7 +176,10 @@ adminRouter.patch('/members/:id', requireStaff([...STAFF_PERMISSIONS.membersWrit
   const stmts = [];
   if (ecDelta) {
     stmts.push(
-      c.env.DB.prepare('UPDATE users SET energy_tickets = MAX(0, MIN(?1, energy_tickets + ?2)) WHERE id = ?3').bind(MAX_ENERGY_TICKETS, ecDelta, id),
+      c.env.DB.prepare('UPDATE users SET energy_tickets = MAX(0, MIN(?1, COALESCE(energy_tickets, 0) + ?2)) WHERE id = ?3').bind(MAX_ENERGY_TICKETS, ecDelta, id),
+      // V1.1: ticket rows follow the count — granted EC is 0-backed ('admin_grant', never cash),
+      // removed EC revokes the lowest-value available rows (their backing → platform)
+      ...(ecDelta > 0 ? [reconcileTicketRowsStmt(c.env.DB, target.id, t, 'admin_grant')] : revokeSurplusTicketStmts(c.env.DB, target.id, t)),
       c.env.DB.prepare("INSERT INTO staff_audit_log (id, actor_id, target_id, action, old_value, new_value, created_at) VALUES (?1, ?2, ?3, 'ec_adjust', NULL, ?4, ?5)").bind(
         crypto.randomUUID(),
         me.userId,

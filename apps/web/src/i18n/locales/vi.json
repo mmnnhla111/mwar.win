@@ -887,5 +887,18 @@
   "admin.cashout.done.approve": "Đã duyệt yêu cầu {id}",
   "admin.cashout.done.reject": "Đã từ chối và hoàn tiền yêu cầu {id}",
   "admin.cashout.done.rerun": "Đã chạy lại kiểm tra {id}",
-  "admin.cashout.pg.lagging": "Đang đồng bộ"
+  "admin.cashout.pg.lagging": "Đang đồng bộ",
+  "cheer2.rechargeOwn": "Nạp EC",
+  "cheer2.creatorGot": "{name} đã nhận {v}",
+  "cheer2.backed": "EC của bạn được bảo chứng bởi {v} giá trị quảng cáo thật",
+  "cheer2.split": "Chia: 55% nhà sáng tạo · 15% đội của họ · 5% tiền thưởng đầu · 5% nền tảng · 20% EC của bạn",
+  "econ.hud.roundEarned": "Thu nhập vòng",
+  "econ.hud.headBounty": "Tiền thưởng đầu",
+  "econ.hud.bountyHint": "5% mỗi phần thưởng bạn nhận — trả cho người hạ gục bạn",
+  "econ.hud.ticket": "Vé {v}",
+  "econ.hud.ticketHint": "Giá trị quảng cáo thật sau Vé Năng lượng của bạn — người hạ gục bạn sẽ nhận được",
+  "econ.feed.kill": "{killer} hạ gục {victim} (+{v})",
+  "econ.feed.bounty": "gồm {v} tiền thưởng đầu",
+  "econ.feed.chest": "{name} đã nhận Rương thưởng (+{v})",
+  "econ.death.summary": "Vòng này: {kills} mạng · {v}"
 }

@@ -20,6 +20,7 @@ import { buildNetworkTree } from '../utils/mlm-tree';
 import { authMiddleware } from '../middleware/auth';
 import { sendMail } from '../utils/mailer';
 import { isLocalDev } from '../utils/guards';
+import { signupTicketStmt } from '../utils/energy-tickets';
 
 const sha256Hex = async (v: string) =>
   [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -379,6 +380,7 @@ authRouter.post('/whatsapp/verify-otp', async (c) => {
       c.env.DB.prepare(
         'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
       ).bind(userId, now),
+      signupTicketStmt(c.env.DB, userId, now), // V1.1: starter 1 EC = a 0-backed promo ticket
     ]);
 
     if (referrer_id) {
@@ -443,6 +445,7 @@ authRouter.post('/telegram', async (c) => {
       c.env.DB.prepare(
         'INSERT INTO wallets (user_id, balance_micro_usd, total_earned_micro_usd, total_withdrawn_micro_usd, updated_at) VALUES (?1, 0, 0, 0, ?2)'
       ).bind(userId, now),
+      signupTicketStmt(c.env.DB, userId, now), // V1.1: starter 1 EC = a 0-backed promo ticket
     ]);
 
     if (referrer_id) {

@@ -41,7 +41,8 @@ const PATHS = {
   lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3',
   sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z',
   menu: 'M4 7h16M4 12h16M4 17h16',
-  cheer: 'M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3zm0 0 3.6-6.3A1.8 1.8 0 0 1 14 5.6V9h4.6a2 2 0 0 1 2 2.3l-1.1 6.4A2.8 2.8 0 0 1 16.7 20H7',
+  // V1.1 Cheer / Support: an open hand holding a small heart + a sparkle (never a thumbs-up, never the Like heart)
+  cheer: 'M12 11.6s-3.6-2.2-3.6-4.8a2 2 0 0 1 3.6-1.3 2 2 0 0 1 3.6 1.3c0 2.6-3.6 4.8-3.6 4.8zM3 14.2h3.2l3 1.9h3.6a1.3 1.3 0 0 1 0 2.6H9.6M12.8 18.7l5.4-2.4a1.4 1.4 0 0 1 1.3 2.5L14 21.4H6.4L3 19.9M19 2.6l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z',
   megaphone: 'M4 10v4h3l7 4V6l-7 4zM17 9a4 4 0 0 1 0 6',
 } as const;
 

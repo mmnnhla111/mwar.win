@@ -887,5 +887,18 @@
   "admin.cashout.done.approve": "Request {id} approved",
   "admin.cashout.done.reject": "Request {id} rejected and refunded",
   "admin.cashout.done.rerun": "Audit re-run for {id}",
-  "admin.cashout.pg.lagging": "Still syncing"
+  "admin.cashout.pg.lagging": "Still syncing",
+  "cheer2.rechargeOwn": "Recharge EC",
+  "cheer2.creatorGot": "{name} received {v}",
+  "cheer2.backed": "Your EC is backed by {v} of real ad value",
+  "cheer2.split": "Split: 55% creator · 15% their team · 5% head bounty · 5% platform · 20% your EC",
+  "econ.hud.roundEarned": "Round Earned",
+  "econ.hud.headBounty": "Head Bounty",
+  "econ.hud.bountyHint": "5% of every reward you earn — paid to whoever eliminates you",
+  "econ.hud.ticket": "Ticket {v}",
+  "econ.hud.ticketHint": "Real ad value behind your Energy Ticket — what the player who eliminates you earns",
+  "econ.feed.kill": "{killer} eliminated {victim} (+{v})",
+  "econ.feed.bounty": "incl. {v} head bounty",
+  "econ.feed.chest": "{name} claimed a Bounty Chest (+{v})",
+  "econ.death.summary": "This round: {kills} kills · {v}"
 }

@@ -2,7 +2,7 @@
 
 /**
  * Ad Simulation Engine (client side).
- *  · SimulatedAdBanner — rotating simulated creatives in the bottom slot; every 20 s while the tab
+ *  · SimulatedAdBanner — rotating simulated creatives in the bottom slot; every random 30–45 s cycle while the tab
  *    is visible it reports one impression (POST /api/ads/simulate-view, format 'banner'), which
  *    adds EC Recharge % in proportion to the banner's ad value (100 % = +1 EC).
  *  · RewardedVideoModal — simulated 15 s / 30 s rewarded video with a countdown. The server opens a
@@ -12,7 +12,7 @@
  * country + format → Agy's country eCPM table in @mwar/shared.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { AD_BANNER_INTERVAL_SECONDS } from '@mwar/shared';
+import { nextBannerIntervalSeconds } from '@mwar/shared';
 import { apiFetch, getAuthToken } from '../../lib/api';
 
 export interface AdEcResult {
@@ -40,7 +40,7 @@ const CREATIVES = [
 /**
  * Completed banner impressions are batched: credited in one POST every BANNER_BATCH impressions,
  * or immediately when the player opens a video ad, deploys, hides the tab or leaves the page.
- * Keeps Worker / D1 requests ~5× lower than one request per 20 s banner.
+ * Keeps Worker / D1 requests ~5× lower than one request per banner cycle.
  */
 export const BANNER_BATCH = 5;
 const BANNER_BATCH_MAX = 10;
@@ -99,11 +99,14 @@ export function SimulatedAdBanner({ className, onResult }: { className?: string;
     const onHide = () => flushBannerImpressions({ keepalive: true });
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('pagehide', onHide);
-    // One verified impression per 20 s of continuous visibility
+    // One verified impression per randomized 30–45 s cycle of continuous visibility (re-rolled each cycle;
+    // the API gate needs >= 28 s between impressions, so the 500 ms tick slack can never trip it)
+    let cycleMs = nextBannerIntervalSeconds() * 1000;
     const tick = setInterval(() => {
       if (document.visibilityState !== 'visible' || !visibleSince) return;
-      if (Date.now() - visibleSince < AD_BANNER_INTERVAL_SECONDS * 1000 - 500) return;
+      if (Date.now() - visibleSince < cycleMs - 500) return;
       visibleSince = Date.now();
+      cycleMs = nextBannerIntervalSeconds() * 1000;
       // One creative per impression: the banner rotates only when its impression completes
       setI((x) => (x + 1) % CREATIVES.length);
       if (!getAuthToken()) return;

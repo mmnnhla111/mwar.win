@@ -77,7 +77,7 @@ export async function recordPendingMlmCommission(
   downlineUserId: string,
   depthLevel: number,
   amountMicroUsd: number,
-  sourceType: 'AD_WATCH' | 'GAME_KILL' | 'CHEST_OPEN',
+  sourceType: 'AD_WATCH' | 'GAME_KILL' | 'CHEST_OPEN' | 'CHEER_REWARD',
   dateKey = getUtcDateKey()
 ): Promise<{ id: string; status: string }> {
   const unlocked = await isUserMlmUnlocked(db, sponsorUserId, dateKey);

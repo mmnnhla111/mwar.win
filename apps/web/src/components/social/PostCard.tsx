@@ -341,6 +341,7 @@ export function PostCard({ post, onChange, onDelete }: { post: SocialPost; onCha
           <CheerButton
             targetType="post"
             targetId={post.id}
+            targetUserId={post.author.id}
             targetName={displayName(post.author)}
             count={post.cheerCount || 0}
             compactLabel

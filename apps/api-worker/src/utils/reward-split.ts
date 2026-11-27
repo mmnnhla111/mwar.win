@@ -1,4 +1,5 @@
 import { calculateRewardSplit, type FinancialLog } from '@mwar/shared';
+import type { D1PreparedStatement } from '@cloudflare/workers-types';
 import type { Env } from '../types';
 import { getUplines } from './mlm-tree';
 import { logFinancialTransaction, walletBalance } from './audit-logger';
@@ -22,9 +23,21 @@ export async function applyRewardSplit(
   opts: {
     earnerId: string;
     grossMicroUsd: number;
-    actionType: 'GAME_KILL' | 'CHEST_OPEN' | 'AD_WATCH';
+    actionType: 'GAME_KILL' | 'CHEST_OPEN' | 'AD_WATCH' | 'CHEER_REWARD';
     sourceId?: string | null;
     dateKey?: string;
+    /**
+     * V1.1: statements that must commit atomically with the money (e.g. the ticket settlement guard,
+     * which aborts the whole batch when the ticket was already settled). Run FIRST in the same batch.
+     */
+    guard?: D1PreparedStatement[];
+    /** Extra µUSD for the platform in the same batch (part of a ticket the game server did not claim). */
+    extraPlatformMicroUsd?: number;
+    /**
+     * Cheer: the 20 % Energy Pool slice is credited to the pool AND drawn at once as the viewer's EC
+     * backing (pool − drawn unchanged), so the cheer allocates exactly 100 % of V.
+     */
+    energyPoolPassThrough?: boolean;
   }
 ) {
   const dateKey = opts.dateKey ?? getUtcDateKey();
@@ -35,15 +48,19 @@ export async function applyRewardSplit(
   const bounty = Number(split.bountyMicroUsd);
 
   // 1. Earner 55 % + head bounty 5 % + Energy Pool 20 % + platform total (one atomic D1 batch)
+  const pool = Number(split.energyPoolMicroUsd);
+  const platform = Number(split.platformTotalMicroUsd) + Math.max(0, Math.floor(opts.extraPlatformMicroUsd ?? 0));
   await env.DB.batch([
+    ...(opts.guard ?? []),
     env.DB.prepare(
       'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, bounty_micro_usd = bounty_micro_usd + ?2, updated_at = ?3 WHERE user_id = ?4'
     ).bind(earner, bounty, now, opts.earnerId),
     ledgerAfterUpdate(env.DB, opts.earnerId, earner, opts.actionType, opts.sourceId ?? null, now),
     env.DB.prepare(
-      `INSERT INTO system_balances (id, energy_pool_micro_usd, platform_micro_usd, updated_at) VALUES ('global', ?1, ?2, ?3)
-       ON CONFLICT(id) DO UPDATE SET energy_pool_micro_usd = energy_pool_micro_usd + ?1, platform_micro_usd = platform_micro_usd + ?2, updated_at = ?3`
-    ).bind(Number(split.energyPoolMicroUsd), Number(split.platformTotalMicroUsd), now),
+      `INSERT INTO system_balances (id, energy_pool_micro_usd, energy_pool_drawn_micro_usd, platform_micro_usd, updated_at) VALUES ('global', ?1, ?4, ?2, ?3)
+       ON CONFLICT(id) DO UPDATE SET energy_pool_micro_usd = energy_pool_micro_usd + ?1, energy_pool_drawn_micro_usd = energy_pool_drawn_micro_usd + ?4,
+                                     platform_micro_usd = platform_micro_usd + ?2, updated_at = ?3`
+    ).bind(pool, platform, now, opts.energyPoolPassThrough ? pool : 0),
   ]);
 
   // 2. Upline 15 % into the daily grey/green ledger
@@ -79,7 +96,7 @@ export async function applyRewardSplit(
       transaction_id: `${base}_platform`,
       user_id: PLATFORM_ACCOUNT_ID,
       action_type: 'PLATFORM_FEE',
-      amount_micro_usd: split.platformTotalMicroUsd,
+      amount_micro_usd: BigInt(platform),
       balance_after_micro_usd: 0n,
       source_game_id: src,
       related_user_id: opts.earnerId,
@@ -93,6 +110,19 @@ export async function applyRewardSplit(
       source_game_id: src,
       related_user_id: opts.earnerId,
     },
+    ...(opts.energyPoolPassThrough && pool > 0
+      ? [
+          {
+            transaction_id: `${base}_energy_draw`,
+            user_id: ENERGY_POOL_ACCOUNT_ID,
+            action_type: 'ENERGY_POOL_DRAW' as const,
+            amount_micro_usd: split.energyPoolMicroUsd,
+            balance_after_micro_usd: 0n,
+            source_game_id: src,
+            related_user_id: opts.earnerId,
+          },
+        ]
+      : []),
     ...split.uplinePayouts.map((p) => ({
       transaction_id: `${base}_L${p.depth}`,
       user_id: p.userId,
@@ -110,8 +140,9 @@ export async function applyRewardSplit(
 
 /**
  * Transfers a victim's whole accumulated head bounty to the claimer (their killer, or whoever opened
- * the victim's suicide / environmental-death bounty chest). Compare-and-swap on the bounty so a
- * bounty can only ever be claimed once. Returns the amount credited.
+ * the victim's suicide / environmental-death bounty chest). One atomic D1 batch: compare-and-swap the
+ * bounty to 0, credit the claimer only if that CAS changed the row, ledger row only if the credit
+ * did — so a bounty can only ever be claimed once and is never lost half-way. Returns the amount credited.
  */
 export async function claimHeadBounty(env: Env, claimerId: string, victimId: string, sourceId?: string | null): Promise<number> {
   if (!victimId || claimerId === victimId) return 0;
@@ -119,14 +150,15 @@ export async function claimHeadBounty(env: Env, claimerId: string, victimId: str
   const amount = row?.bounty_micro_usd ?? 0;
   if (amount <= 0) return 0;
   const now = Math.floor(Date.now() / 1000);
-  const cas = await env.DB.prepare('UPDATE wallets SET bounty_micro_usd = 0, updated_at = ?3 WHERE user_id = ?1 AND bounty_micro_usd = ?2').bind(victimId, amount, now).run();
-  if ((cas.meta?.changes ?? 0) !== 1) return 0; // claimed concurrently
-  await env.DB.batch([
+  const res = await env.DB.batch([
+    env.DB.prepare('UPDATE wallets SET bounty_micro_usd = 0, updated_at = ?3 WHERE user_id = ?1 AND bounty_micro_usd = ?2').bind(victimId, amount, now),
     env.DB.prepare(
-      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
+      'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1'
     ).bind(amount, now, claimerId),
     ledgerAfterUpdate(env.DB, claimerId, amount, 'BOUNTY_CLAIM', `${victimId}:${sourceId ?? ''}`, now),
   ]);
+  if ((res[0].meta?.changes ?? 0) !== 1) return 0; // claimed concurrently
+  if ((res[1].meta?.changes ?? 0) !== 1) return 0; // claimer has no wallet row: the bounty is retired
   const base = `tx_bounty_${victimId.slice(0, 6)}_${claimerId.slice(0, 6)}_${now}_${rid()}`;
   const src = sourceId ? sourceId.slice(0, 64) : null;
   await logFinancialTransaction(env, {
