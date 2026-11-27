@@ -296,7 +296,6 @@ export default function GamePage() {
   const [portraits, setPortraits] = useState<Partial<Record<CharacterId, string>>>({});
   const [propMenu, setPropMenu] = useState<{ open: boolean; hover: number | null; cursor: { x: number; y: number } | null }>({ open: false, hover: null, cursor: null });
   const [currentProp, setCurrentProp] = useState<PropId | null>(null);
-  const { t } = useTranslation();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scoped, setScoped] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
