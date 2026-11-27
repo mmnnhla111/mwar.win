@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "Tu bote de banners pagó {v} a tu asesino",
   "rooms.offlineFeed": "Servidores en vivo desconectados: solo modo Práctica",
   "rooms.offline": "Los servidores en vivo están desconectados",
-  "rooms.offlineNotice": "Los servidores PvP en vivo están desconectados ahora. La Práctica sigue abierta."
+  "rooms.offlineNotice": "Los servidores PvP en vivo están desconectados ahora. La Práctica sigue abierta.",
+  "rejoin.title": "Tu personaje sigue en la arena",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "Disfrazado de objeto",
+  "rejoin.hp": "PV {hp}",
+  "rejoin.away": "Desconectado: sigue donde lo dejaste y aún pueden encontrarlo y derrotarlo.",
+  "rejoin.elsewhere": "Se está jugando ahora en otra pestaña o dispositivo.",
+  "rejoin.button": "Volver a entrar",
+  "rejoin.dismiss": "Ocultar esta tarjeta (tu personaje sigue en la partida)",
+  "rejoin.gone": "Tu personaje ya no está en esa partida. Volviendo al lobby…",
+  "rejoin.activeElsewhere": "Tu personaje sigue vivo en una partida: volviendo a entrar (sin gastar EC)",
+  "rejoin.feedResumed": "Has vuelto a tu personaje: mismo lugar, mismos PV, sin gastar EC",
+  "rejoin.replaced": "Este personaje se abrió en otra pestaña o dispositivo",
+  "rejoin.loadoutTitle": "Volviendo a tu personaje: conserva su lugar, su arma y su disfraz",
+  "rejoin.resume": "RETOMAR EL CONTROL",
+  "persist.enterFeed": "Si sales estando vivo, tu personaje se queda en la arena hasta que lo derroten: vuelve cuando quieras"
 }

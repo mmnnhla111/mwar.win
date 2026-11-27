@@ -1,5 +1,5 @@
 import type { D1PreparedStatement } from '@cloudflare/workers-types';
-import { calculateFastMiniSplit, splitFastMiniBanner, FAST_MINI_POT_STALE_SECONDS, EXP_PER_KILL } from '@mwar/shared';
+import { calculateFastMiniSplit, splitFastMiniBanner, FAST_MINI_POT_STALE_SECONDS, ACTIVE_SESSION_SWEEP_GRACE_SECONDS, EXP_PER_KILL } from '@mwar/shared';
 import type { Env } from '../types';
 import { ledgerAfterUpdate } from './ledger';
 import { logFinancialTransaction, walletBalance } from './audit-logger';
@@ -252,8 +252,13 @@ export async function closeFastMiniPot(env: Env, opts: { potId: unknown; userId?
 /** Daily cron: Fast & Mini pots left open for 6 h (game-server crash) are closed (open credits → platform). */
 export async function sweepStaleFastMiniPots(env: Env, now = nowSec()): Promise<{ pots: number; microUsd: number }> {
   const rows = await env.DB
-    .prepare("SELECT id FROM fast_mini_pots WHERE status = 'open' AND created_at < ?1 LIMIT 500")
-    .bind(now - FAST_MINI_POT_STALE_SECONDS)
+    // V1.1 R3: never the pot of a body still alive in a heart-beating room (it closes when that body dies / the room shuts down)
+    .prepare(
+      `SELECT id FROM fast_mini_pots WHERE status = 'open' AND created_at < ?1
+         AND NOT EXISTS (SELECT 1 FROM game_active_sessions s WHERE s.entry_id = fast_mini_pots.id AND s.ended_at IS NULL AND s.heartbeat_at >= ?2)
+       LIMIT 500`
+    )
+    .bind(now - FAST_MINI_POT_STALE_SECONDS, now - ACTIVE_SESSION_SWEEP_GRACE_SECONDS)
     .all<{ id: string }>();
   let pots = 0;
   let microUsd = 0;

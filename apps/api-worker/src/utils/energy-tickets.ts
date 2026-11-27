@@ -6,11 +6,13 @@ import {
   INITIAL_ENERGY_TICKETS,
   MAX_ENERGY_TICKETS,
   STALE_MATCH_TICKET_SECONDS,
+  ACTIVE_SESSION_SWEEP_GRACE_SECONDS,
   type EnergyTicketSource,
 } from '@mwar/shared';
 import type { Env } from '../types';
 import { logFinancialTransaction } from './audit-logger';
 import { ENERGY_POOL_ACCOUNT_ID, PLATFORM_ACCOUNT_ID } from './guards';
+import { LIVE_SESSION_GUARD_SQL } from './active-sessions';
 
 /**
  * V1.1 zero-deficit ticket-backed economy (D1 core_db, migration 0021).
@@ -239,24 +241,30 @@ export async function forfeitStake(env: Env, stake: VictimStake, victimId: strin
   return stake.backedMicroUsd;
 }
 
-/** Daily cron: in_match tickets nobody settled for 6 h (game-server crash) → forfeited to the platform. */
+/**
+ * Daily cron: in_match tickets nobody settled for 6 h (game-server crash) → forfeited to the platform.
+ * V1.1 R3: a ticket whose entry still has a heart-beating live session (a disconnected body that is still
+ * alive in a running room) is NOT swept — it is settled when that body actually dies or its room shuts
+ * down. Tickets of crashed rooms with a session row are returned first (returnCrashedSessionTickets).
+ */
 export async function sweepStaleMatchTickets(env: Env, now = nowSec()): Promise<{ tickets: number; microUsd: number }> {
   const cutoff = now - STALE_MATCH_TICKET_SECONDS;
+  const fresh = now - ACTIVE_SESSION_SWEEP_GRACE_SECONDS;
   const agg = await env.DB
-    .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(backed_micro_usd), 0) AS v FROM user_energy_tickets WHERE status = 'in_match' AND consumed_at < ?1")
-    .bind(cutoff)
+    .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(backed_micro_usd), 0) AS v FROM user_energy_tickets WHERE status = 'in_match' AND consumed_at < ?1 AND ?2 = ?2 AND ${LIVE_SESSION_GUARD_SQL}`)
+    .bind(cutoff, now, fresh)
     .first<{ n: number; v: number }>();
   if (!Number(agg?.n)) return { tickets: 0, microUsd: 0 };
   // One transaction: the platform gets exactly the backing of the rows flipped by the second statement
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE system_balances SET platform_micro_usd = platform_micro_usd
-         + (SELECT COALESCE(SUM(backed_micro_usd), 0) FROM user_energy_tickets WHERE status = 'in_match' AND consumed_at < ?1), updated_at = ?2
+         + (SELECT COALESCE(SUM(backed_micro_usd), 0) FROM user_energy_tickets WHERE status = 'in_match' AND consumed_at < ?1 AND ${LIVE_SESSION_GUARD_SQL}), updated_at = ?2
        WHERE id = 'global'`
-    ).bind(cutoff, now),
+    ).bind(cutoff, now, fresh),
     env.DB.prepare(
-      "UPDATE user_energy_tickets SET status = 'settled', settled_at = ?2, settle_action = 'STALE_FORFEIT', settled_micro_usd = 0 WHERE status = 'in_match' AND consumed_at < ?1"
-    ).bind(cutoff, now),
+      `UPDATE user_energy_tickets SET status = 'settled', settled_at = ?2, settle_action = 'STALE_FORFEIT', settled_micro_usd = 0 WHERE status = 'in_match' AND consumed_at < ?1 AND ${LIVE_SESSION_GUARD_SQL}`
+    ).bind(cutoff, now, fresh),
   ]);
   return { tickets: Number(agg?.n ?? 0), microUsd: Number(agg?.v ?? 0) };
 }
@@ -393,20 +401,26 @@ export async function ticketSummary(db: D1Database, userId: string) {
  * V1.1 R2 TICKET_RETURN: a "Play again (-1 EC)" ticket the game room could not use (the player was
  * already alive again / had left) goes back to available, and its unused restake entry is removed so the
  * same life can be re-staked. Only a fully in_match stake of `userId` locked by entry `entryId` qualifies.
+ * V1.1 R3 room-shutdown rule: the game server also RETURNS the ticket of a body that was still alive when its
+ * room shut down / the server restarted (reason room_shutdown, keepEntry) — no outcome happened, so the
+ * stake is neither paid nor forfeited. Each stake returns at most once (in_match guard).
  * Returns the number of tickets returned (0 = nothing to do / duplicate).
  */
-export async function returnUnusedStake(env: Env, ticketId: unknown, userId: string, entryId: unknown): Promise<number> {
+export async function returnUnusedStake(env: Env, ticketId: unknown, userId: string, entryId: unknown, opts: { keepEntry?: boolean; reason?: string } = {}): Promise<number> {
   const stake = await loadVictimStake(env.DB, ticketId, userId);
   if (!stake || stake.rows === 0 || stake.inMatch !== stake.rows || typeof entryId !== 'string' || stake.matchId !== entryId) return 0;
   const res = await env.DB.batch([
     env.DB.prepare("UPDATE user_energy_tickets SET status = 'available', match_id = NULL, consumed_at = NULL WHERE match_id = ?1 AND user_id = ?2 AND status = 'in_match'").bind(entryId, userId),
     env.DB.prepare("UPDATE users SET energy_tickets = (SELECT COUNT(*) FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available') WHERE id = ?1").bind(userId),
-    env.DB.prepare('DELETE FROM arena_entries WHERE id = ?1 AND user_id = ?2 AND prev_entry_id IS NOT NULL').bind(entryId, userId),
+    // R3 room_shutdown: the entry really was played (its body was alive when the room closed) → keep its row
+    opts.keepEntry
+      ? env.DB.prepare('SELECT 1')
+      : env.DB.prepare('DELETE FROM arena_entries WHERE id = ?1 AND user_id = ?2 AND prev_entry_id IS NOT NULL').bind(entryId, userId),
   ]);
   const n = res[0].meta?.changes ?? 0;
   if (n > 0) {
     await logFinancialTransaction(env, {
-      transaction_id: `tx_tkt_return_${entryId.slice(0, 18)}_${nowSec()}`,
+      transaction_id: `tx_tkt_return_${opts.reason ? `${opts.reason.slice(0, 12)}_` : ''}${entryId.slice(0, 18)}_${nowSec()}`,
       user_id: userId,
       action_type: 'TICKET_RETURN',
       amount_micro_usd: BigInt(stake.backedMicroUsd),

@@ -17,6 +17,12 @@
  *     tokens are returned), free seats press "Play again" (player_respawn, ≥ 3 s). Fast & Mini room: `fm`
  *     tokens, no tickets, kills queue FAST_MINI_KILL naming the VICTIM's pot (the Worker decides the
  *     amount), one FAST_MINI_CLOSE per pot, no head bounty.
+ *     V1.1 R3 (persistent bodies): an alive staked player who leaves keeps a body in the arena (prop kept);
+ *     the live session is reported to the Worker in the batch envelope; signed rejoin tokens (forged /
+ *     other room / other account / expired / entry token refused) re-attach to the same body with no new
+ *     ticket; a second connection takes over; killing the body pays exactly a live kill (ticket + bounty,
+ *     once); alive bodies get their ticket RETURNED once when the room shuts down (body-only TTL 5 s here).
+ *     Waves: bots leaving alive stay as bodies, nothing is forfeited on leave, tickets return at shutdown.
  *   - Wave 1: --players (default 1,000) bots across mini_30 / standard_100 / fast_mini rooms in
  *     worker threads. Every bot moves at 10 Hz and fires at 2 Hz (35 % hit). Checks 20 Hz tick + patch
  *     stability (server side), event-loop delay, client patch intervals, and that every paid kill /
@@ -327,7 +333,7 @@ if (isMainThread) {
     const secret = OPT.gameUrl ? process.env.INTERNAL_API_SECRET || 'local-dev-internal-game-secret-2026' : crypto.randomBytes(24).toString('hex');
 
     // ---- mock Worker API: batch payouts + room registry -----------------------------------------
-    const mock = { requests: 0, badSecret: 0, injected503: 0, items: [], byGame: new Map(), seenGames: new Set(), lastAt: 0 };
+    const mock = { requests: 0, badSecret: 0, injected503: 0, items: [], byGame: new Map(), seenGames: new Set(), lastAt: 0, sessionUpserts: [], sessionEnds: [], sessionReports: 0, lastItemAt: 0 };
     const mockServer = createServer((req, res) => {
       let body = '';
       req.on('data', (c) => (body += c));
@@ -348,6 +354,8 @@ if (isMainThread) {
             res.writeHead(401);
             return res.end('{}');
           }
+          // Quiet detection ignores pure session heartbeats (rooms holding bodies report every 10 s)
+          if ((j.payouts || []).length || j.sessions?.end?.length) mock.lastItemAt = Date.now();
           // The first batch of every game fails → the room must re-queue and resend it
           if (!mock.seenGames.has(j.gameId)) {
             mock.seenGames.add(j.gameId);
@@ -356,6 +364,12 @@ if (isMainThread) {
             return res.end('{}');
           }
           const fastMini = [];
+          // V1.1 R3: live-session report riding along with the batch (snapshot upserts + ends + room heartbeat)
+          if (j.sessions) {
+            mock.sessionReports++;
+            for (const u of j.sessions.upsert || []) mock.sessionUpserts.push({ ...u, roomId: j.sessions.roomId, gameId: j.gameId, at: Date.now() });
+            for (const e of j.sessions.end || []) mock.sessionEnds.push({ ...e, roomId: j.sessions.roomId, gameId: j.gameId, at: Date.now() });
+          }
           for (const it of j.payouts || []) {
             mock.items.push({ ...it, gameId: j.gameId });
             const g = mock.byGame.get(j.gameId) || [];
@@ -384,7 +398,8 @@ if (isMainThread) {
       const profArgs = args['server-cpu-prof'] ? ['--cpu-prof', `--cpu-prof-dir=${path.resolve(String(args['server-cpu-prof']))}`] : [];
       const child = spawn(process.execPath, [...profArgs, '--expose-gc', '--max-old-space-size=4096', '--require', path.join(HERE, 'server-probe.cjs'), '--import', 'tsx', 'src/index.ts'], {
         cwd: gsDir,
-        env: { ...process.env, GAME_PORT: String(port), PORT: String(port), WORKER_API_URL: mockUrl, API_BASE_URL: mockUrl, INTERNAL_API_SECRET: secret, REDIS_URL: 'disabled', NODE_ENV: 'production' },
+        // V1.1 R3: rooms that only hold disconnected bodies shut down after 5 s here (30 min in production)
+        env: { ...process.env, GAME_PORT: String(port), PORT: String(port), WORKER_API_URL: mockUrl, API_BASE_URL: mockUrl, INTERNAL_API_SECRET: secret, REDIS_URL: 'disabled', NODE_ENV: 'production', BODY_ONLY_ROOM_TTL_SECONDS: '5', GAME_PUBLIC_URL: `ws://127.0.0.1:${port}` },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       children.push(child);
@@ -430,6 +445,8 @@ if (isMainThread) {
     await combatValidation(url, secret, mock);
     // ---- A1b. V1.1 R2 Fast & Mini validation room ------------------------------------------------
     await fastMiniValidation(url, secret, mock);
+    // ---- A1c. V1.1 R3 disconnected bodies + Rejoin ------------------------------------------------
+    await persistenceValidation(url, secret, mock);
 
     // Wait until the validation room is disposed and its payouts settled
     await settle(mock, 12_000);
@@ -455,7 +472,8 @@ if (isMainThread) {
 
     // Anything odd in the server log
     if (probe) {
-      const errs = probe.log.filter((l) => /Error|Unhandled|ERR_/i.test(l) && !/registry refresh/i.test(l));
+      // (R3: the refused Rejoin attempts of A1c are expected — Colyseus prints every refused join)
+      const errs = probe.log.filter((l) => /Error|Unhandled|ERR_/i.test(l) && !/registry refresh/i.test(l) && !/Error: (Invalid rejoin token|Your character is no longer in this match)\n/.test(l + '\n'));
       check('game', 'no errors in the game server log', errs.length === 0, errs.slice(0, 3).join(' | '));
       metrics.serverLogWarnings = {
         antiCheatL2: probe.log.filter((l) => l.includes('[AntiCheat L2]')).length,
@@ -625,11 +643,21 @@ if (isMainThread) {
       fTid(T.A.tid).length === 1 && fTid(T.A.tid)[0].metadata?.reason === 'collusion' && fTid(T.D.tid).length === 1 && fTid(T.D.tid)[0].userId === uidD,
       forfeits.map((f) => `${f.userId === uidA ? 'A' : f.userId === uidD ? 'D' : f.userId === uidV ? 'V' : '?'}:${f.metadata?.reason}`).join(', ')
     );
+    // V1.1 R3: V left ALIVE → its body stayed in the arena (never forfeited on leave); the room then held only
+    // that body, shut down after the body-only TTL and RETURNED the ticket (room-shutdown rule) — exactly once
+    const rShutdown = returns.filter((r) => r.metadata?.ticketId === R.tid);
+    const rRefused = returns.filter((r) => r.metadata?.ticketId === R2t.tid);
     check(
       S,
-      'R2: the re-staked ticket is closed once (V left alive → forfeited) and the refused second ticket is RETURNED, never paid',
-      forfeits.length === 3 && fTid(R.tid).length === 1 && fTid(R.tid)[0].metadata?.reason === 'left' && returns.length === 1 && returns[0].metadata?.ticketId === R2t.tid && returns[0].metadata?.entryId === R2t.eid && returns[0].userId === uidV,
-      `${forfeits.length} forfeits · ${returns.length} returns`
+      'R2: the refused second "Play again" ticket is RETURNED (not_dead), never paid',
+      rRefused.length === 1 && rRefused[0].metadata?.entryId === R2t.eid && rRefused[0].metadata?.reason === 'not_dead' && rRefused[0].userId === uidV,
+      `${returns.length} returns`
+    );
+    check(
+      S,
+      'R3: V left alive → no forfeit on leave; its body stayed until the room shut down and the re-staked ticket was RETURNED once (room_shutdown)',
+      forfeits.length === 2 && fTid(R.tid).length === 0 && rShutdown.length === 1 && rShutdown[0].metadata?.reason === 'room_shutdown' && rShutdown[0].metadata?.entryId === R.eid && rShutdown[0].userId === uidV && returns.length === 2,
+      `${forfeits.length} forfeits · returns ${returns.map((r) => r.metadata?.reason).join(',')}`
     );
     const pids = mine.map((m) => m.metadata?.pid);
     check(S, 'V1.1: every payout item carries a unique payout id (Worker de-duplicates re-sent batches)', pids.every((x) => typeof x === 'string') && new Set(pids).size === pids.length);
@@ -684,11 +712,183 @@ if (isMainThread) {
     mock.fastMiniReply = null;
   }
 
+  /**
+   * V1.1 R3 — an alive Paid-EC seat that leaves stays in the arena as a body (exact position, HP, hitbox, prop
+   * disguise, ticket value, head bounty): killable for exactly what a live kill pays, never AFK-kicked, never
+   * forfeited on leave. Rejoin (Worker-signed token, here minted with the shared secret) re-attaches the same
+   * body without a new ticket; a second connection takes the body over (never a duplicate). A room holding
+   * only bodies shuts down after the body-only TTL and RETURNS the alive bodies' tickets (room-shutdown rule).
+   */
+  async function persistenceValidation(url, secret, mock) {
+    const S = 'persist';
+    const P = { uid: uuid(), eid: uuid(), tid: `tkt_${uuid()}`, tv: 13800, bty: 4321 };
+    const K = { uid: uuid(), eid: uuid(), tid: `tkt_${uuid()}`, tv: 2760 };
+    const Q = { uid: uuid(), eid: uuid(), tid: `tkt_${uuid()}`, tv: 7820 };
+    const rejoinTok = (sec, { uid, eid, rid, exp = Math.floor(Date.now() / 1000) + 120, rj = 1 }) => {
+      const body = Buffer.from(JSON.stringify({ uid, un: 'lt_r3', eid, rid, ...(rj ? { rj } : {}), exp })).toString('base64url');
+      return `${body}.${crypto.createHmac('sha256', sec).update(body).digest('hex')}`;
+    };
+    const cl = (ip) => new Client(url, { headers: { 'x-forwarded-for': ip } });
+    const k = await cl('198.51.100.60').create('mini_30', { entryToken: mintEntryToken(secret, { uid: K.uid, un: 'lt_r3_killer', eid: K.eid, tid: K.tid, tv: K.tv }), deviceId: 'dev-r3-k' });
+    const kills = [];
+    k.onMessage('*', (type, msg) => type === 'player_killed' && kills.push(msg));
+    const p1 = await cl('198.51.100.61').joinById(k.roomId, { entryToken: mintEntryToken(secret, { uid: P.uid, un: 'lt_r3_prop', eid: P.eid, tid: P.tid, tv: P.tv, bty: P.bty }), deviceId: 'dev-r3-p' });
+    p1.onMessage('*', () => {});
+    await sleep(500);
+    const bodies = (uid) => {
+      const out = [];
+      k.state.players.forEach((p, sid) => p.id === uid && out.push({ sid, p }));
+      return out;
+    };
+    const me = bodies(P.uid)[0]?.p;
+    p1.send('player_move', { x: me.x + 0.6, y: me.y, z: me.z + 0.4, rotationY: 1.25, stance: 'stand' });
+    await sleep(200);
+    p1.send('player_set_prop', { isProp: true, propType: 'oil_drum' });
+    await sleep(400);
+    const bp0 = bodies(P.uid)[0].p;
+    const before = { x: bp0.x, z: bp0.z };
+    const countBefore = k.state.players.size;
+    // Socket loss (not a consented leave): the server must keep the body exactly as it was
+    p1.leave(false);
+    await sleep(900);
+    const b1 = bodies(P.uid);
+    const bp = b1[0]?.p;
+    check(
+      S,
+      'R3: alive Paid-EC player disconnects → body stays in the arena, still disguised as the same prop at the same spot (HP, ticket, bounty kept)',
+      b1.length === 1 && bp.isProp === true && bp.propType === 'oil_drum' && bp.x === before.x && bp.z === before.z && bp.health === 100 && bp.ticketMicroUsd === P.tv && bp.bountyMicroUsd === P.bty && !bp.isGhost,
+      `${b1.length} body · prop ${bp?.isProp}/${bp?.propType} · (${bp?.x},${bp?.z}) vs (${before.x},${before.z}) · hp ${bp?.health} · ticket ${bp?.ticketMicroUsd} · bounty ${bp?.bountyMicroUsd}`
+    );
+    // The Worker gets the disconnected, prop-hidden live session (first batch of a game is answered 503 → retried)
+    const t0 = Date.now();
+    const snap = () => mock.sessionUpserts.find((u) => u.entryId === P.eid && u.isDisconnected && u.isPropHidden);
+    while (!snap() && Date.now() - t0 < 25_000) await sleep(250);
+    const sn = snap();
+    check(S, 'R3: live session reported to the Worker: { roomId, mode, mapName, hp, isPropHidden, isDisconnected, enteredAt }', !!sn && sn.roomId === k.roomId && sn.mode === 'mini_30' && sn.mapName === 'small' && sn.hp === 100 && sn.propType === 'oil_drum' && sn.ticketId === P.tid && sn.lifeStartedAt > 0, JSON.stringify(sn || {}).slice(0, 220));
+    check(S, 'R3: nothing settled or forfeited on disconnect', !mock.items.some((it) => it.metadata?.ticketId === P.tid));
+
+    // ---- Rejoin: only a valid signed token for this room + this alive life re-attaches -------------------
+    const tryJoin = async (opts) => {
+      try {
+        const r = await cl('198.51.100.62').joinById(k.roomId, opts);
+        r.onMessage('*', () => {});
+        return r;
+      } catch (e) {
+        return { error: String(e?.message || e) };
+      }
+    };
+    const bad = [
+      await tryJoin({ rejoinToken: rejoinTok('not-the-server-secret', { uid: P.uid, eid: P.eid, rid: k.roomId }) }),
+      await tryJoin({ rejoinToken: rejoinTok(secret, { uid: P.uid, eid: P.eid, rid: 'another-room' }) }),
+      await tryJoin({ rejoinToken: rejoinTok(secret, { uid: K.uid, eid: P.eid, rid: k.roomId }) }), // another account
+      await tryJoin({ rejoinToken: rejoinTok(secret, { uid: P.uid, eid: P.eid, rid: k.roomId, exp: Math.floor(Date.now() / 1000) - 5 }) }),
+      await tryJoin({ rejoinToken: mintEntryToken(secret, { uid: P.uid, un: 'x', eid: P.eid, tid: P.tid, tv: P.tv }) }), // an entry token is not a rejoin token
+    ];
+    check(S, 'R3: forged / other-room / other-account / expired / entry-token Rejoin attempts are refused', bad.every((b) => b.error) && bodies(P.uid).length === 1, bad.map((b) => (b.error ? 'refused' : 'JOINED')).join(','));
+    const asEntry = await tryJoin({ entryToken: rejoinTok(secret, { uid: P.uid, eid: P.eid, rid: k.roomId }), deviceId: 'dev-r3-x' });
+    await sleep(300);
+    const asEntryP = asEntry.sessionId ? k.state.players.get(asEntry.sessionId) : null;
+    check(S, 'R3: a Rejoin token used as an entry token only gets a guest seat (no stake, no identity)', !!asEntryP && asEntryP.id.startsWith('guest_') && asEntryP.ticketMicroUsd === 0, asEntryP?.id);
+    if (asEntry.leave) await asEntry.leave(true);
+    await sleep(300);
+
+    const tokP = rejoinTok(secret, { uid: P.uid, eid: P.eid, rid: k.roomId });
+    const r1 = await cl('198.51.100.63').joinById(k.roomId, { rejoinToken: tokP, deviceId: 'dev-r3-p' });
+    const r1Box = [];
+    r1.onMessage('*', (type, msg) => r1Box.push({ type, msg }));
+    let r1Left = false;
+    r1.onLeave(() => (r1Left = true));
+    const t1 = Date.now();
+    while (!r1Box.some((m) => m.type === 'rejoined') && Date.now() - t1 < 3000) await sleep(50);
+    await sleep(300);
+    const rj = r1Box.find((m) => m.type === 'rejoined')?.msg;
+    const b2 = bodies(P.uid);
+    check(
+      S,
+      'R3: Rejoin re-attaches the SAME body (same spot, still the oil-drum prop, same HP / ticket / bounty) — no duplicate entity',
+      !!rj && rj.isProp === true && rj.propType === 'oil_drum' && rj.x === before.x && rj.z === before.z && rj.health === 100 && rj.ticketMicroUsd === P.tv && rj.entryId === P.eid && b2.length === 1 && b2[0].sid === r1.sessionId && k.state.players.size === countBefore,
+      `rejoined ${JSON.stringify(rj || {}).slice(0, 140)} · bodies ${b2.length} · players ${k.state.players.size}/${countBefore}`
+    );
+    check(S, 'R3: Rejoin uses no new EC ticket (no ticket / payout item for the player)', !mock.items.some((it) => it.userId === P.uid || it.metadata?.ticketId === P.tid));
+    // A second concurrent connection for the same body: it takes over, the first one is closed — still ONE body
+    const r2 = await cl('198.51.100.64').joinById(k.roomId, { rejoinToken: tokP, deviceId: 'dev-r3-p' });
+    r2.onMessage('*', () => {});
+    await sleep(700);
+    const b3 = bodies(P.uid);
+    check(S, 'R3: a second concurrent connection takes the body over (old one closed with session_replaced) — never a second body', b3.length === 1 && b3[0].sid === r2.sessionId && r1Left && r1Box.some((m) => m.type === 'session_replaced') && k.state.players.size === countBefore, `bodies ${b3.length} · first closed ${r1Left}`);
+    // Consented leave (navigation / tab close) while alive → body again
+    await r2.leave(true);
+    await sleep(600);
+    const b4 = bodies(P.uid);
+    check(S, 'R3: consented leave while alive → body stays too (prop kept)', b4.length === 1 && b4[0].p.isProp && b4[0].p.propType === 'oil_drum' && !b4[0].p.isGhost);
+
+    // ---- Another player finds and kills the body: exactly the live-kill payout --------------------------
+    const target = b4[0];
+    let kp = bodies(K.uid)[0].p;
+    for (let i = 0; i < 200; i++) {
+      const dx = target.p.x + 2 - kp.x;
+      const dz = target.p.z - kp.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.5) break;
+      const step = Math.min(1.4, d);
+      k.send('player_move', { x: kp.x + (dx / d) * step, y: target.p.y, z: kp.z + (dz / d) * step, rotationY: 0, stance: 'stand' });
+      await sleep(110);
+      kp = bodies(K.uid)[0].p;
+    }
+    for (let i = 0; i < 4 && !bodies(P.uid)[0]?.p.isGhost && bodies(P.uid).length; i++) {
+      k.send('player_shoot', { targetType: 'player', targetId: target.sid, damage: 68, headshot: true });
+      await sleep(200);
+    }
+    await sleep(300);
+    const kk = kills.find((m) => m.victimId === P.uid);
+    check(
+      S,
+      'R3: killing the disconnected prop body pays exactly a live kill: ticket value V (55 % shown) + the whole head bounty',
+      !!kk && kk.killerId === K.uid && Number(kk.ticketMicroUsd) === P.tv && Number(kk.bountyClaimedMicroUsd) === P.bty && Number(kk.rewardMicroUsd) === earnerShare(P.tv) + P.bty,
+      JSON.stringify(kk || {}).slice(0, 200)
+    );
+    await sleep(2600);
+    check(S, 'R3: the dead disconnected body is removed from the arena afterwards', bodies(P.uid).length === 0);
+    const lateRejoin = await tryJoin({ rejoinToken: rejoinTok(secret, { uid: P.uid, eid: P.eid, rid: k.roomId }) });
+    check(S, 'R3: Rejoin after the death is refused (nothing left to control)', !!lateRejoin.error, lateRejoin.error || 'joined');
+
+    // ---- Room-shutdown rule: only bodies left → TTL → alive bodies' tickets RETURNED ------------------
+    const q = await cl('198.51.100.65').joinById(k.roomId, { entryToken: mintEntryToken(secret, { uid: Q.uid, un: 'lt_r3_q', eid: Q.eid, tid: Q.tid, tv: Q.tv }), deviceId: 'dev-r3-q' });
+    q.onMessage('*', () => {});
+    await sleep(400);
+    await q.leave(true);
+    await k.leave(true); // the killer leaves alive too → body
+    await sleep(400);
+    const rooms = await fetch(url.replace(/^ws/, 'http') + '/rooms').then((r) => r.json()).catch(() => null);
+    check(S, 'R3: with no client connected the room keeps its 2 alive bodies (not disposed at once)', Number(rooms?.modes?.mini_30?.players) >= 2, JSON.stringify(rooms?.modes?.mini_30 || {}).slice(0, 160));
+    await settle(mock, 12_000);
+    const mine = mock.items.filter((it) => [P.uid, K.uid, Q.uid].includes(it.userId) || [P.tid, K.tid, Q.tid].includes(it.metadata?.ticketId));
+    const ofTid = (tid) => mine.filter((it) => it.metadata?.ticketId === tid);
+    const pItems = ofTid(P.tid);
+    const gk = pItems.filter((it) => it.actionType === 'GAME_KILL');
+    const bc = pItems.filter((it) => it.actionType === 'BOUNTY_CLAIM');
+    check(
+      S,
+      'R3: settlement only at the actual death — one GAME_KILL (K, V = P\'s ticket) + one BOUNTY_CLAIM, no forfeit / return for P',
+      pItems.length === 2 && gk.length === 1 && gk[0].userId === K.uid && Number(gk[0].amountMicroUsd) === P.tv && gk[0].metadata?.victimId === P.uid && bc.length === 1 && bc[0].userId === K.uid && Number(bc[0].amountMicroUsd) === P.bty,
+      pItems.map((it) => `${it.actionType}:${it.amountMicroUsd}`).join(', ')
+    );
+    const kq = [...ofTid(K.tid), ...ofTid(Q.tid)];
+    check(
+      S,
+      'R3: room-shutdown rule — the alive bodies\' tickets are RETURNED exactly once each (never paid, never forfeited)',
+      kq.length === 2 && kq.every((it) => it.actionType === 'TICKET_RETURN' && it.metadata?.reason === 'room_shutdown') && new Set(kq.map((it) => it.metadata?.ticketId)).size === 2 && ofTid(K.tid)[0]?.metadata?.entryId === K.eid,
+      kq.map((it) => `${it.actionType}:${it.metadata?.reason}`).join(', ')
+    );
+    const endOf = (eid) => mock.sessionEnds.filter((e) => e.entryId === eid);
+    check(S, 'R3: live sessions end exactly at the death (P: died) / room shutdown (K, Q)', endOf(P.eid).length === 1 && endOf(P.eid)[0].reason === 'died' && endOf(K.eid)[0]?.reason === 'room_shutdown' && endOf(Q.eid)[0]?.reason === 'room_shutdown', ['P', 'K', 'Q'].map((n, i) => `${n}:${endOf([P.eid, K.eid, Q.eid][i]).map((e) => e.reason).join('/')}`).join(' '));
+  }
+
   /** Wait until no payout request arrived for 3 s (and at least minMs passed). */
   async function settle(mock, minMs) {
     const t0 = Date.now();
     await sleep(minMs);
-    while (Date.now() - mock.lastAt < 3000 && Date.now() - t0 < 60_000) await sleep(500);
+    while (Date.now() - mock.lastItemAt < 3000 && Date.now() - t0 < 60_000) await sleep(500);
   }
 
   async function runWave(url, secret, mock, players, durationSec, label, probe, probeCmd) {
@@ -787,7 +987,12 @@ if (isMainThread) {
 
     workers.forEach((w) => w.postMessage('leave'));
     await waitFor('left', 30_000);
+    // V1.1 R3: bots that left ALIVE are still in their rooms as bodies right after leaving
+    const afterLeave = await fetch(url.replace(/^ws/, 'http') + '/rooms').then((r) => r.json()).catch(() => null);
+    const bodiesAfterLeave = afterLeave ? Object.values(afterLeave.modes || {}).reduce((a, b) => a + (Number(b.players) || 0), 0) : -1;
     await settle(mock, 12_000);
+    const afterShutdown = await fetch(url.replace(/^ws/, 'http') + '/rooms').then((r) => r.json()).catch(() => null);
+    const bodiesAfterShutdown = afterShutdown ? Object.values(afterShutdown.modes || {}).reduce((a, b) => a + (Number(b.players) || 0), 0) : -1;
     // Every ticket of the wave: the join tickets + every "Play again (-1 EC)" re-stake ticket (R2)
     const tickets = [...bots.filter((b) => b.tid).map((b) => ({ uid: b.uid, tid: b.tid, tv: b.tv })), ...restakes];
     const ticketById = new Map(tickets.map((t) => [t.tid, t]));
@@ -838,6 +1043,7 @@ if (isMainThread) {
       msgsSentPerSec: Math.round(st.msgsSent / durationSec),
       server: server && { tickGapMs: server.tickGapMs, tickCostMs: server.tickCostMs, patchGapMs: server.patchGapMs, patchCostMs: server.patchCostMs, eventLoopDelayMs: server.eventLoopDelayMs, heapUsedMB: server.heapUsedMB, rssMB: server.rssMB },
       clientPatchIntervalMs: client,
+      bodies: { afterLeave: bodiesAfterLeave, afterShutdown: bodiesAfterShutdown },
       combat: { killEvents: observed.kills, paidKillsAnnounced: observed.paid, gameKillPayouts: kills.length, chestPayouts: chestsOpened.length, ticketForfeits: forfeits.length, ticketReturns: returns.length, bountyClaimsAnnounced: observed.bounty, bountyClaimPayouts: claims.length, positionRejected: st.positionRejected, afkKicked: st.afkKicked, restakes: restakes.length, freeRespawns: st.freeRespawns, fastMiniKills: fmKills.length, fastMiniPotsClosed: fmCloses.length },
       tickets: { total: tickets.length, joinTickets: tickets.length - restakes.length, restakeTickets: restakes.length, totalBackingMicroUsd: totalBacking, paidOutMicroUsd: totalPaid, closedTwice: twice, neverClosed, unknown: unknownTickets.length },
       heapTimelineMB: samples.map((s) => s.heapUsedMB),
@@ -859,7 +1065,10 @@ if (isMainThread) {
     check(S, 'every announced paid kill settled exactly once', kills.length === observed.paid, `announced ${observed.paid} · received ${kills.length}`);
     check(S, 'every announced bounty claim settled exactly once', claims.length === observed.bounty, `announced ${observed.bounty} · received ${claims.length}`);
     check(S, 'V1.1: every GAME_KILL / CHEST_OPEN = the victim\'s ticket value (no fixed 100,000), right ticket id', killExact && kills.length > 0, `${kills.length} kills, ${chestsOpened.length} chests`);
-    check(S, 'V1.1: every ticket closed exactly once (killed / chest / forfeited on leave / R2 returned)', twice === 0 && neverClosed === 0 && unknownTickets.length === 0, `${closes.size}/${tickets.length} closed (${restakes.length} re-stake tickets) · ${twice} twice · ${neverClosed} never · ${unknownTickets.length} unknown`);
+    check(S, 'V1.1: every ticket closed exactly once (killed / chest / R2 returned / R3 returned at room shutdown)', twice === 0 && neverClosed === 0 && unknownTickets.length === 0, `${closes.size}/${tickets.length} closed (${restakes.length} re-stake tickets) · ${twice} twice · ${neverClosed} never · ${unknownTickets.length} unknown`);
+    const shutdownReturns = returns.filter((r) => r.metadata?.reason === 'room_shutdown').length;
+    const leftForfeits = forfeits.filter((f) => f.metadata?.reason === 'left').length;
+    check(S, 'R3: bots that left alive stayed as bodies (no forfeit on leave) and their tickets were RETURNED once when the body-only rooms shut down', bodiesAfterLeave > 0 && leftForfeits === 0 && shutdownReturns > 0 && bodiesAfterShutdown === 0, `${bodiesAfterLeave} bodies right after leaving · ${shutdownReturns} returned at shutdown · ${leftForfeits} forfeited on leave · ${bodiesAfterShutdown} left after shutdown`);
     check(S, 'V1.1: TICKET_FORFEIT names the holder\'s own ticket; bounty claims name the victim\'s ticket', forfeitExact && bountyLinked && returnExact, `${forfeits.length} forfeits · ${returns.length} returns · ${claims.length} bounty claims`);
     check(S, 'R2: no automatic respawn — dead bots came back only through "Play again" (re-stake / free)', st.autoRespawnSeen === 0 && restakes.length > 0, `${restakes.length} re-stakes · ${st.freeRespawns} free plays · ${st.autoRespawnSeen} came back without choosing`);
     check(S, 'R2: Fast & Mini — kills name the victim\'s own pot (amount 0, Worker decides), every pot closed once, no ticket / bounty items', fmKillExact && fmClosedOnce && fmNoTicketItems && fmBots.length > 0, `${fmKills.length} FAST_MINI_KILL · ${fmCloses.length}/${fmBots.length} pots closed`);

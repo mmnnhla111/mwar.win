@@ -9,7 +9,9 @@ import {
   EXP_PER_KILL,
   STALE_MATCH_TICKET_SECONDS,
   RESTAKE_REISSUE_SECONDS,
+  REJOIN_TOKEN_SECONDS,
 } from '@mwar/shared';
+import type { ActiveGameSessionResponse } from '@mwar/shared';
 import { z } from 'zod';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
@@ -20,6 +22,7 @@ import { closeFastMiniPot, openPotStmt, settleFastMiniKill, type FastMiniKillRes
 import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { trackQuestAction, getUtcDateKey } from './quests';
 import { loadRooms, gameServersOnline, fpsRoomsBody } from './games';
+import { loadActiveSession, sessionReportStmts, toActiveSession } from '../utils/active-sessions';
 
 export const gameRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -94,6 +97,20 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
   }
   const ecLeft = async () =>
     Number((await c.env.DB.prepare('SELECT energy_tickets FROM users WHERE id = ?1').bind(user.userId).first<{ energy_tickets: number }>())?.energy_tickets ?? 0);
+  const prevId = typeof body?.restakeAfter === 'string' ? body.restakeAfter.slice(0, 64) : '';
+
+  // V1.1 R3: one alive character per account. While a body of this user is still alive in a live room
+  // (connected or a disconnected body), a new seat is refused — the client rejoins that body instead (no new
+  // EC). "Play again" after that same life's death is not blocked (its session ends with the death report).
+  if (cost > 0 || mode === 'fast_mini') {
+    const active = await loadActiveSession(c.env.DB, user.userId, now);
+    if (active && !(prevId && active.entry_id === prevId)) {
+      return c.json(
+        { error: 'Your character is still alive in a match — rejoin it first', code: 'ACTIVE_SESSION', session: toActiveSession(active), energyTickets: await ecLeft() },
+        409
+      );
+    }
+  }
 
   if (mode === 'fast_mini') {
     // Free entry + banner pot: kills pay 90 % of the victim's own verified banner value (Worker ledger)
@@ -111,7 +128,6 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
     return c.json({ success: true, free: true, entryToken: null, energyTickets: await ecLeft() });
   }
 
-  const prevId = typeof body?.restakeAfter === 'string' ? body.restakeAfter.slice(0, 64) : '';
   if (prevId) {
     const prev = await c.env.DB
       .prepare('SELECT user_id, room_mode, room_code, created_at FROM arena_entries WHERE id = ?1')
@@ -191,6 +207,34 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
   });
 });
 
+/**
+ * GET /api/game/active-session — V1.1 R3: the user's alive character still in a live PvP room (connected or a
+ * disconnected body), or `{ session: null }`. Live = the game server reported it in the last 90 s, its life
+ * has not ended and its stake is still open (ticket in_match / Fast & Mini pot open) — derived from the
+ * money tables, so a settled ticket is never offered for Rejoin.
+ * `?rejoin=1` also returns a 120 s HMAC token bound to this user + entry + room id; the game server re-attaches
+ * the connection to that existing body (never a new EC ticket, never a second body).
+ */
+gameRouter.get('/active-session', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const now = Math.floor(Date.now() / 1000);
+  const row = await loadActiveSession(c.env.DB, user.userId, now);
+  c.header('Cache-Control', 'no-store');
+  if (!row) return c.json<ActiveGameSessionResponse>({ session: null });
+  const out: ActiveGameSessionResponse = { session: toActiveSession(row) };
+  if (c.req.query('rejoin') === '1') {
+    out.rejoinToken = await signEntryToken(c.env.INTERNAL_API_SECRET, {
+      uid: user.userId,
+      un: user.username,
+      eid: row.entry_id,
+      rid: row.room_id,
+      rj: 1, // rejoin token: never accepted as an entry token (and vice versa)
+      exp: now + REJOIN_TOKEN_SECONDS,
+    });
+  }
+  return c.json(out);
+});
+
 /** GET /api/game/rooms — same body as GET /api/games/fps/rooms (live PvP rooms hidden while servers are offline). */
 gameRouter.get('/rooms', async (c) => c.json(await fpsRoomsBody(c)));
 
@@ -201,7 +245,7 @@ gameRouter.post('/batch-payout', async (c) => {
   // Validate the envelope; items are validated one by one so a single bad item (e.g. a guest id)
   // can never poison the whole batch and make the game server re-queue it forever.
   const envelope = z
-    .object({ gameId: z.string(), timestamp: z.number(), secret: z.string(), payouts: z.array(z.unknown()) })
+    .object({ gameId: z.string(), timestamp: z.number(), secret: z.string(), payouts: z.array(z.unknown()), sessions: z.unknown().optional() })
     .safeParse(body);
   if (!envelope.success) {
     return c.json({ error: 'Validation failed', details: envelope.error.format() }, 400);
@@ -220,8 +264,12 @@ gameRouter.post('/batch-payout', async (c) => {
     return c.json({ error: 'Unauthorized game server secret' }, 401);
   }
 
+  // V1.1 R3: the live-session report rides along (applied after this request's payout items, below)
+  const sessionReport = envelope.data.sessions;
   if (payouts.length === 0) {
-    return c.json({ success: true, processedCount: 0 });
+    const s = sessionReport ? sessionReportStmts(c.env.DB, sessionReport, gameId) : null;
+    if (s?.stmts.length) await c.env.DB.batch(s.stmts);
+    return c.json({ success: true, processedCount: 0, sessionUpserts: s?.upserts ?? 0, sessionEnds: s?.ends ?? 0 });
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -307,7 +355,9 @@ gameRouter.post('/batch-payout', async (c) => {
     }
     if (item.actionType === 'TICKET_RETURN') {
       // R2: an unused "Play again" ticket (the room could not apply it) → back to available
-      const n = await returnUnusedStake(c.env, md(item).ticketId, item.userId, md(item).entryId);
+      // R3 room_shutdown: an alive body's ticket when its room shut down (no outcome) → back to available, entry kept
+      const shutdown = md(item).reason === 'room_shutdown';
+      const n = await returnUnusedStake(c.env, md(item).ticketId, item.userId, md(item).entryId, { keepEntry: shutdown, reason: shutdown ? 'shutdown' : undefined });
       if (n > 0) v11.ticketsReturned += n;
       else v11.duplicates++;
       continue;
@@ -439,6 +489,10 @@ gameRouter.post('/batch-payout', async (c) => {
   if (statements.length > 0) {
     await c.env.DB.batch(statements);
   }
+  // V1.1 R3: live sessions of this room — after the settlement above, so a death's payout and the end of its
+  // session land in the same request (the session also stops counting the moment its ticket is settled)
+  const sess = sessionReport ? sessionReportStmts(c.env.DB, sessionReport, gameId, now) : null;
+  if (sess?.stmts.length) await c.env.DB.batch(sess.stmts);
 
   // Push audit logs (with the real post-batch wallet balance for wallet-affecting rows)
   const balances = new Map<string, bigint>();
@@ -469,5 +523,7 @@ gameRouter.post('/batch-payout', async (c) => {
     fastMiniPaidMicroUsd: fm.paidMicroUsd,
     fastMiniPotsClosed: fm.potsClosed,
     fastMiniForfeitedMicroUsd: fm.forfeitedMicroUsd,
+    sessionUpserts: sess?.upserts ?? 0,
+    sessionEnds: sess?.ends ?? 0,
   });
 });

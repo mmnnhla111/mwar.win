@@ -106,6 +106,45 @@ export const BatchPayoutItemSchema = z.object({
   metadata: z.record(z.any()).optional(),
 });
 
+/**
+ * V1.1 R3: live-session report that rides along with every batch-payout POST (processed AFTER the payout
+ * items of the same request, so a death's settlement and the end of its session arrive together).
+ *  · upsert: an alive Paid-EC / Fast & Mini seat (connected or a disconnected body) — snapshot at flush time
+ *  · end: the life is over (died / left dead / AFK kick / room shutdown) — retried until delivered
+ *  · roomId heart-beats every session of the room (stale rooms drop out of GET /api/game/active-session)
+ */
+export const GameSessionUpsertSchema = z.object({
+  userId: z.string().uuid(),
+  entryId: z.string().min(8).max(64),
+  roomCode: z.string().max(16).nullable().optional(),
+  mode: z.enum(['mini_30', 'standard_100', 'fast_mini']),
+  mapName: z.string().max(16),
+  hp: z.number().int().min(0).max(1000),
+  isPropHidden: z.boolean(),
+  propType: z.string().max(32).nullable().optional(),
+  isDisconnected: z.boolean(),
+  /** ms timestamp the life started (a late snapshot of an older life never revives an ended session). */
+  lifeStartedAt: z.number().int().nonnegative(),
+  ticketId: z.string().max(90).nullable().optional(),
+  potId: z.string().max(64).nullable().optional(),
+});
+export const GameSessionEndSchema = z.object({
+  userId: z.string().uuid(),
+  entryId: z.string().min(8).max(64),
+  reason: z.string().max(24),
+  /** ms timestamp of the end (death time). */
+  endedAt: z.number().int().nonnegative(),
+});
+export const GameSessionReportSchema = z.object({
+  roomId: z.string().min(1).max(64),
+  serverUrl: z.string().max(200).optional(),
+  upsert: z.array(GameSessionUpsertSchema).max(400).default([]),
+  end: z.array(GameSessionEndSchema).max(2000).default([]),
+});
+export type GameSessionUpsert = z.infer<typeof GameSessionUpsertSchema>;
+export type GameSessionEnd = z.infer<typeof GameSessionEndSchema>;
+export type GameSessionReport = z.infer<typeof GameSessionReportSchema>;
+
 export const GameBatchPayoutSchema = z.object({
   gameId: z.string(),
   timestamp: z.number(),

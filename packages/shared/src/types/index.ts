@@ -301,3 +301,32 @@ export interface DailyMlmSummary {
   message: string;
 }
 
+/**
+ * V1.1 Round 3: an alive character the user still has in a live PvP room (GET /api/game/active-session).
+ * The body stays in the arena (killable, prop disguise kept) while the player is away; Rejoin re-attaches
+ * to it without a new EC ticket.
+ */
+export interface ActiveGameSession {
+  roomId: string;
+  roomCode: string | null;
+  /** Engine mode: mini_30 (Skirmish 30P) | standard_100 (Warzone 100P) | fast_mini. */
+  mode: string;
+  /** Map of the room: 'small' (240 m) | 'large' (960 m). */
+  mapName: string;
+  /** WebSocket origin of the game server hosting the room ('' = the client's default). */
+  serverUrl: string;
+  hp: number;
+  isPropHidden: boolean;
+  propType: string | null;
+  isDisconnected: boolean;
+  /** Unix seconds the life started. */
+  enteredAt: number;
+  entryId: string;
+}
+
+export interface ActiveGameSessionResponse {
+  session: ActiveGameSession | null;
+  /** Only with ?rejoin=1: signed token for the game server (bound to this user + entry + room, 120 s). */
+  rejoinToken?: string;
+}
+

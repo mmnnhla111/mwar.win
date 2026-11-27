@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "Seu pote de banners pagou {v} a quem te abateu",
   "rooms.offlineFeed": "Servidores ao vivo offline: apenas modo Treino",
   "rooms.offline": "Os servidores ao vivo estão offline",
-  "rooms.offlineNotice": "Os servidores PvP ao vivo estão offline agora. O Treino continua aberto."
+  "rooms.offlineNotice": "Os servidores PvP ao vivo estão offline agora. O Treino continua aberto.",
+  "rejoin.title": "Seu personagem ainda está na arena",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "Disfarçado de objeto",
+  "rejoin.hp": "HP {hp}",
+  "rejoin.away": "Offline: continua onde você deixou e ainda pode ser encontrado e derrotado.",
+  "rejoin.elsewhere": "Sendo jogado agora em outra aba ou dispositivo.",
+  "rejoin.button": "Voltar à partida",
+  "rejoin.dismiss": "Ocultar este cartão (seu personagem continua na partida)",
+  "rejoin.gone": "Seu personagem não está mais nessa partida. Voltando ao lobby…",
+  "rejoin.activeElsewhere": "Seu personagem ainda está vivo em uma partida: voltando a ela (sem gastar EC)",
+  "rejoin.feedResumed": "Você voltou ao seu personagem: mesmo lugar, mesmo HP, sem gastar EC",
+  "rejoin.replaced": "Este personagem foi aberto em outra aba ou dispositivo",
+  "rejoin.loadoutTitle": "Voltando ao seu personagem: ele mantém o lugar, a arma e o disfarce",
+  "rejoin.resume": "RETOMAR O CONTROLE",
+  "persist.enterFeed": "Se sair vivo, seu personagem fica na arena até ser derrotado: volte quando quiser"
 }

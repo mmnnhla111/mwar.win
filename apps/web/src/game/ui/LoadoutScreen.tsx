@@ -19,6 +19,8 @@ interface Props {
   bottomPad?: number;
   /** Shown after a death in Solo Bot mode: respawn instead of first deploy. */
   respawn?: boolean;
+  /** V1.1 R3 Rejoin: resume control of the live body (its own weapon / spot / prop disguise are kept). */
+  resume?: { title: string; detail: string; button: string } | null;
 }
 
 const WEAPON_ICON: Record<PrimaryId, string> = { sniper: '🎯', ak47: '💥', m16: '🎖️', uzi: '⚡' };
@@ -57,6 +59,12 @@ export default function LoadoutScreen(p: Props) {
               {p.practice ? '⚡ Training: 70% skill bots • EC recharge only, no cash' : '🎁 Chests drop only on suicide / environment deaths'}
             </div>
           </div>
+          {p.resume && (
+            <div data-testid="rejoin-resume-banner" className="mb-3 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-emerald-200">
+              <div className="text-[12px] font-black">🔁 {p.resume.title}</div>
+              <div className="text-[10.5px] font-semibold text-emerald-300/90">{p.resume.detail}</div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] gap-3 sm:gap-4">
             {/* LEFT: primary weapon */}
@@ -162,8 +170,8 @@ export default function LoadoutScreen(p: Props) {
                   onClick={() => p.onDeploy(false)}
                   className="flex-1 bg-gradient-to-r from-rose-600 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white text-sm sm:text-base font-black tracking-wide py-3 px-4 rounded-2xl shadow-xl shadow-rose-600/30 border border-white/30 transition active:scale-[0.98]"
                 >
-                  🪂 DEPLOY INTO ARENA
-                  <span className="block text-[10px] font-bold opacity-85">{WEAPONS[p.primary].name} + Pistol + {GRENADE.start}× Frag</span>
+                  {p.resume ? `🔁 ${p.resume.button}` : '🪂 DEPLOY INTO ARENA'}
+                  <span className="block text-[10px] font-bold opacity-85">{p.resume ? p.resume.detail : `${WEAPONS[p.primary].name} + Pistol + ${GRENADE.start}× Frag`}</span>
                 </button>
                 {!p.isMobile && (
                   <button

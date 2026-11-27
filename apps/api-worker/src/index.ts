@@ -28,6 +28,7 @@ import { bootstrapHandler } from './routes/bootstrap';
 import { authMiddleware } from './middleware/auth';
 import { sweepStaleMatchTickets } from './utils/energy-tickets';
 import { sweepStaleFastMiniPots } from './utils/fast-mini';
+import { returnCrashedSessionTickets, purgeOldSessions } from './utils/active-sessions';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -183,9 +184,13 @@ export default {
     }
     await settleDailyMlm(env, yesterdayUtcDateKey());
     await releaseMarketplaceEscrow(env);
+    // V1.1 R3: tickets of alive bodies whose room crashed (session stopped heart-beating) → returned, not forfeited
+    await returnCrashedSessionTickets(env).catch((e: unknown) => console.warn('[Cron] crashed-session ticket return failed', e));
     // V1.1: in_match tickets nobody settled for 6 h (game-server crash) → their backing to the platform
+    //        (R3: never a ticket whose body is still alive in a heart-beating room)
     await sweepStaleMatchTickets(env).catch((e: unknown) => console.warn('[Cron] stale ticket sweep failed', e));
     await sweepStaleFastMiniPots(env).catch((e: unknown) => console.warn('[Cron] stale Fast & Mini pot sweep failed', e));
+    await purgeOldSessions(env);
     await runRetentionJobs(env).catch((e: unknown) => console.warn('[Cron] retention failed', e));
     // Zero-bloat: finished moderation jobs (7 d), expired reset tokens, rejected posts + their R2 media
     await pruneModerationData(env).catch((e: unknown) => console.warn('[Cron] moderation prune failed', e));

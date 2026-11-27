@@ -20,10 +20,11 @@ import {
   LARGE_MAP_SPAWN_POINTS,
   LARGE_MAP_SIZE,
   SMALL_MAP_SIZE,
+  BODY_ONLY_ROOM_TTL_SECONDS,
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
-import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState } from '../schema/GameState';
+import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState, clonePlayerState } from '../schema/GameState';
 import { getRegistryRoom } from '../roomRegistry';
 import { stairIndexForMap, shotBlockedByStairs } from '../stairLineOfSight';
 
@@ -156,6 +157,38 @@ interface SessionMeta {
   fmPot: string;
   /** ms timestamp of the last death (Fast & Mini: pot credits after it fund the next life). */
   diedAt?: number;
+  /**
+   * V1.1 R3 live session (reported to the Worker for GET /api/game/active-session + Rejoin): true from the
+   * start of an alive Paid-EC / Fast & Mini life until it ends (death / removal / room shutdown).
+   */
+  sessionLive?: boolean;
+  /** ms start of the current life (session key with entryId; a late snapshot never revives an ended life). */
+  lifeStartedAt?: number;
+  /** Last snapshot sent to the Worker ('' = send again at the next flush). */
+  sessionSig?: string;
+  lastMoveAt?: number;
+}
+
+/** V1.1 R3 session report items (see GameSessionReportSchema in @mwar/shared). */
+interface SessionUpsert {
+  userId: string;
+  entryId: string;
+  roomCode: string | null;
+  mode: 'mini_30' | 'standard_100' | 'fast_mini';
+  mapName: string;
+  hp: number;
+  isPropHidden: boolean;
+  propType: string | null;
+  isDisconnected: boolean;
+  lifeStartedAt: number;
+  ticketId: string | null;
+  potId: string | null;
+}
+interface SessionEnd {
+  userId: string;
+  entryId: string;
+  reason: string;
+  endedAt: number;
 }
 
 /** A victim's stake taken at death (travels with the kill payout or the death chest). */
@@ -209,6 +242,8 @@ export function verifyEntryToken(token: unknown, secret: string): EntryTokenClai
     const json = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
     if (typeof json.exp !== 'number' || json.exp < Date.now() / 1000) return null;
     if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid)) return null;
+    // V1.1 R3: a Rejoin token is never an entry token (it carries no stake and must not open a new seat)
+    if (json.rj !== undefined) return null;
     const bty = Number(json.bty);
     const tv = Number(json.tv);
     const tid = typeof json.tid === 'string' && TICKET_ID_RE.test(json.tid) ? json.tid : '';
@@ -223,6 +258,26 @@ export function verifyEntryToken(token: unknown, secret: string): EntryTokenClai
       fm: json.fm === 1 || json.fm === true,
       rs: json.rs === 1 || json.rs === true,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * V1.1 R3: verify a Rejoin token minted by GET /api/game/active-session?rejoin=1 (HMAC with the shared
+ * INTERNAL_API_SECRET, 120 s). It names the account (uid), the life (eid) and the Colyseus room (rid): the
+ * connection is re-attached to that existing alive body — never a new seat, never a new EC ticket.
+ */
+export function verifyRejoinToken(token: unknown, secret: string): { uid: string; eid: string; rid: string; un: string } | null {
+  if (typeof token !== 'string' || !token.includes('.')) return null;
+  const [body, sig] = token.split('.');
+  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    const json = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (json.rj !== 1 || typeof json.exp !== 'number' || json.exp < Date.now() / 1000) return null;
+    if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid) || typeof json.eid !== 'string' || !json.eid || typeof json.rid !== 'string' || !json.rid) return null;
+    return { uid: json.uid, eid: json.eid.slice(0, 64), rid: json.rid, un: String(json.un ?? '') };
   } catch {
     return null;
   }
@@ -265,6 +320,18 @@ export class ShootingRoom extends Room<GameState> {
   private internalSecret: string = 'local-dev-internal-game-secret-2026';
   private redis?: Redis;
   private pendingPayouts: BatchPayoutItem[] = [];
+  /** V1.1 R3: ended lives not yet delivered to the Worker (retried with the payout batch). */
+  private pendingSessionEnds: SessionEnd[] = [];
+  /** V1.1 R3: client sessionId → body to re-attach (set in onAuth for a valid Rejoin token). */
+  private rejoinTargets = new Map<string, { uid: string; eid: string }>();
+  private rejoinIps = new Map<string, { ip: string; deviceId: string }>();
+  /** V1.1 R3: old body key → new key after a Rejoin moved the body (grenades in flight etc.). */
+  private sessionAlias = new Map<string, string>();
+  /** V1.1 R3: shuts the room down when only disconnected bodies are left for BODY_ONLY_ROOM_TTL_SECONDS. */
+  private bodyOnlyTimer?: { clear: () => void };
+  private bodyOnlyTtlMs = BODY_ONLY_ROOM_TTL_SECONDS * 1000;
+  private engineMode: 'mini_30' | 'standard_100' | 'fast_mini' = 'mini_30';
+  private publicUrl = '';
 
   onCreate(options: RoomOptions) {
     this.setState(new GameState());
@@ -289,6 +356,7 @@ export class ShootingRoom extends Room<GameState> {
       this.maxClients = spec.maxPlayers;
     }
     this.fastMini = engineMode === 'fast_mini';
+    this.engineMode = engineMode === 'standard_100' ? 'standard_100' : engineMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
     this.paidRoom = !this.fastMini && (reg ? reg.entryCostEc > 0 : true);
     this.setMetadata({ roomCode: this.roomCode, mode: engineMode, mapSize: kind });
     this.state.mapMode = engineMode === 'fast_mini' ? 'fast_mini' : spec.id;
@@ -299,6 +367,10 @@ export class ShootingRoom extends Room<GameState> {
     // client's joinOrCreate() call and would let a player redirect payouts or forge entry tokens.
     this.workerApiUrl = process.env.WORKER_API_URL || 'http://127.0.0.1:8787';
     this.internalSecret = process.env.INTERNAL_API_SECRET || 'local-dev-internal-game-secret-2026';
+    // V1.1 R3: public ws(s):// origin shown to the Rejoin popup, and the body-only room lifetime (tests shorten it)
+    this.publicUrl = (process.env.GAME_PUBLIC_URL || '').trim();
+    const ttl = Number(process.env.BODY_ONLY_ROOM_TTL_SECONDS);
+    if (Number.isFinite(ttl) && ttl > 0) this.bodyOnlyTtlMs = ttl * 1000;
 
     // 1. Connect Local Redis for Room Discovery & Metrics (Non-blocking fallback to RAM)
     const redisUrl = process.env.REDIS_URL;
@@ -682,12 +754,14 @@ export class ShootingRoom extends Room<GameState> {
         target.health = Math.max(0, target.health - damage);
 
         if (target.health === 0) {
-          const isSelf = targetSessionId === throwerSessionId;
-          const thrower = this.state.players.get(throwerSessionId);
+          // V1.1 R3: the thrower may have rejoined meanwhile (body moved to a new key)
+          const tsid = this.sessionAlias.get(throwerSessionId) ?? throwerSessionId;
+          const isSelf = targetSessionId === tsid;
+          const thrower = this.state.players.get(tsid);
           if (isSelf || !thrower) {
             this.handlePlayerElimination(target, targetSessionId, undefined, undefined, 'grenade_suicide');
           } else {
-            this.handlePlayerElimination(target, targetSessionId, thrower, throwerSessionId);
+            this.handlePlayerElimination(target, targetSessionId, thrower, tsid);
           }
         } else {
           this.broadcast('player_damaged', {
@@ -742,6 +816,8 @@ export class ShootingRoom extends Room<GameState> {
     target.deaths += 1;
     const tm = this.meta.get(targetSessionId);
     if (tm) tm.diedAt = Date.now();
+    // V1.1 R3: the life is over → its live session ends now (delivered with this death's settlement items)
+    this.endSession(targetSessionId, 'died');
     this.medkitCasts.delete(targetSessionId);
     // Any death: 20 % chance to drop a medkit (10-minute despawn)
     if (Math.random() < MEDKIT_DROP_CHANCE) this.spawnMedkit(target.x + 0.5, target.y, target.z - 0.3);
@@ -826,6 +902,14 @@ export class ShootingRoom extends Room<GameState> {
       });
     }
     this.lastBountyLost = 0;
+    // V1.1 R3: a disconnected body that died is removed shortly after (its owner is not there to choose
+    // "Play again"); the settlement above already happened exactly like a live kill
+    if (target.isDisconnected) {
+      this.clock.setTimeout(() => {
+        const p = this.state.players.get(targetSessionId);
+        if (p && p.isDisconnected && p.isGhost) this.removeSeat(targetSessionId, p, 'died_away');
+      }, 2000);
+    }
   }
 
   private handleChestHit(shooter: PlayerState, shooterClient: Client, chestId: string, damage: number) {
@@ -1019,6 +1103,7 @@ export class ShootingRoom extends Room<GameState> {
       m.diedAt = undefined;
       m.lastMoveAt = Date.now();
     }
+    this.startSession(sessionId, player);
     const client = this.clients.find((c) => c.sessionId === sessionId);
     client?.send('player_respawned', { x: point.x, y: point.y, z: point.z, primary });
   }
@@ -1066,6 +1151,9 @@ export class ShootingRoom extends Room<GameState> {
 
     this.state.players.forEach((player, sessionId) => {
       if (player.isSpectator) return; // spectators are never AFK-kicked by combat rules
+      // V1.1 R3: a disconnected body is never AFK-kicked (it stays killable until it dies / the room shuts down);
+      // its away time does not count — the AFK clock restarts on Rejoin
+      if (player.isDisconnected) return;
       const inactiveSec = (now - player.lastActiveTime) / 1000;
 
       // 5-Minute Inactive Rule: Warning & Captcha
@@ -1134,9 +1222,51 @@ export class ShootingRoom extends Room<GameState> {
   /** In-flight batch POSTs (onDispose waits for them, so a failure can still be retried). */
   private inFlightFlushes = new Set<Promise<boolean>>();
 
+  /**
+   * V1.1 R3 live-session report for this flush: a snapshot of every alive Paid-EC / Fast & Mini seat whose
+   * state changed (HP, prop disguise, disconnected) + the lives that ended, + an implicit room heartbeat.
+   * Returns null when the room has nothing to report.
+   */
+  private buildSessionReport(): { report: { roomId: string; serverUrl?: string; upsert: SessionUpsert[]; end: SessionEnd[] }; sent: Array<[SessionMeta, string]> } | null {
+    const upsert: SessionUpsert[] = [];
+    const sent: Array<[SessionMeta, string]> = [];
+    let live = 0;
+    this.state.players.forEach((p, sid) => {
+      const m = this.meta.get(sid);
+      if (!m?.sessionLive) return;
+      live++;
+      const sig = `${m.entryId}|${m.lifeStartedAt}|${p.health}|${p.isProp ? p.propType : '-'}|${p.isDisconnected ? 1 : 0}`;
+      if (sig === m.sessionSig) return;
+      m.sessionSig = sig;
+      sent.push([m, sig]);
+      upsert.push({
+        userId: p.id,
+        entryId: m.entryId,
+        roomCode: this.roomCode || null,
+        mode: this.engineMode,
+        mapName: this.largeMap ? 'large' : 'small',
+        hp: Math.max(0, Math.round(p.health)),
+        isPropHidden: !!p.isProp,
+        propType: p.isProp ? p.propType : null,
+        isDisconnected: !!p.isDisconnected,
+        lifeStartedAt: m.lifeStartedAt ?? Date.now(),
+        ticketId: this.fastMini ? null : m.ticketId || null,
+        potId: this.fastMini ? m.fmPot || null : null,
+      });
+    });
+    const end = this.pendingSessionEnds.splice(0, this.pendingSessionEnds.length);
+    if (!live && !upsert.length && !end.length) return null;
+    return { report: { roomId: this.roomId, serverUrl: this.publicUrl || undefined, upsert, end }, sent };
+  }
+
+  private hasPendingSync() {
+    return this.pendingPayouts.length > 0 || this.pendingSessionEnds.length > 0;
+  }
+
   // Batch sync financial rewards to Cloudflare Workers API. Returns false when the batch was re-queued.
   private flushPayoutBatch(): Promise<boolean> {
-    if (this.pendingPayouts.length === 0) return Promise.resolve(true);
+    const sessions = this.buildSessionReport();
+    if (this.pendingPayouts.length === 0 && !sessions) return Promise.resolve(true);
 
     const payoutsToFlush = this.pendingPayouts.splice(0, this.pendingPayouts.length);
     const p = (async () => {
@@ -1149,6 +1279,7 @@ export class ShootingRoom extends Room<GameState> {
             timestamp: Math.floor(Date.now() / 1000),
             secret: this.internalSecret,
             payouts: payoutsToFlush,
+            ...(sessions ? { sessions: sessions.report } : {}),
           }),
         });
         if (res.ok) {
@@ -1160,6 +1291,11 @@ export class ShootingRoom extends Room<GameState> {
         // connection error → re-queue below
       }
       this.pendingPayouts.push(...payoutsToFlush);
+      if (sessions) {
+        // ends are retried; snapshots are simply sent again (fresh) at the next flush
+        this.pendingSessionEnds.unshift(...sessions.report.end);
+        for (const [m, sig] of sessions.sent) if (m.sessionSig === sig) m.sessionSig = '';
+      }
       return false;
     })();
     this.inFlightFlushes.add(p);
@@ -1177,13 +1313,13 @@ export class ShootingRoom extends Room<GameState> {
     for (const d of delays) {
       if (d) await new Promise((r) => setTimeout(r, d));
       await Promise.allSettled([...this.inFlightFlushes]);
-      if (this.pendingPayouts.length === 0) return;
+      if (!this.hasPendingSync()) return;
       if (await this.flushPayoutBatch()) {
-        if (this.pendingPayouts.length === 0) return;
+        if (!this.hasPendingSync()) return;
       }
     }
-    if (this.pendingPayouts.length) {
-      console.error(`[PayoutUnsent] ${JSON.stringify({ gameId: this.gameId, payouts: this.pendingPayouts })}`);
+    if (this.hasPendingSync()) {
+      console.error(`[PayoutUnsent] ${JSON.stringify({ gameId: this.gameId, payouts: this.pendingPayouts, sessionEnds: this.pendingSessionEnds })}`);
     }
   }
 
@@ -1191,9 +1327,19 @@ export class ShootingRoom extends Room<GameState> {
    * Paid seats: a valid EC entry token (signed by the API worker after spending 1 EC) makes the seat
    * earn Micro-USD. Everyone else may still play, but as an unpaid guest.
    */
-  onAuth(client: Client, options: { entryToken?: string; deviceId?: string; spectator?: boolean }, request?: IncomingMessage) {
+  onAuth(client: Client, options: { entryToken?: string; rejoinToken?: string; deviceId?: string; spectator?: boolean }, request?: IncomingMessage) {
     const fwd = request?.headers?.['cf-connecting-ip'] || request?.headers?.['x-forwarded-for'];
     const ip = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim() || request?.socket?.remoteAddress || 'unknown';
+    // V1.1 R3 Rejoin: a Worker-signed token for THIS room + an alive body of that account and life. The seat is
+    // the existing body (already counted in the caps) — no new seat, no entry token, no EC.
+    if (options?.rejoinToken !== undefined) {
+      const rj = verifyRejoinToken(options.rejoinToken, this.internalSecret);
+      if (!rj || rj.rid !== this.roomId) throw new Error('Invalid rejoin token');
+      if (!this.findBody(rj.uid, rj.eid)) throw new Error('Your character is no longer in this match');
+      this.rejoinTargets.set(client.sessionId, { uid: rj.uid, eid: rj.eid });
+      this.rejoinIps.set(client.sessionId, { ip, deviceId: typeof options?.deviceId === 'string' ? options.deviceId.slice(0, 64) : '' });
+      return { userId: rj.uid, username: rj.un, rejoin: true };
+    }
     // Registry rooms keep separate player and spectator seat caps
     if (this.roomCode) {
       let players = 0;
@@ -1390,8 +1536,12 @@ export class ShootingRoom extends Room<GameState> {
   onJoin(
     client: Client,
     options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string; spectator?: boolean },
-    auth?: { userId: string | null; username?: string; bounty?: number; ticket?: number }
+    auth?: { userId: string | null; username?: string; bounty?: number; ticket?: number; rejoin?: boolean }
   ) {
+    if (auth?.rejoin) {
+      this.attachRejoin(client);
+      return;
+    }
     console.log(`[ShootingRoom] Player joined: ${client.sessionId} (${options.username || 'Anon'})`);
     const player = new PlayerState();
     // Identity comes from the signed entry token only — a client-supplied userId is never trusted
@@ -1453,6 +1603,9 @@ export class ShootingRoom extends Room<GameState> {
 
     this.state.players.set(client.sessionId, player);
     this.state.activePlayersCount = this.state.players.size;
+    // V1.1 R3: an alive Paid-EC / Fast & Mini seat is a live session from now on (Rejoin-able if it disconnects)
+    this.startSession(client.sessionId, player);
+    this.refreshBodyState();
 
     // Update Redis room discovery asynchronously
     if (this.redis) {
@@ -1467,8 +1620,23 @@ export class ShootingRoom extends Room<GameState> {
   }
 
   async onLeave(client: Client, consented: boolean) {
+    this.rejoinTargets.delete(client.sessionId);
+    this.rejoinIps.delete(client.sessionId);
     const player = this.state.players.get(client.sessionId);
-    if (!player) return;
+    // No body under this key: it was moved to a newer connection by a Rejoin (or never created)
+    if (!player) {
+      this.refreshBodyState();
+      return;
+    }
+
+    // V1.1 R3: an ALIVE Paid-EC / Fast & Mini seat that leaves — tab closed, navigation, socket loss, consented
+    // or not — keeps its body in the arena (position, HP, hitbox, prop disguise, ticket value, head bounty,
+    // pot): inputs frozen, never AFK-kicked, killable like anyone else. Nothing is settled or forfeited here;
+    // settlement happens only when the body actually dies (or by the room-shutdown rule in onDispose).
+    if (this.canPersist(client.sessionId, player)) {
+      this.detachBody(client.sessionId, player);
+      return;
+    }
 
     if (!consented) {
       // Unexpected disconnect: Player turns into a Prop disguise
@@ -1493,19 +1661,32 @@ export class ShootingRoom extends Room<GameState> {
       }
     }
 
-    // V1.1: the player left (or the 20 s reconnect window expired) alive with a live ticket → the
-    // zero-deficit choice: the ticket is not refunded, its backing goes to the platform
-    const stake = this.takeStake(client.sessionId, player);
-    if (stake) this.queueTicketForfeit(stake, player.afkKicked ? 'afk_kick' : 'left');
+    // Guest-style 20 s window above expired, or the seat was dead / a spectator / AFK-kicked → removed
+    const current = this.state.players.get(client.sessionId);
+    if (current) this.removeSeat(client.sessionId, current, current.afkKicked ? 'afk_kick' : 'left');
+    else this.refreshBodyState();
+  }
+
+  /**
+   * Remove a seat from the room. A live ticket still at stake here (only AFK / non-live-room edge cases — an
+   * alive Paid-EC seat never gets here, it stays as a body) keeps the V1.1 zero-deficit rule: forfeited.
+   */
+  private removeSeat(sessionId: string, player: PlayerState, reason: string) {
+    const stake = this.takeStake(sessionId, player);
+    if (stake) this.queueTicketForfeit(stake, reason === 'afk_kick' ? 'afk_kick' : 'left');
     // V1.1 R2 Fast & Mini: the pot closes with the seat (its unpaid credits → platform, by the Worker)
-    const lm = this.meta.get(client.sessionId);
-    if (lm?.fmPot) this.queueFastMiniClose(player.id, lm.fmPot, player.afkKicked ? 'afk_kick' : 'left');
+    const lm = this.meta.get(sessionId);
+    if (lm?.fmPot) this.queueFastMiniClose(player.id, lm.fmPot, reason === 'afk_kick' ? 'afk_kick' : 'left');
     if (lm) lm.fmPot = '';
-    this.state.players.delete(client.sessionId);
-    this.meta.delete(client.sessionId);
+    this.endSession(sessionId, reason);
+    this.medkitCasts.delete(sessionId);
+    this.lastFireBlip.delete(sessionId);
+    this.state.players.delete(sessionId);
+    this.meta.delete(sessionId);
     this.state.activePlayersCount = this.state.players.size;
     // Spec 5.2: batch every 10 s OR when a player leaves the room
     void this.flushPayoutBatch();
+    this.refreshBodyState();
 
     if (this.redis) {
       this.redis
@@ -1517,10 +1698,175 @@ export class ShootingRoom extends Room<GameState> {
     }
   }
 
-  async onDispose() {
-    // V1.1 R2: Fast & Mini seats still present (no onLeave) → close their pots
+  // ---- V1.1 R3: persistent bodies, live sessions, Rejoin -------------------------------------------
+
+  /** An alive seat that stays in the arena as a body when its client goes away (and is reported as a live session). */
+  private canPersist(sessionId: string, player: PlayerState) {
+    const m = this.meta.get(sessionId);
+    if (!m || player.isSpectator || player.isGhost || player.health <= 0 || player.afkKicked || !UUID_RE.test(player.id)) return false;
+    if (this.fastMini) return !!m.fmPot;
+    return this.paidRoom && m.paid && m.ticketLive && !!m.ticketId;
+  }
+
+  private startSession(sessionId: string, player: PlayerState) {
+    const m = this.meta.get(sessionId);
+    if (!m || !m.entryId || !this.canPersist(sessionId, player)) return;
+    m.sessionLive = true;
+    m.lifeStartedAt = Date.now();
+    m.sessionSig = '';
+  }
+
+  /** The life is over (death / removal / room shutdown): end its session once (retried until delivered). */
+  private endSession(sessionId: string, reason: string) {
+    const m = this.meta.get(sessionId);
+    const p = this.state.players.get(sessionId);
+    if (!m?.sessionLive || !p) return;
+    m.sessionLive = false;
+    m.sessionSig = '';
+    this.pendingSessionEnds.push({ userId: p.id, entryId: m.entryId, reason: reason.slice(0, 24), endedAt: Math.max(Date.now(), m.lifeStartedAt ?? 0) });
+  }
+
+  /** The alive body of account `uid` for life `eid` (Rejoin target), or null. */
+  private findBody(uid: string, eid: string): string | null {
     for (const [sid, m] of this.meta) {
       const p = this.state.players.get(sid);
+      if (p && p.id === uid && m.entryId === eid && m.sessionLive && !p.isGhost && !p.isSpectator && p.health > 0) return sid;
+    }
+    return null;
+  }
+
+  /** The client left alive: freeze the body exactly as it is (prop disguise included) and keep it killable. */
+  private detachBody(sessionId: string, player: PlayerState) {
+    player.isDisconnected = true;
+    player.disconnectedAt = Date.now();
+    this.medkitCasts.delete(sessionId);
+    const m = this.meta.get(sessionId);
+    if (m) m.sessionSig = ''; // report the disconnect at once (Rejoin popup)
+    console.log(`[ShootingRoom] ${player.username} left alive: body stays in the arena${player.isProp ? ` as ${player.propType}` : ''}`);
+    this.refreshBodyState();
+    void this.flushPayoutBatch();
+  }
+
+  /**
+   * Keep the room alive while it holds disconnected bodies (Colyseus would dispose an empty room), and shut it
+   * down after BODY_ONLY_ROOM_TTL_SECONDS with no client connected at all (room-shutdown rule → onDispose).
+   */
+  private refreshBodyState() {
+    let bodies = 0;
+    this.state.players.forEach((p) => {
+      if (p.isDisconnected) bodies++;
+    });
+    this.autoDispose = bodies === 0;
+    if (bodies > 0 && this.clients.length === 0) {
+      if (!this.bodyOnlyTimer) {
+        this.bodyOnlyTimer = this.clock.setTimeout(() => {
+          this.bodyOnlyTimer = undefined;
+          if (this.clients.length === 0) {
+            console.log(`[ShootingRoom] ${this.roomId}: only disconnected bodies for ${this.bodyOnlyTtlMs / 1000} s, shutting the room down`);
+            void this.disconnect();
+          }
+        }, this.bodyOnlyTtlMs);
+      }
+    } else if (this.bodyOnlyTimer) {
+      this.bodyOnlyTimer.clear();
+      this.bodyOnlyTimer = undefined;
+    }
+  }
+
+  /**
+   * Rejoin: move the existing body to the new connection's key (a still-attached older connection of the same
+   * body is replaced — there is never a second body), unfreeze it and hand the client its exact state.
+   */
+  private attachRejoin(client: Client) {
+    const target = this.rejoinTargets.get(client.sessionId);
+    const net = this.rejoinIps.get(client.sessionId);
+    this.rejoinTargets.delete(client.sessionId);
+    this.rejoinIps.delete(client.sessionId);
+    const oldKey = target ? this.findBody(target.uid, target.eid) : null;
+    if (!target || !oldKey) throw new Error('Your character is no longer in this match');
+    const old = this.state.players.get(oldKey)!;
+    const m = this.meta.get(oldKey)!;
+    const oldClient = this.clients.find((c) => c.sessionId === oldKey);
+    const newKey = client.sessionId;
+    const body = clonePlayerState(old, newKey);
+    body.isDisconnected = false;
+    body.disconnectedAt = 0;
+    body.lastActiveTime = Date.now(); // pressing Rejoin is activity: the AFK clock restarts
+    body.afkWarningSent = false;
+    this.state.players.delete(oldKey);
+    this.meta.delete(oldKey);
+    this.state.players.set(newKey, body);
+    this.meta.set(newKey, m);
+    if (net) {
+      m.ip = net.ip;
+      if (net.deviceId) m.deviceId = net.deviceId;
+    }
+    m.lastMoveAt = Date.now();
+    m.sessionSig = '';
+    this.sessionAlias.set(oldKey, newKey);
+    for (const [k, v] of this.sessionAlias) if (v === oldKey) this.sessionAlias.set(k, newKey);
+    this.medkitCasts.delete(oldKey);
+    this.lastFireBlip.delete(oldKey);
+    for (const cb of this.chestBounty.values()) if (cb.victimSession === oldKey) cb.victimSession = newKey;
+    for (const st of this.chestStake.values()) if (st.victimSession === oldKey) st.victimSession = newKey;
+    for (const dmg of this.chestDamage.values()) {
+      const d = dmg.get(oldKey);
+      if (d !== undefined) {
+        dmg.delete(oldKey);
+        dmg.set(newKey, (dmg.get(newKey) ?? 0) + d);
+      }
+    }
+    if (oldClient) {
+      // A second connection for the same body: the newest one takes over, the older one is closed
+      oldClient.send('session_replaced', { reason: 'rejoined_elsewhere' });
+      oldClient.leave(4002, 'Rejoined from another connection');
+    }
+    console.log(`[ShootingRoom] ${body.username} rejoined their live body (${oldKey} -> ${newKey})${body.isProp ? ` still disguised as ${body.propType}` : ''}`);
+    this.refreshBodyState();
+    client.send('rejoined', {
+      x: body.x,
+      y: body.y,
+      z: body.z,
+      rotationY: body.rotationY,
+      stance: body.stance,
+      health: body.health,
+      isProp: body.isProp,
+      propType: body.propType,
+      avatarId: body.avatarId,
+      primaryWeapon: body.primaryWeapon,
+      currentWeapon: body.currentWeapon,
+      magAmmo: body.magAmmo,
+      reserveAmmo: body.reserveAmmo,
+      grenades: body.grenadesRemaining,
+      medkits: body.medkits,
+      kills: body.kills,
+      deaths: body.deaths,
+      ticketMicroUsd: body.ticketMicroUsd,
+      bountyMicroUsd: body.bountyMicroUsd,
+      sessionEarningsMicroUsd: body.sessionEarningsMicroUsd,
+      entryId: m.entryId,
+      fastMini: this.fastMini,
+      roomCode: this.roomCode,
+      respawnMode: this.needsRestake(m) ? 'restake' : 'free',
+    });
+    void this.flushPayoutBatch();
+  }
+
+  async onDispose() {
+    this.bodyOnlyTimer?.clear();
+    this.bodyOnlyTimer = undefined;
+    for (const [sid, m] of this.meta) {
+      const p = this.state.players.get(sid);
+      // V1.1 R3 room-shutdown rule (body-only room TTL, server restart / SIGTERM): a body still ALIVE has no
+      // outcome — its ticket is RETURNED to available (never paid, never forfeited) and its session ends.
+      if (p && !p.isGhost && !p.isSpectator && p.health > 0) {
+        const stake = this.takeStake(sid, p);
+        if (stake) {
+          this.pendingPayouts.push({ userId: stake.victimId, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId: this.gameId, metadata: { ticketId: stake.ticketId, entryId: m.entryId, reason: 'room_shutdown', pid: this.nextPid() } });
+        }
+      }
+      if (p) this.endSession(sid, 'room_shutdown');
+      // V1.1 R2: Fast & Mini seats still present (no onLeave) → close their pots
       if (m.fmPot && p) this.queueFastMiniClose(p.id, m.fmPot, 'room_closed');
       m.fmPot = '';
     }

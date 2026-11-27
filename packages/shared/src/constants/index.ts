@@ -240,3 +240,25 @@ export const FAST_MINI_POT_STALE_SECONDS = 6 * 3600;
 export const GAME_NODE_FRESH_SECONDS = 90;
 /** Paid-EC rooms: the "Play again (-1 EC)" token for the same life can be re-issued for this long. */
 export const RESTAKE_REISSUE_SECONDS = 120;
+
+// ---- V1.1 Round 3: disconnected bodies stay in the arena · settlement only at death · Rejoin ------
+/**
+ * The game server reports every alive Paid-EC / Fast & Mini seat (connected or not) to the Worker with its
+ * 10 s batch. A session counts as live for GET /api/game/active-session (and blocks a second entry) only
+ * while its room heartbeat is at most this old AND its stake is still open (ticket in_match / pot open).
+ */
+export const ACTIVE_SESSION_FRESH_SECONDS = 90;
+/** Signed Rejoin token (Worker → game server; bound to user + entry + room) lifetime. */
+export const REJOIN_TOKEN_SECONDS = 120;
+/**
+ * A room whose only occupants are disconnected bodies (no client connected) shuts down after this long.
+ * Room-shutdown rule (also server restart / SIGTERM): every alive body's ticket is RETURNED to `available`
+ * (TICKET_RETURN reason room_shutdown) — never paid out, never forfeited, because no outcome happened.
+ */
+export const BODY_ONLY_ROOM_TTL_SECONDS = 30 * 60;
+/**
+ * Crash rule (daily cron): a ticket still in_match after STALE_MATCH_TICKET_SECONDS whose active-session
+ * row stopped heart-beating for this long (the game server died with the body alive) is RETURNED
+ * (STALE_RETURN); a ticket whose session still heart-beats (body alive in a running room) is never swept.
+ */
+export const ACTIVE_SESSION_SWEEP_GRACE_SECONDS = 15 * 60;

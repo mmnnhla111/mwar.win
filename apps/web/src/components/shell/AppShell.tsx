@@ -15,6 +15,7 @@ import { isAuthPath, isBarePath, isGamePath } from './nav';
 import { BrandLogoFull, LemonLogo } from '../ui/Icon';
 import { Spinner } from '../ui/Card';
 import { FloatingQuestWidget } from '../FloatingQuestWidget';
+import { ActiveMatchPopup } from './ActiveMatchPopup';
 import { DevMockPanel } from '../DevMockPanel';
 import { I18nProvider, useTranslation } from '../../i18n/I18nProvider';
 
@@ -116,6 +117,8 @@ function MainFrame({ children }: { children: React.ReactNode }) {
       </div>
       <BottomNav />
       <FloatingQuestWidget />
+      {/* V1.1 R3: "your character is still in the arena" + Rejoin, on every non-game page */}
+      <ActiveMatchPopup />
       <PwaInstall />
       <DevPanelGate role={boot?.user.role} />
     </div>

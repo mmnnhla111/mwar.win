@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "Pot banner kamu membayar pembunuhmu {v}",
   "rooms.offlineFeed": "Server live sedang offline: hanya mode Latihan",
   "rooms.offline": "Server live sedang offline",
-  "rooms.offlineNotice": "Server PvP live sedang offline. Mode Latihan tetap buka."
+  "rooms.offlineNotice": "Server PvP live sedang offline. Mode Latihan tetap buka.",
+  "rejoin.title": "Karaktermu masih ada di arena",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "Menyamar jadi properti",
+  "rejoin.hp": "HP {hp}",
+  "rejoin.away": "Offline: tetap di tempat kamu meninggalkannya dan masih bisa ditemukan serta dikalahkan.",
+  "rejoin.elsewhere": "Sedang dimainkan di tab atau perangkat lain.",
+  "rejoin.button": "Gabung lagi",
+  "rejoin.dismiss": "Sembunyikan kartu ini (karaktermu tetap di pertandingan)",
+  "rejoin.gone": "Karaktermu sudah tidak ada di pertandingan itu. Kembali ke lobi…",
+  "rejoin.activeElsewhere": "Karaktermu masih hidup di sebuah pertandingan: bergabung kembali (tanpa EC)",
+  "rejoin.feedResumed": "Kembali mengendalikan karaktermu: posisi sama, HP sama, tanpa EC",
+  "rejoin.replaced": "Karakter ini dibuka di tab atau perangkat lain",
+  "rejoin.loadoutTitle": "Bergabung kembali dengan karaktermu: posisi, senjata, dan penyamarannya tetap",
+  "rejoin.resume": "LANJUTKAN KENDALI",
+  "persist.enterFeed": "Keluar saat masih hidup membuat karaktermu tetap di arena sampai dikalahkan: bisa bergabung lagi kapan saja"
 }
