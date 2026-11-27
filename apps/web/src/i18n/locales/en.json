@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "Your banner pot paid your killer {v}",
   "rooms.offlineFeed": "Live servers are offline: Practice mode only",
   "rooms.offline": "Live servers are offline right now",
-  "rooms.offlineNotice": "Live PvP servers are offline right now. Practice is still open."
+  "rooms.offlineNotice": "Live PvP servers are offline right now. Practice is still open.",
+  "rejoin.title": "Your character is still in the arena",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "Prop-hidden",
+  "rejoin.hp": "HP {hp}",
+  "rejoin.away": "Offline: it stays where you left it and can still be found and defeated.",
+  "rejoin.elsewhere": "Being played in another tab or device right now.",
+  "rejoin.button": "Rejoin",
+  "rejoin.dismiss": "Hide this card (your character stays in the match)",
+  "rejoin.gone": "Your character is no longer in that match. Back to the lobby…",
+  "rejoin.activeElsewhere": "Your character is still alive in a match: rejoining it (no EC used)",
+  "rejoin.feedResumed": "Rejoined your live character: same spot, same HP, no EC used",
+  "rejoin.replaced": "This character was opened in another tab or device",
+  "rejoin.loadoutTitle": "Rejoining your live character: it keeps its spot, weapon and disguise",
+  "rejoin.resume": "RESUME CONTROL",
+  "persist.enterFeed": "Leaving while alive keeps your character in the arena until it is defeated: rejoin any time"
 }

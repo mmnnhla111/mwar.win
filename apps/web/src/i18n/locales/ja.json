@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "あなたのバナー賞金から倒した相手に {v} 支払われました",
   "rooms.offlineFeed": "ライブサーバーはオフライン：練習モードのみ",
   "rooms.offline": "ライブサーバーは現在オフラインです",
-  "rooms.offlineNotice": "ライブ PvP サーバーは現在オフラインです。練習モードは引き続き遊べます。"
+  "rooms.offlineNotice": "ライブ PvP サーバーは現在オフラインです。練習モードは引き続き遊べます。",
+  "rejoin.title": "キャラクターはまだ戦場にいます",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "オブジェクトに変装中",
+  "rejoin.hp": "HP {hp}",
+  "rejoin.away": "オフライン：離れた場所にそのまま残り、他のプレイヤーに見つかって倒される可能性があります。",
+  "rejoin.elsewhere": "別のタブまたは端末でプレイ中です。",
+  "rejoin.button": "再参加",
+  "rejoin.dismiss": "このカードを隠す（キャラクターはマッチに残ります）",
+  "rejoin.gone": "キャラクターはもうそのマッチにいません。ロビーに戻ります…",
+  "rejoin.activeElsewhere": "キャラクターはマッチでまだ生存中：再参加します（EC は使いません）",
+  "rejoin.feedResumed": "キャラクターの操作に戻りました：同じ位置・同じ HP、EC 消費なし",
+  "rejoin.replaced": "このキャラクターは別のタブまたは端末で開かれました",
+  "rejoin.loadoutTitle": "キャラクターに再参加中：位置・武器・変装はそのままです",
+  "rejoin.resume": "操作を再開",
+  "persist.enterFeed": "生存中に退出すると、倒されるまでキャラクターは戦場に残ります：いつでも再参加できます"
 }

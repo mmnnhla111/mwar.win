@@ -2,7 +2,7 @@
  * MWAR Frontend API Client - Connects directly to local Cloudflare Worker (wrangler dev)
  */
 
-import type { TodayQuestsResponse, DailyMlmSummary, CheerAdFormat, CheerTargetType, CheerStatus, CheerResult } from '@mwar/shared';
+import type { TodayQuestsResponse, DailyMlmSummary, CheerAdFormat, CheerTargetType, CheerStatus, CheerResult, ActiveGameSession, ActiveGameSessionResponse } from '@mwar/shared';
 import { activityPayload } from './activity';
 import type {
   BootstrapResponse,
@@ -563,6 +563,21 @@ export function getGames() {
 
 export function getFpsRooms() {
   return apiFetch<FpsRoomsResponse>('/api/games/fps/rooms');
+}
+
+/**
+ * V1.1 R3: the alive character this account still has in a live room (a disconnected body or another tab).
+ * `rejoin` also asks for the 120 s signed token the game server needs to re-attach to that body.
+ */
+export function getActiveSession(rejoin = false) {
+  return apiFetch<ActiveGameSessionResponse>(`/api/game/active-session${rejoin ? '?rejoin=1' : ''}`);
+}
+
+/** /game link that resumes control of that body (the extra params let the page build the right map first). */
+export function rejoinHref(s: ActiveGameSession) {
+  const q = new URLSearchParams({ rejoin: s.roomId, mode: s.mode, map: s.mapName === 'large' ? 'large' : 'small' });
+  if (s.roomCode) q.set('room', s.roomCode);
+  return `/game?${q.toString()}`;
 }
 
 export function getFpsRoster(roomId: string, cursor?: string | null) {

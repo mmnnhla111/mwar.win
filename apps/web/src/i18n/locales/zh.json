@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "你的横幅奖池向击杀者支付了 {v}",
   "rooms.offlineFeed": "在线服务器已离线：仅可使用练习模式",
   "rooms.offline": "在线服务器目前离线",
-  "rooms.offlineNotice": "在线 PvP 服务器目前离线，练习模式仍可使用。"
+  "rooms.offlineNotice": "在线 PvP 服务器目前离线，练习模式仍可使用。",
+  "rejoin.title": "你的角色仍在战场上",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "伪装中",
+  "rejoin.hp": "生命 {hp}",
+  "rejoin.away": "已离线：角色留在原地，仍可能被其他玩家找到并击败。",
+  "rejoin.elsewhere": "正在其他标签页或设备上游玩。",
+  "rejoin.button": "重新加入",
+  "rejoin.dismiss": "隐藏此卡片（角色仍留在对局中）",
+  "rejoin.gone": "你的角色已不在该对局中，正在返回大厅…",
+  "rejoin.activeElsewhere": "你的角色仍在对局中存活：正在重新加入（不消耗 EC）",
+  "rejoin.feedResumed": "已重新控制角色：位置与生命值不变，不消耗 EC",
+  "rejoin.replaced": "此角色已在其他标签页或设备上打开",
+  "rejoin.loadoutTitle": "正在重新加入你的角色：位置、武器和伪装保持不变",
+  "rejoin.resume": "恢复控制",
+  "persist.enterFeed": "存活时离开，角色会留在战场上直到被击败：随时可以重新加入"
 }

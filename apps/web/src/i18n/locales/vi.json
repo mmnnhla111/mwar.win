@@ -976,5 +976,22 @@
   "fastmini.potLostFeed": "Quỹ banner của bạn đã trả cho người hạ bạn {v}",
   "rooms.offlineFeed": "Máy chủ trực tuyến đang tắt: chỉ có chế độ Luyện tập",
   "rooms.offline": "Máy chủ trực tuyến hiện đang tắt",
-  "rooms.offlineNotice": "Máy chủ PvP trực tuyến hiện đang tắt. Chế độ Luyện tập vẫn mở."
+  "rooms.offlineNotice": "Máy chủ PvP trực tuyến hiện đang tắt. Chế độ Luyện tập vẫn mở.",
+  "rejoin.title": "Nhân vật của bạn vẫn còn trên đấu trường",
+  "rejoin.mode.mini_30": "Skirmish 30P",
+  "rejoin.mode.standard_100": "Warzone 100P",
+  "rejoin.mode.fast_mini": "Fast & Mini",
+  "rejoin.propBadge": "Đang ngụy trang",
+  "rejoin.hp": "HP {hp}",
+  "rejoin.away": "Ngoại tuyến: vẫn ở chỗ bạn rời đi và vẫn có thể bị tìm thấy, hạ gục.",
+  "rejoin.elsewhere": "Đang được chơi ở tab hoặc thiết bị khác.",
+  "rejoin.button": "Vào lại",
+  "rejoin.dismiss": "Ẩn thẻ này (nhân vật vẫn ở trong trận)",
+  "rejoin.gone": "Nhân vật của bạn không còn trong trận đó. Đang về sảnh…",
+  "rejoin.activeElsewhere": "Nhân vật của bạn vẫn còn sống trong một trận: đang vào lại (không tốn EC)",
+  "rejoin.feedResumed": "Đã điều khiển lại nhân vật: cùng vị trí, cùng HP, không tốn EC",
+  "rejoin.replaced": "Nhân vật này đã được mở ở tab hoặc thiết bị khác",
+  "rejoin.loadoutTitle": "Đang vào lại nhân vật: giữ nguyên vị trí, vũ khí và ngụy trang",
+  "rejoin.resume": "TIẾP TỤC ĐIỀU KHIỂN",
+  "persist.enterFeed": "Rời đi khi còn sống, nhân vật vẫn ở lại đấu trường cho đến khi bị hạ: có thể vào lại bất cứ lúc nào"
 }

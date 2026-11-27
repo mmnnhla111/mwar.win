@@ -54,6 +54,28 @@ export class PlayerState extends Schema {
   lastActiveTime: number = Date.now();
   afkWarningSent: boolean = false;
   afkKicked: boolean = false;
+  /**
+   * V1.1 R3 (server-only, never synced — other clients must not be able to tell a disconnected body or a
+   * disguised one apart from a live player): the client left while alive; the body stays in the arena with
+   * its exact position, HP, hitbox and prop disguise, inputs frozen, until it dies or the room shuts down.
+   */
+  isDisconnected: boolean = false;
+  disconnectedAt: number = 0;
+}
+
+/** Synced + internal fields of a player, copied when a Rejoin moves the body to the new connection's key. */
+const PLAYER_FIELDS = [
+  'id', 'username', 'x', 'y', 'z', 'rotationY', 'stance', 'health', 'maxHealth', 'avatarId', 'isProp', 'propType', 'disguisePropId',
+  'isPropSolid', 'primaryWeapon', 'currentWeapon', 'magAmmo', 'reserveAmmo', 'grenadesRemaining', 'isGhost', 'isSpectator', 'kills',
+  'deaths', 'chestsCollected', 'sessionEarningsMicroUsd', 'bountyMicroUsd', 'ticketMicroUsd', 'medkits', 'lastActiveTime',
+  'afkWarningSent', 'afkKicked', 'isDisconnected', 'disconnectedAt',
+] as const;
+
+export function clonePlayerState(src: PlayerState, sessionId: string): PlayerState {
+  const p = new PlayerState();
+  for (const k of PLAYER_FIELDS) (p as any)[k] = (src as any)[k];
+  p.sessionId = sessionId;
+  return p;
 }
 
 export class DroppedWeaponState extends Schema {

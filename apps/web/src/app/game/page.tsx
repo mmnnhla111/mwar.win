@@ -3,7 +3,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
-import { apiFetch, getFpsRooms, progressQuest } from '../../lib/api';
+import { apiFetch, getActiveSession, getFpsRooms, progressQuest, rejoinHref } from '../../lib/api';
+import type { ActiveGameSession } from '@mwar/shared';
 import { setFastMiniBannerPot } from '../../lib/bannerContext';
 import { DeathSummaryOverlay, type DeathPromptData } from '../../game/ui/DeathSummary';
 import { useTranslation } from '../../i18n/I18nProvider';
@@ -141,6 +142,33 @@ function readRoomCode(): string | null {
   const code = (q.get('room') || '').toUpperCase();
   if (q.get('mode') === 'practice' || code === 'SOLO' || !/^[A-Z0-9][A-Z0-9_-]{1,15}$/.test(code)) return null;
   return code;
+}
+
+/** V1.1 R3: /game?rejoin=<roomId> re-attaches to the account's alive body in that room (no new EC). */
+function readRejoinRoom(): string | null {
+  if (typeof window === 'undefined') return null;
+  const id = new URLSearchParams(window.location.search).get('rejoin') || '';
+  return /^[A-Za-z0-9_-]{4,64}$/.test(id) ? id : null;
+}
+
+/** State the server hands back on Rejoin (exact body: position, HP, prop, weapon, ammo). */
+interface ResumeState {
+  x: number;
+  y: number;
+  z: number;
+  rotationY: number;
+  health: number;
+  isProp: boolean;
+  propType: string;
+  avatarId: string;
+  primaryWeapon: string;
+  currentWeapon: string;
+  magAmmo: number;
+  reserveAmmo: number;
+  grenades: number;
+  medkits: number;
+  entryId: string;
+  fastMini: boolean;
 }
 
 /** Map chosen for the room by the admin (lobby link ?map=small|large); falls back to the mode default. */
@@ -297,6 +325,9 @@ export default function GamePage() {
   const [ecChargedPct, setEcChargedPct] = useState(0);
   const [ecSpent, setEcSpent] = useState(0);
   const [serversOffline, setServersOffline] = useState(false);
+  // V1.1 R3: Rejoin of a live body — the loadout screen becomes "Resume" and deploys at the body's exact spot
+  const resumeRef = useRef<ResumeState | null>(null);
+  const [resumeInfo, setResumeInfo] = useState<{ prop: string | null; hp: number } | null>(null);
   const netRef = useRef<{ room: Room | null; roomName: string; roomCode: string | null; entryId: string | null; restakeWait: ((r: any) => void) | null }>({
     room: null,
     roomName: 'mini_30',
@@ -1289,10 +1320,34 @@ export default function GamePage() {
         } catch {
           // API unreachable: still try the game server directly
         }
+        // V1.1 R3 Rejoin: take control of this account's alive body again — a Worker-signed token for that
+        // user + life + room, never a new EC ticket. Nothing to rejoin any more (it died) → back to the lobby.
+        const rejoinRoomId = readRejoinRoom();
+        let rejoin: { token: string; session: ActiveGameSession } | null = null;
+        if (rejoinRoomId && meData?.user && !isGhostSpectator) {
+          try {
+            const act = await getActiveSession(true);
+            if (act.session && act.session.roomId === rejoinRoomId && act.rejoinToken) rejoin = { token: act.rejoinToken, session: act.session };
+          } catch {
+            // API unreachable: handled below
+          }
+          if (!rejoin) {
+            feed(`⚠️ ${tRef.current('rejoin.gone')}`);
+            window.setTimeout(() => {
+              if (!destroyed) window.location.replace('/games/fps');
+            }, 2500);
+            return;
+          }
+          netRef.current.entryId = rejoin.session.entryId;
+          if (rejoin.session.mode === 'fast_mini') {
+            setFastMiniBannerPot(rejoin.session.entryId);
+            setFastMiniSeat(true);
+          }
+        }
         // Paid arena: spend the room's EC cost for a signed entry ticket. Without one you still play, unpaid.
         let entryToken: string | undefined;
         // Spectators never spend EC and never enter a paid seat
-        if (meData?.user && !isGhostSpectator) {
+        if (meData?.user && !isGhostSpectator && !rejoin) {
           try {
             const enter = await apiFetch<{ entryToken: string | null; energyTickets: number; free?: boolean; fastMini?: boolean; entryId?: string }>('/api/game/enter', {
               method: 'POST',
@@ -1310,7 +1365,17 @@ export default function GamePage() {
               if (!enter.free && entryToken) setEcSpent((n) => n + 1);
               feed(enter.free ? '🎮 Free room: no EC used, no cash rewards' : `⚡ EC used to enter the paid arena (${enter.energyTickets} left)`);
             }
+            if (entryToken) feed(`🧍 ${tRef.current('persist.enterFeed')}`);
           } catch (e) {
+            if ((e as { code?: string })?.code === 'ACTIVE_SESSION') {
+              // V1.1 R3: this account still has an alive body in a match → rejoin it (no second body, no new EC)
+              const act = await getActiveSession().catch(() => null);
+              if (act?.session && !destroyed) {
+                feed(`🔁 ${tRef.current('rejoin.activeElsewhere')}`);
+                window.location.replace(rejoinHref(act.session));
+                return;
+              }
+            }
             if ((e as { code?: string })?.code === 'GAME_SERVERS_OFFLINE') {
               setServersOffline(true);
               setFastMiniSeat(false);
@@ -1329,7 +1394,9 @@ export default function GamePage() {
           // storage blocked
         }
         // Admin-configured rooms join the 'arena' room type by code; the server applies mode, map and caps
-        const joinPromise = colyseusClient.joinOrCreate(roomCode ? 'arena' : roomName, {
+        const joinPromise = rejoin
+          ? (rejoin.session.serverUrl ? new ColyseusClient(rejoin.session.serverUrl) : colyseusClient).joinById(rejoin.session.roomId, { rejoinToken: rejoin.token, deviceId })
+          : colyseusClient.joinOrCreate(roomCode ? 'arena' : roomName, {
           ...(roomCode ? { roomCode } : {}),
           entryToken,
           deviceId,
@@ -1504,6 +1571,20 @@ export default function GamePage() {
           soundFX.playExplosion(new THREE.Vector3(data.x, data.y, data.z).distanceTo(camera.position));
         });
 
+        // V1.1 R3: re-attached to the live body — remember its exact state; "Resume" deploys right there
+        roomInstance.onMessage('rejoined', (data: any) => {
+          if (!data || typeof data.x !== 'number') return;
+          resumeRef.current = data as ResumeState;
+          if (typeof data.entryId === 'string' && data.entryId) netRef.current.entryId = data.entryId;
+          if (PRIMARY_IDS.includes(data.primaryWeapon)) setLoadoutPrimary(data.primaryWeapon);
+          if (CHARACTER_IDS.includes(data.avatarId)) setLoadoutCharacter(data.avatarId);
+          setResumeInfo({ prop: data.isProp ? propDef(validProp(data.propType)).name : null, hp: Math.round(Number(data.health) || 0) });
+          feed(`🔁 ${tRef.current('rejoin.feedResumed')}`);
+        });
+        roomInstance.onMessage('session_replaced', () => {
+          feed(`⚠️ ${tRef.current('rejoin.replaced')}`);
+          setConnectionStatus('offline_practice');
+        });
         roomInstance.onMessage('player_respawned', (data: any) => {
           if (isGhostSpectator) return;
           setDeathPrompt(null);
@@ -1949,7 +2030,11 @@ export default function GamePage() {
     };
 
     // ---- Deploy (from the loadout screen) --------------------------------------------------
-    deployRef.current = (primary, character) => {
+    deployRef.current = (pickedPrimary, pickedCharacter) => {
+      // V1.1 R3 Rejoin: the body keeps its own operator + weapon (the server never re-arms a live body)
+      const resume = resumeRef.current;
+      const primary = resume && PRIMARY_IDS.includes(resume.primaryWeapon as PrimaryId) ? (resume.primaryWeapon as PrimaryId) : pickedPrimary;
+      const character = resume && CHARACTER_IDS.includes(resume.avatarId as CharacterId) ? (resume.avatarId as CharacterId) : pickedCharacter;
       player.loadoutPrimary = primary;
       player.character = character;
       const arms = characterArmColors(character);
@@ -1960,6 +2045,28 @@ export default function GamePage() {
       inv.slot = 'primary';
       inv.lastGunSlot = 'primary';
       syncViewmodelWeapon(true);
+      if (resume) {
+        resumeRef.current = null;
+        setResumeInfo(null);
+        if (resume.currentWeapon === primary && inv.primary) {
+          inv.primary.mag = Math.max(0, Math.floor(resume.magAmmo));
+          inv.primary.reserve = Math.max(0, Math.floor(resume.reserveAmmo));
+        }
+        inv.grenades = Math.max(0, Math.floor(resume.grenades));
+        syncViewmodelWeapon(true);
+        body.x = resume.x;
+        body.y = resume.y;
+        body.z = resume.z;
+        body.velY = 0;
+        player.renderY = resume.y;
+        player.hp = resume.health;
+        player.medkits = Math.max(0, Math.floor(resume.medkits));
+        if (typeof resume.rotationY === 'number') look.yaw = resume.rotationY;
+        // Still disguised exactly as before (the server already has it — no message)
+        if (resume.isProp) setProp(validProp(resume.propType), false);
+        feed(`🔁 ${tRef.current('rejoin.feedResumed')}`);
+        return;
+      }
       const s = pickSpawn(null);
       body.x = s.x;
       body.y = s.y;
@@ -3359,6 +3466,15 @@ export default function GamePage() {
           onCharacter={setLoadoutCharacter}
           onDeploy={deploy}
           respawn={respawnLoadout}
+          resume={
+            resumeInfo
+              ? {
+                  title: t('rejoin.loadoutTitle'),
+                  detail: `${t('rejoin.hp', { hp: resumeInfo.hp })}${resumeInfo.prop ? ` · ${t('rejoin.propBadge')}: ${resumeInfo.prop}` : ''}`,
+                  button: t('rejoin.resume'),
+                }
+              : null
+          }
           bottomPad={showAdBanner ? (isMobile ? 80 : 92) : 0}
         />
       )}
