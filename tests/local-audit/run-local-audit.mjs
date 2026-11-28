@@ -71,6 +71,7 @@ codes.spec = await run('01-economy-spec.mjs');
 if (!args['skip-sim'] && !args['probes-only']) codes.sim = await run('02-simulate-players.mjs', [`--players=${args.players ?? 100}`, `--play-seconds=${args['play-seconds'] ?? 150}`]);
 codes.economics = await run('03-country-economics.mjs');
 if (!args['skip-sim']) codes.abuse = await run('04-abuse-probes.mjs');
+if (!args['skip-sim']) codes.live = await run('05-live-economy-probes.mjs');
 console.log(`\nexit codes ${JSON.stringify(codes)} · logs and JSON in ${path.relative(ROOT, STATE_DIR)}/`);
 cleanup();
 process.exit(Object.values(codes).some(Boolean) ? 1 : 0);

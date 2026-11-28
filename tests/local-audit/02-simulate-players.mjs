@@ -62,20 +62,25 @@ const ancestorsOf = (id) => {
 function moneySnapshot() {
   const r = sqlFile([
     'SELECT COALESCE(SUM(balance_micro_usd),0) AS bal, COALESCE(SUM(bounty_micro_usd),0) AS bty, SUM(CASE WHEN balance_micro_usd < 0 OR bounty_micro_usd < 0 THEN 1 ELSE 0 END) AS neg FROM wallets;',
-    "SELECT platform_micro_usd AS pl, energy_pool_micro_usd AS pool, energy_pool_drawn_micro_usd AS drawn, boss_bounty_pool_micro_usd AS boss, safety_reserve_micro_usd AS safety FROM system_balances WHERE id = 'global';",
+    "SELECT platform_micro_usd AS pl, energy_pool_micro_usd AS pool, energy_pool_drawn_micro_usd AS drawn, boss_bounty_pool_micro_usd AS boss, safety_reserve_micro_usd AS safety, marketing_pool_micro_usd AS mk FROM system_balances WHERE id = 'global';",
     'SELECT COALESCE(SUM(pending_ec_micro_usd),0) AS pend FROM users;',
     "SELECT COALESCE(SUM(CASE WHEN status IN ('available','in_match') THEN backed_micro_usd ELSE 0 END),0) AS live FROM user_energy_tickets;",
     "SELECT COALESCE(SUM(amount_micro_usd),0) AS mlm FROM daily_mlm_pending_ledger WHERE status IN ('pending_grey','unlocked_green');",
     "SELECT COALESCE(SUM(micro_usd),0) AS fm FROM fast_mini_pot_credits WHERE status = 'open';",
     "SELECT COALESCE(SUM(amount_micro_usd),0) AS wd FROM withdrawal_requests WHERE status NOT IN ('rejected');",
     "SELECT COALESCE(SUM(amount_micro_usd),0) AS res FROM boss_bounty_reservations WHERE status = 'reserved';",
+    // V1.2 C: cold-start bot bounties reserved out of the Boss Bounty Pool
+    "SELECT COALESCE(SUM(amount_micro_usd),0) AS res FROM bot_bounty_reservations WHERE status = 'reserved';",
   ]).map((x) => x.results[0] || {});
-  const [w, sys, u, t, m, f, wd, br] = r;
+  const [w, sys, u, t, m, f, wd, br, bot] = r;
   const parts = {
     wallets: Number(w.bal), headBounties: Number(w.bty), platform: Number(sys.pl), poolUnspent: Number(sys.pool) - Number(sys.drawn),
     pendingEc: Number(u.pend), liveTickets: Number(t.live), mlmPending: Number(m.mlm), fastMiniOpen: Number(f.fm), withdrawals: Number(wd.wd),
     // V1.2: Boss Bounty Pool + draws reserved for live Golden Bosses + the 3 % Platform Safety Reserve
     bossPool: Number(sys.boss), bossReserved: Number(br.res), safetyReserve: Number(sys.safety),
+    // V1.2 C: marketing pool (promo ticket backing) + bot bounty reservations; gifts / skin trades / streamer shares move
+    // money between wallets + platform only (Δ 0); a marketing deposit is the only new inflow (counted below)
+    marketingPool: Number(sys.mk || 0), botReserved: Number(bot.res),
   };
   return { ...parts, total: Object.values(parts).reduce((a, b) => a + b, 0), negativeWallets: Number(w.neg || 0), pool: Number(sys.pool), drawn: Number(sys.drawn) };
 }
@@ -559,13 +564,39 @@ const paidNow = Number(mlmAfter.paid) - Number(mlmBefore.paid0);
 const burnedNow = Number(mlmAfter.burned) - Number(mlmBefore.burned0);
 check(SEC, 'MLM settlement: 3 parallel triggers credit the day exactly once (wallets get exactly the settled rows)', mlmCredited === paidNow && Number(mlmAfter.open) === 0 && paidNow + burnedNow === Number(mlmBefore.open), `pending ${mlmBefore.open} µUSD in ${mlmBefore.n} rows → paid ${paidNow} + burned ${burnedNow} · wallets credited ${mlmCredited} (${(mlmCredited / Math.max(1, paidNow)).toFixed(2)}×) · HTTP ${settle.map((r) => r.status).join(',')}`);
 
+// ---- 6b. V1.2 C live economy inside the zero-deficit window --------------------------------------------------
+// A marketing-pool deposit (company money: the only new inflow of this block) backs a launch promo code; players
+// redeem it (1 per account / device, never beyond the pool); two players trade a crate skin for C (90 / 10).
+{
+  const code = `SIM${RUN.toUpperCase().replace(/[^A-Z0-9]/g, '')}`.slice(0, 16);
+  const DEP = 200_000; // 20 tickets of 100 C
+  const cr = await call('/api/admin/cold-start/promo-codes', { method: 'POST', token: ops.token, body: { code, backedMicroUsdPerTicket: 10_000, maxRedemptions: 500, depositMicroUsd: DEP } });
+  if (cr.status === 200) inflow.marketingDeposit = DEP;
+  const take = players.slice(0, Math.min(30, players.length));
+  const rr = await Promise.all(take.map((p) => call('/api/promo/redeem', { method: 'POST', token: p.token, body: { code, deviceFp: uuid().replace(/-/g, '') } })));
+  const okN = rr.filter((r) => r.status === 200).length;
+  const mk = Number(sql1("SELECT marketing_pool_micro_usd AS m FROM system_balances WHERE id = 'global'").m);
+  check(SEC, 'V1.2 C promo: redemptions never exceed the marketing-pool deposit (each 100 C ticket drawn atomically)', cr.status === 200 && okN === Math.min(take.length, 20) && mk >= 0, `create ${cr.status} · ${okN}/${take.length} redeemed · pool left ${mk} µUSD · refusals ${[...new Set(rr.filter((r) => r.status !== 200).map((r) => r.body.reason))].join(',')}`);
+  // P2P skin trade between the seller (crate from 3 test fragments) and the richest other player
+  const seller = players[0];
+  const rich = sql(`SELECT user_id AS u, balance_micro_usd AS b FROM wallets WHERE user_id IN (${players.slice(1).map((p) => `'${p.id}'`).join(',')}) ORDER BY balance_micro_usd DESC LIMIT 1`)[0];
+  const buyer = players.find((p) => p.id === rich?.u);
+  if (buyer && Number(rich.b) >= 5_000) {
+    sqlFile([`UPDATE users SET skin_fragments = skin_fragments + 3 WHERE id = '${seller.id}';`]);
+    const crate = await call('/api/skins/crate/open', { method: 'POST', token: seller.token });
+    const list = await call('/api/skins/list', { method: 'POST', token: seller.token, body: { skinId: crate.body?.skin?.id, priceMicroUsd: 5_000 } });
+    const buy = await call(`/api/skins/market/${list.body.listingId}/buy`, { method: 'POST', token: buyer.token });
+    check(SEC, 'V1.2 C skin trade inside the simulation: 50 C sale (seller 45 C, platform 5 C) — money only moves', crate.status === 200 && list.status === 200 && buy.status === 200 && buy.body.sellerMicroUsd === 4_500 && buy.body.feeMicroUsd === 500, `crate ${crate.status} · list ${list.status} · buy ${buy.status} ${buy.body.sellerMicroUsd ?? ''}/${buy.body.feeMicroUsd ?? ''}`);
+  } else note(SEC, 'V1.2 C skin trade skipped: no player with ≥ 50 C');
+}
+
 // ---- 7. invariants in D1 -------------------------------------------------------------------------------
 const ids = players.map((p) => `'${p.id}'`).join(',');
 const money1 = moneySnapshot();
-const inflowTotal = inflow.postbackVerified + inflow.directLinkVerified + inflow.bossTopUp;
+const inflowTotal = inflow.postbackVerified + inflow.directLinkVerified + inflow.bossTopUp + (inflow.marketingDeposit || 0);
 const delta = money1.total - money0.total;
 const extraMlm = mlmCredited - paidNow; // money created by a double settlement, if any
-check(SEC, 'ZERO-DEFICIT: money in the system grew by exactly the real ad revenue credited (nothing created or lost)', delta === inflowTotal, `Δ ${delta} µUSD vs verified inflow ${inflowTotal} µUSD (postback ${inflow.postbackVerified} + direct-link postback ${inflow.directLinkVerified}) · unverified estimate NOT credited ${inflow.unverifiedEstimate} · diff ${delta - inflowTotal}${extraMlm ? ` (double MLM settlement ${extraMlm})` : ''}`);
+check(SEC, 'ZERO-DEFICIT: money in the system grew by exactly the real ad revenue credited (nothing created or lost)', delta === inflowTotal, `Δ ${delta} µUSD vs verified inflow ${inflowTotal} µUSD (postback ${inflow.postbackVerified} + direct-link postback ${inflow.directLinkVerified} + marketing deposit ${inflow.marketingDeposit || 0}) · unverified estimate NOT credited ${inflow.unverifiedEstimate} · diff ${delta - inflowTotal}${extraMlm ? ` (double MLM settlement ${extraMlm})` : ''}`);
 {
   // V1.2: the 3 % / 5 % of every verified gross reached the safety reserve / boss pool
   const parts = sql1(`SELECT COALESCE(SUM(verified_gross_micro_usd),0) AS g FROM ad_click_tokens WHERE verified_at IS NOT NULL`);
