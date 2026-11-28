@@ -633,7 +633,7 @@
   "cheer.rules": "Tối đa {daily} lượt/ngày, {target} lượt mỗi người, cách nhau {cd} giây. EC chỉ có từ quảng cáo, không tự hồi.",
   "composer.maxItems": "Tối đa {max} ảnh / video mỗi bài",
   "composer.libFailed": "Không tải được trình nén. Vui lòng tải lại trang.",
-  "composer.compressingVideo": "Đang nén video… {pct}%",
+  "composer.compressingVideo": "Đang chuẩn bị tệp {pct}%...",
   "composer.videoNoEncoder": "Trình duyệt này không nén được video. Hãy dùng Chrome hoặc Safari, hoặc chọn MP4 tối đa 720p.",
   "composer.uploading": "Đang tải lên {n}/{total}…",
   "composer.gateFailed": "Đăng không thành công. Vui lòng tải lại màn hình rồi đăng lại.",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "Chuyển phí nền tảng 5 % của mỗi lần chia vào quỹ trùm",
   "ads.admin.redirectFeeHint": "Bật (mặc định ra mắt): 5 % gộp + 5 % phí = 10 % quỹ trùm. Tắt: 5 % phí là lợi nhuận nền tảng.",
   "ads.admin.revenueAlert": "Cảnh báo: giá trị quảng cáo ước tính ({est}) cao hơn doanh thu mạng đã xác minh ({ver}) trong 7 ngày — hãy giảm hệ số.",
-  "ads.admin.revenueOk": "Doanh thu đã xác minh {ver} bù đủ ước tính {est} (7 ngày)"
+  "ads.admin.revenueOk": "Doanh thu đã xác minh {ver} bù đủ ước tính {est} (7 ngày)",
+  "composer.preparingFile": "Đang chuẩn bị tệp {pct}%...",
+  "composer.uploadingBg": "Đang tải lên...",
+  "composer.postSuccess": "Đã đăng bài!",
+  "common.retry": "Thử lại"
 }

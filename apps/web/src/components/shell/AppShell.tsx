@@ -18,6 +18,7 @@ import { FloatingQuestWidget } from '../FloatingQuestWidget';
 import { ActiveMatchPopup } from './ActiveMatchPopup';
 import { DevMockPanel } from '../DevMockPanel';
 import { I18nProvider, useTranslation } from '../../i18n/I18nProvider';
+import { PostUploadProvider } from '../social/PostUploadProvider';
 
 /** Pages whose main stage wants the full centre + right width (no right sidebar on lg). */
 const WIDE_PATHS = ['/games/fps', '/admin', '/chat', '/marketplace', '/network', '/wallet'];
@@ -167,7 +168,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <SessionProvider>
       <I18nProvider>
-        <ShellSwitch>{children}</ShellSwitch>
+        <PostUploadProvider>
+          <ShellSwitch>{children}</ShellSwitch>
+        </PostUploadProvider>
       </I18nProvider>
     </SessionProvider>
   );

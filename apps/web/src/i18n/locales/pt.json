@@ -633,7 +633,7 @@
   "cheer.rules": "Até {daily} apoios por dia, {target} por criador, um a cada {cd}s. EC vem só de anúncios, nunca com o tempo.",
   "composer.maxItems": "Até {max} fotos / vídeos por publicação",
   "composer.libFailed": "Não foi possível carregar o compressor de mídia. Atualize a página.",
-  "composer.compressingVideo": "Comprimindo vídeo… {pct}%",
+  "composer.compressingVideo": "Preparando arquivo {pct}%...",
   "composer.videoNoEncoder": "Este navegador não consegue comprimir vídeo. Tente o Chrome ou o Safari, ou escolha um MP4 de até 720p.",
   "composer.uploading": "Enviando {n}/{total}…",
   "composer.gateFailed": "Falha ao publicar. Atualize a tela e publique de novo.",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "Enviar a taxa de 5 % de cada divisão ao fundo do chefe",
   "ads.admin.redirectFeeHint": "Ligado (padrão de lançamento): 5 % bruto + 5 % taxa = 10 % ao fundo. Desligado: a taxa de 5 % fica como lucro.",
   "ads.admin.revenueAlert": "Aviso: o valor estimado ({est}) está acima da receita verificada pelas redes ({ver}) nos últimos 7 dias — reduza os multiplicadores.",
-  "ads.admin.revenueOk": "Receita verificada {ver} cobre a estimativa {est} (7 dias)"
+  "ads.admin.revenueOk": "Receita verificada {ver} cobre a estimativa {est} (7 dias)",
+  "composer.preparingFile": "Preparando arquivo {pct}%...",
+  "composer.uploadingBg": "Enviando...",
+  "composer.postSuccess": "Publicação concluída!",
+  "common.retry": "Tentar novamente"
 }

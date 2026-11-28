@@ -633,7 +633,7 @@
   "cheer.rules": "応援は1日{daily}回、1クリエイターにつき{target}回、{cd}秒ごとに1回までです。ECは広告からのみ獲得でき、時間経過では回復しません。",
   "composer.maxItems": "1投稿につき写真 / 動画は最大{max}件",
   "composer.libFailed": "メディア圧縮ツールを読み込めませんでした。ページを再読み込みしてください。",
-  "composer.compressingVideo": "動画を圧縮中… {pct}%",
+  "composer.compressingVideo": "ファイルを準備中 {pct}%...",
   "composer.videoNoEncoder": "このブラウザは動画を圧縮できません。Chrome か Safari を使うか、720p以下のMP4を選んでください。",
   "composer.uploading": "アップロード中 {n}/{total}…",
   "composer.gateFailed": "投稿に失敗しました。画面を再読み込みしてからもう一度投稿してください。",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "各分配の手数料 5 % をボスプールへ送る",
   "ads.admin.redirectFeeHint": "オン（ローンチ既定）：総額 5 % + 手数料 5 % = ボスプール 10 %。オフ：5 % はプラットフォーム利益。",
   "ads.admin.revenueAlert": "警告：直近 7 日の推定広告価値 ({est}) がネットワーク検証収益 ({ver}) を上回っています — 倍率を下げてください。",
-  "ads.admin.revenueOk": "検証済み収益 {ver} が推定 {est} をカバー（7 日）"
+  "ads.admin.revenueOk": "検証済み収益 {ver} が推定 {est} をカバー（7 日）",
+  "composer.preparingFile": "ファイルを準備中 {pct}%...",
+  "composer.uploadingBg": "アップロード中...",
+  "composer.postSuccess": "投稿しました！",
+  "common.retry": "再試行"
 }

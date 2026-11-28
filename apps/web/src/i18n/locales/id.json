@@ -633,7 +633,7 @@
   "cheer.rules": "Maks {daily} dukungan/hari, {target} per kreator, jeda {cd} dtk. EC hanya dari iklan, tidak terisi sendiri.",
   "composer.maxItems": "Maksimal {max} foto / video per postingan",
   "composer.libFailed": "Gagal memuat kompresor media. Muat ulang halaman.",
-  "composer.compressingVideo": "Mengompres video… {pct}%",
+  "composer.compressingVideo": "Menyiapkan file {pct}%...",
   "composer.videoNoEncoder": "Browser ini tidak bisa mengompres video. Coba Chrome atau Safari, atau pilih MP4 maksimal 720p.",
   "composer.uploading": "Mengunggah {n}/{total}…",
   "composer.gateFailed": "Gagal memposting. Muat ulang layar lalu posting lagi.",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "Kirim biaya platform 5 % setiap pembagian ke Boss Bounty Pool",
   "ads.admin.redirectFeeHint": "Aktif (default peluncuran): 5 % kotor + 5 % biaya = 10 % Boss Pool. Mati: biaya 5 % jadi laba platform.",
   "ads.admin.revenueAlert": "Peringatan: nilai iklan perkiraan ({est}) melebihi pendapatan terverifikasi jaringan ({ver}) 7 hari terakhir — turunkan pengali.",
-  "ads.admin.revenueOk": "Pendapatan terverifikasi {ver} menutupi perkiraan {est} (7 hari)"
+  "ads.admin.revenueOk": "Pendapatan terverifikasi {ver} menutupi perkiraan {est} (7 hari)",
+  "composer.preparingFile": "Menyiapkan file {pct}%...",
+  "composer.uploadingBg": "Mengunggah...",
+  "composer.postSuccess": "Postingan berhasil diterbitkan!",
+  "common.retry": "Coba lagi"
 }

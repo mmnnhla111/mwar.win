@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { SOCIAL_POST_TAGS } from '@mwar/shared';
 import type { SocialPost, SocialPostTag } from '@mwar/shared';
 import { PostComposer } from '../components/social/PostComposer';
+import { usePostUpload } from '../components/social/PostUploadProvider';
 import { FeedList } from '../components/social/FeedList';
 import { Card } from '../components/ui/Card';
 import { Icon } from '../components/ui/Icon';
@@ -22,10 +23,18 @@ function HomeFeed() {
   const tag = (SOCIAL_POST_TAGS as readonly string[]).includes(tagParam || '') ? (tagParam as SocialPostTag) : null;
   const hashtag = (params.get('hashtag') || '').replace(/^#/, '').toLowerCase().slice(0, 40) || null;
   const key = `feed:${tag || ''}:${hashtag || ''}`;
+  const { subscribePublished } = usePostUpload();
   const [posts, setPosts] = useState<SocialPost[]>(() => memoGet<FeedState>(key)?.posts || []);
   const [next, setNext] = useState<string | null>(() => memoGet<FeedState>(key)?.next || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    return subscribePublished((p) => {
+      memoDrop('feed:');
+      setPosts((list) => (list.some((x) => x.id === p.id) ? list : [p, ...list]));
+    });
+  }, [subscribePublished]);
 
   const load = useCallback(
     async (opts: { cursor?: string | null; force?: boolean } = {}) => {

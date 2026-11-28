@@ -633,7 +633,7 @@
   "cheer.rules": "Up to {daily} cheers a day, {target} per creator, one every {cd}s. EC comes only from ads, never over time.",
   "composer.maxItems": "Up to {max} photos / videos per post",
   "composer.libFailed": "Could not load the media compressor. Please refresh the page.",
-  "composer.compressingVideo": "Compressing video… {pct}%",
+  "composer.compressingVideo": "Preparing file {pct}%...",
   "composer.videoNoEncoder": "This browser cannot compress video. Try Chrome or Safari, or pick an MP4 of 720p or less.",
   "composer.uploading": "Uploading {n}/{total}…",
   "composer.gateFailed": "Post failed. Please refresh the screen and post again.",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "Send the 5 % platform fee of every split to the Boss Bounty Pool",
   "ads.admin.redirectFeeHint": "On (launch default): 5 % gross + 5 % fee = 10 % Boss Bounty Pool. Off: the 5 % fee stays platform profit.",
   "ads.admin.revenueAlert": "Warning: estimated ad value credited ({est}) is above the revenue the networks verified ({ver}) in the last 7 days — lower the multipliers.",
-  "ads.admin.revenueOk": "Verified network revenue {ver} covers the estimate {est} (7 days)"
+  "ads.admin.revenueOk": "Verified network revenue {ver} covers the estimate {est} (7 days)",
+  "composer.preparingFile": "Preparing file {pct}%...",
+  "composer.uploadingBg": "Uploading...",
+  "composer.postSuccess": "Post published!",
+  "common.retry": "Retry"
 }

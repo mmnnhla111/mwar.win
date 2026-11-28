@@ -363,6 +363,9 @@ export interface BootstrapNetworkSummary {
 export interface BootstrapWalletSummary {
   balanceMicroUsd: number;
   formattedBalance: string;
+  /** Real C coin equivalent (balanceMicroUsd / 100, 2 decimals, 100 C = $0.01). */
+  balanceCoins: number;
+  formattedCoins: string;
   bountyMicroUsd: number;
   totalEarnedMicroUsd: number;
   /** Total earnings with the owner's privacy mode applied (what the sidebar shows). */

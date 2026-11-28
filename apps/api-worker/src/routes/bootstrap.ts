@@ -70,6 +70,9 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
   // EC as stored: no passive / hourly regeneration (spec §7.1). Read-only — bootstrap never writes EC.
   const tickets = u.energy_tickets ?? INITIAL_ENERGY_TICKETS;
   const maxTickets = MAX_ENERGY_TICKETS;
+  const balanceMicroUsd = Number(w.balance_micro_usd || 0);
+  const balanceCoins = Number((balanceMicroUsd / 100).toFixed(2));
+  const formattedCoins = balanceCoins.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const body: BootstrapResponse = {
     user: {
@@ -92,16 +95,18 @@ export async function bootstrapHandler(c: Context<{ Bindings: Env; Variables: { 
       earningsVisibility: (EARNINGS_VISIBILITY as readonly string[]).includes(u.earnings_visibility) ? u.earnings_visibility : 'public',
       exp: Number(u.exp || 0),
       rank,
-      coins: Number(u.coins || 0),
+      coins: balanceCoins,
     },
     walletSummary: {
-      balanceMicroUsd: Number(w.balance_micro_usd || 0),
-      formattedBalance: formatMicroUsd(w.balance_micro_usd || 0),
+      balanceMicroUsd,
+      formattedBalance: formatMicroUsd(balanceMicroUsd),
+      balanceCoins,
+      formattedCoins,
       bountyMicroUsd: Number(w.bounty_micro_usd || 0),
       totalEarnedMicroUsd: Number(w.total_earned_micro_usd || 0),
       // The sidebar shows the same privacy-applied value the profile shows to everyone
       totalEarnings: earningsDisplay(Number(w.total_earned_micro_usd || 0), u.earnings_visibility),
-      balanceCents: microUsdToCents(w.balance_micro_usd || 0),
+      balanceCents: microUsdToCents(balanceMicroUsd),
     },
     network: {
       directReferrals: Number(net.direct || 0),

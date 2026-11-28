@@ -7,10 +7,10 @@ import { Avatar } from '../ui/Avatar';
 import { Card, btn } from '../ui/Card';
 import { Icon } from '../ui/Icon';
 import { useSession } from '../../lib/session';
-import { createPost, uploadPostMedia, cancelUploads, MediaGateError } from '../../lib/api';
-import { loadMediaCompress, markMediaLibStale, preloadMediaCompress } from '../../lib/mediaCompress';
+import { preloadMediaCompress } from '../../lib/mediaCompress';
 import { displayName } from '../../lib/format';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { usePostUpload } from './PostUploadProvider';
 
 export const TAG_STYLE: Record<SocialPostTag, string> = {
   General: 'bg-stone-100 text-stone-700',
@@ -21,36 +21,33 @@ export const TAG_STYLE: Record<SocialPostTag, string> = {
 
 export const VISIBILITY_ICON: Record<PostVisibility, string> = { public: '🌐', followers: '👥', private: '🔒' };
 
-type Item = { key: string; blob: Blob; url: string; kind: 'image' | 'video'; width: number; height: number };
+type Item = { key: string; file: File; url: string; kind: 'image' | 'video'; size: number };
 
 const newAttemptId = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 /**
  * "คุณคิดอะไรอยู่..." composer: text + 1–10 photos / videos (mixed, reorder + remove before posting),
  * a tag pill, audience (public / followers / only me) and an optional 18+ self-tag.
- * Layer 1: every file is compressed on the device first (photos <= 200 KB, videos < 720p, <= 3 min).
- * Layer 2: the API rejects anything over the limits; we then reload the compression library and ask
- * the user to refresh and post again.
+ * Media selection only validates count and renders instant local previews; compression/preparation
+ * and upload are deferred to the global PostUploadProvider when the user clicks "Post".
  */
-export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }) {
+export function PostComposer({ onPosted }: { onPosted?: (p: SocialPost) => void }) {
   const { boot } = useSession();
   const { t: tr } = useTranslation();
+  const { enqueuePost } = usePostUpload();
   const user = boot?.user;
   const [body, setBody] = useState('');
   const [tag, setTag] = useState<SocialPostTag>('General');
   const [items, setItems] = useState<Item[]>([]);
   const [nsfw, setNsfw] = useState(false);
   const [visibility, setVisibility] = useState<PostVisibility>('public');
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState('');
-  const [compressing, setCompressing] = useState('');
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => preloadMediaCompress(), []);
 
-  const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const pick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
     if (!files.length) return;
@@ -58,36 +55,16 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
     setExpanded(true);
     const room = POST_MEDIA_MAX_ITEMS - items.length;
     if (files.length > room) setError(tr('composer.maxItems', { max: POST_MEDIA_MAX_ITEMS }));
-    let lib;
-    try {
-      lib = await loadMediaCompress();
-    } catch {
-      setError(tr('composer.libFailed'));
-      return;
+    const nextItems: Item[] = files.slice(0, Math.max(0, room)).map((f) => ({
+      key: newAttemptId(),
+      file: f,
+      url: URL.createObjectURL(f),
+      kind: f.type.startsWith('video/') ? 'video' : 'image',
+      size: f.size,
+    }));
+    if (nextItems.length) {
+      setItems((prev) => [...prev, ...nextItems].slice(0, POST_MEDIA_MAX_ITEMS));
     }
-    for (const f of files.slice(0, Math.max(0, room))) {
-      const isVideo = f.type.startsWith('video/');
-      try {
-        setCompressing(isVideo ? tr('composer.compressingVideo', { pct: 0 }) : tr('composer.compressing'));
-        const out = isVideo
-          ? await lib.compressVideo(f, { onProgress: (p) => setCompressing(tr('composer.compressingVideo', { pct: Math.round(p * 100) })) })
-          : await lib.compressImage(f);
-        const item: Item = { key: newAttemptId(), blob: out.blob, url: URL.createObjectURL(out.blob), kind: isVideo ? 'video' : 'image', width: out.width, height: out.height };
-        setItems((prev) => (prev.length >= POST_MEDIA_MAX_ITEMS ? prev : [...prev, item]));
-      } catch (err: any) {
-        const code = err?.code || '';
-        setError(
-          code === 'VIDEO_TOO_LONG'
-            ? tr('composer.videoLength', { max: 180 })
-            : code === 'VIDEO_NO_ENCODER'
-              ? tr('composer.videoNoEncoder')
-              : isVideo
-                ? tr('composer.videoUnreadable')
-                : tr('composer.photoFailed')
-        );
-      }
-    }
-    setCompressing('');
   };
 
   const removeAt = (i: number) =>
@@ -105,48 +82,28 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
     });
 
   const reset = () => {
+    items.forEach((it) => URL.revokeObjectURL(it.url));
     setBody('');
     setTag('General');
     setNsfw(false);
     setItems([]);
     setExpanded(false);
-    setProgress('');
-  };
-
-  const submit = async () => {
-    if (busy || compressing || (!body.trim() && !items.length)) return;
-    setBusy(true);
     setError('');
-    const attemptId = newAttemptId();
-    try {
-      const uploads: string[] = [];
-      for (let i = 0; i < items.length; i++) {
-        setProgress(tr('composer.uploading', { n: i + 1, total: items.length }));
-        const it = items[i];
-        const up = await uploadPostMedia(it.blob, attemptId, { width: it.width, height: it.height });
-        uploads.push(up.uploadId);
-      }
-      setProgress('');
-      const res = await createPost({ body: body.trim(), tag, nsfw, visibility, uploads, attemptId });
-      // The author sees the post normally at once (silent moderation): keep the local file URLs
-      onPosted(items.length ? { ...res.post, localPreviewUrls: items.map((x) => x.url) } : res.post);
-      reset();
-    } catch (err: any) {
-      if (err instanceof MediaGateError || err?.code === 'MEDIA_GATE') {
-        // Self-heal: reload the compression library on the next attempt
-        markMediaLibStale();
-        setError(tr('composer.gateFailed'));
-      } else {
-        setError(err?.message || tr('composer.postFailed'));
-      }
-      if (items.length) cancelUploads(attemptId);
-    } finally {
-      setBusy(false);
-      setProgress('');
-    }
   };
 
-  const canPost = !busy && !compressing && (!!body.trim() || items.length > 0);
+  const submit = () => {
+    if (!body.trim() && !items.length) return;
+    enqueuePost({
+      body: body.trim(),
+      tag,
+      nsfw,
+      visibility,
+      rawFiles: items.map((it) => it.file),
+    });
+    reset();
+  };
+
+  const canPost = !!body.trim() || items.length > 0;
 
   return (
     <Card className="p-4">
@@ -184,7 +141,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
                       ‹
                     </button>
                     <span className="text-[9px] font-bold bg-white/90 rounded-full px-1.5 text-stone-600">
-                      {it.kind === 'video' ? `${(it.blob.size / 1024 / 1024).toFixed(1)} MB` : `${Math.round(it.blob.size / 1024)} KB`}
+                      {it.kind === 'video' ? `${(it.size / 1024 / 1024).toFixed(1)} MB` : `${Math.round(it.size / 1024)} KB`}
                     </span>
                     <button onClick={() => move(i, 1)} disabled={i === items.length - 1} aria-label={tr('composer.moveRight')} className="w-7 h-7 rounded-full bg-white/90 text-stone-700 font-black text-sm disabled:opacity-30">
                       ›
@@ -236,7 +193,6 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
         </div>
       )}
 
-      {(compressing || progress) && <p className="mt-2 text-xs font-semibold text-stone-500 pl-[54px]">{compressing || progress}</p>}
       {error && (
         <p className="mt-2 text-sm font-semibold text-rose-500 pl-[54px]" role="alert">
           {error}
@@ -245,7 +201,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
 
       <div className="mt-3 pt-3 border-t border-stone-100 flex items-center gap-2">
         <input ref={fileRef} type="file" accept="image/*,video/mp4,video/quicktime,video/webm" multiple className="hidden" onChange={pick} />
-        <button onClick={() => fileRef.current?.click()} disabled={!!compressing || busy || items.length >= POST_MEDIA_MAX_ITEMS} className={`${btn.ghost} text-emerald-600`}>
+        <button onClick={() => fileRef.current?.click()} disabled={items.length >= POST_MEDIA_MAX_ITEMS} className={`${btn.ghost} text-emerald-600`}>
           <Icon name="image" size={20} /> {tr('composer.media')}
         </button>
         <button onClick={() => setExpanded(true)} className={`${btn.ghost} text-[#B08600] hidden sm:inline-flex`}>
@@ -253,7 +209,7 @@ export function PostComposer({ onPosted }: { onPosted: (p: SocialPost) => void }
         </button>
         <span className="ml-auto text-[11px] text-stone-400 tabular-nums">{body.length ? `${body.length}/${SOCIAL_POST_MAX_CHARS}` : ''}</span>
         <button onClick={submit} disabled={!canPost} className={btn.primary} data-post-submit>
-          {busy ? tr('composer.posting') : tr('composer.post')}
+          {tr('composer.post')}
         </button>
       </div>
     </Card>

@@ -633,7 +633,7 @@
   "cheer.rules": "दिन में अधिकतम {daily} चीयर, हर क्रिएटर को {target}, हर {cd} सेकंड में एक। EC केवल विज्ञापनों से मिलता है, समय के साथ कभी नहीं।",
   "composer.maxItems": "हर पोस्ट में अधिकतम {max} फ़ोटो / वीडियो",
   "composer.libFailed": "मीडिया कंप्रेसर लोड नहीं हो सका। कृपया पेज रीफ़्रेश करें।",
-  "composer.compressingVideo": "वीडियो कंप्रेस हो रहा है… {pct}%",
+  "composer.compressingVideo": "फ़ाइल तैयार हो रही है {pct}%...",
   "composer.videoNoEncoder": "यह ब्राउज़र वीडियो कंप्रेस नहीं कर सकता। Chrome या Safari आज़माएँ, या 720p या उससे कम का MP4 चुनें।",
   "composer.uploading": "अपलोड हो रहा है {n}/{total}…",
   "composer.gateFailed": "पोस्ट नहीं हुई। कृपया स्क्रीन रीफ़्रेश करें और फिर से पोस्ट करें।",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "हर बंटवारे का 5 % प्लेटफ़ॉर्म शुल्क बॉस पूल में भेजें",
   "ads.admin.redirectFeeHint": "चालू (लॉन्च डिफ़ॉल्ट): 5 % सकल + 5 % शुल्क = 10 % बॉस पूल। बंद: 5 % शुल्क प्लेटफ़ॉर्म लाभ।",
   "ads.admin.revenueAlert": "चेतावनी: पिछले 7 दिनों में अनुमानित विज्ञापन मूल्य ({est}) नेटवर्क-सत्यापित आय ({ver}) से अधिक है — गुणक घटाएँ।",
-  "ads.admin.revenueOk": "सत्यापित आय {ver} अनुमान {est} को कवर करती है (7 दिन)"
+  "ads.admin.revenueOk": "सत्यापित आय {ver} अनुमान {est} को कवर करती है (7 दिन)",
+  "composer.preparingFile": "फ़ाइल तैयार हो रही है {pct}%...",
+  "composer.uploadingBg": "अपलोड हो रहा है...",
+  "composer.postSuccess": "पोस्ट प्रकाशित हो गई!",
+  "common.retry": "पुनः प्रयास करें"
 }

@@ -9,9 +9,11 @@ import { openDailyQuests } from '../FloatingQuestWidget';
 import { RankProgressionModal } from '../rank/RankProgressionModal';
 
 const nf = (n: number) => Math.max(0, Math.floor(n || 0)).toLocaleString('en-US');
+const formatCoins = (n: number) =>
+  Math.max(0, Number(n || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /**
- * Slim header strip under the TopNav: rank, C game coins, ¢ cash balance, referral counts and today's
+ * Slim header strip under the TopNav: rank, C game coins, ¢/$ cash balance, referral counts and today's
  * upline-share lock (4 of 5 daily missions). Tapping "Locked" opens the daily missions drawer.
  */
 export function StatusBar() {
@@ -22,8 +24,9 @@ export function StatusBar() {
   const u = boot.user;
   const net = boot.network;
   const unlocked = !!net?.unlocked;
-  const coins = u.coins ?? 0;
+  const coins = boot.walletSummary?.balanceCoins ?? (boot.walletSummary?.balanceMicroUsd || 0) / 100;
   const cents = boot.walletSummary?.balanceCents ?? Math.floor((boot.walletSummary?.balanceMicroUsd || 0) / 10_000);
+  const formattedUsd = boot.walletSummary?.formattedBalance || '$0.00';
 
   return (
     <div className="border-t border-stone-100" data-status-bar>
@@ -41,13 +44,14 @@ export function StatusBar() {
         </button>
 
         <span className="flex items-center gap-1 rounded-full bg-[#FFF6C2] text-[#7A5B00] px-2.5 h-7 shrink-0" title={t('currency.coinsHint')} data-coins>
-          <span className="tabular-nums">{nf(coins)}</span>
+          <span className="tabular-nums">{formatCoins(coins)}</span>
           <span className="font-black">C</span>
         </span>
 
-        <Link href="/wallet" className="flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-800 hover:bg-emerald-100 px-2.5 h-7 shrink-0" title={t('currency.centsHint')} data-cents>
+        <Link href="/wallet" className="flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-800 hover:bg-emerald-100 px-2.5 h-7 shrink-0" title={`${t('currency.centsHint')} (${formattedUsd})`} data-cents>
           <span className="tabular-nums">{nf(cents)}</span>
           <span className="font-black">¢</span>
+          <span className="text-emerald-600/80 font-semibold hidden sm:inline">· {formattedUsd}</span>
         </Link>
 
         <button

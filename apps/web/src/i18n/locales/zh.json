@@ -633,7 +633,7 @@
   "cheer.rules": "每天最多 {daily} 次助威，每位创作者 {target} 次，每 {cd} 秒一次。EC 只能通过广告获得，不会随时间自动恢复。",
   "composer.maxItems": "每条帖子最多 {max} 张照片 / 视频",
   "composer.libFailed": "无法加载媒体压缩器。请刷新页面。",
-  "composer.compressingVideo": "正在压缩视频… {pct}%",
+  "composer.compressingVideo": "正在准备文件 {pct}%...",
   "composer.videoNoEncoder": "此浏览器无法压缩视频。请尝试 Chrome 或 Safari，或选择 720p 及以下的 MP4。",
   "composer.uploading": "上传中 {n}/{total}…",
   "composer.gateFailed": "发布失败。请刷新页面后重新发布。",
@@ -1010,5 +1010,9 @@
   "ads.admin.redirectFee": "将每次分账的 5 % 平台费转入首领奖池",
   "ads.admin.redirectFeeHint": "开启（上线默认）：5 % 总额 + 5 % 平台费 = 10 % 首领奖池。关闭：5 % 为平台利润。",
   "ads.admin.revenueAlert": "警告：近 7 天估算的广告价值 ({est}) 高于广告网络验证的收入 ({ver}) — 请降低系数。",
-  "ads.admin.revenueOk": "已验证收入 {ver} 覆盖估算 {est}（7 天）"
+  "ads.admin.revenueOk": "已验证收入 {ver} 覆盖估算 {est}（7 天）",
+  "composer.preparingFile": "正在准备文件 {pct}%...",
+  "composer.uploadingBg": "正在上传...",
+  "composer.postSuccess": "发布成功！",
+  "common.retry": "重试"
 }
