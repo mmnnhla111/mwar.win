@@ -241,6 +241,7 @@ if [ -d "/opt/mwar-node/.git" ]; then
   cd /opt/mwar-node
   git remote set-url origin https://github.com/mmnnhla111/mwar.win.git || true
   git fetch origin main --prune
+  git checkout -B main origin/main
   git reset --hard origin/main
   git clean -fd -e .env -e ecosystem.config.cjs
 else
@@ -407,6 +408,7 @@ ECOSYSTEM_TAIL
 echo "      Starting services via PM2 ecosystem..."
 pm2 delete all 2>/dev/null || true
 pm2 start /opt/mwar-node/ecosystem.config.cjs --update-env
+pm2 restart all --update-env || true
 pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 pm2 save || true
 
