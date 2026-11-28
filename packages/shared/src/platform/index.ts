@@ -40,6 +40,10 @@ export const STAFF_PERMISSIONS = {
   takedown: ['super_admin', 'admin', 'moderator'],
   /** Ad networks (Adsterra / Monetag) config, live/test mode, eCPM multipliers. */
   ads: ['super_admin'],
+  /** V1.2 C cold-start tools (bot fill, Happy Hour, promo codes, streamer share, skin fee) in Game & Rooms. */
+  coldStart: ['super_admin', 'ops_manager'],
+  /** V1.2 C marketing-pool deposits (company money in). */
+  marketingDeposit: ['super_admin'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 export type StaffPermission = keyof typeof STAFF_PERMISSIONS;
 

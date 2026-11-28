@@ -471,6 +471,10 @@ export interface FpsRoomLive extends FpsRoomDef {
   players: number;
   spectators: number;
   isFull: boolean;
+  /** V1.2 C: a Streamer Showcase Room ("🔴 LIVE"), listed in its own lobby section. */
+  isStreamerRoom?: boolean;
+  streamerUsername?: string | null;
+  streamerUserId?: string | null;
 }
 
 export interface FpsRoomsResponse {

@@ -27,7 +27,7 @@ export async function applyRewardSplit(
   opts: {
     earnerId: string;
     grossMicroUsd: number;
-    actionType: 'GAME_KILL' | 'CHEST_OPEN' | 'AD_WATCH' | 'CHEER_REWARD' | 'BOSS_BOUNTY_CLAIM';
+    actionType: 'GAME_KILL' | 'CHEST_OPEN' | 'AD_WATCH' | 'CHEER_REWARD' | 'BOSS_BOUNTY_CLAIM' | 'BOT_BOUNTY_CLAIM';
     sourceId?: string | null;
     dateKey?: string;
     /**

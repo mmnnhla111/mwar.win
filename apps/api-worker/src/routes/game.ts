@@ -25,6 +25,11 @@ import { trackQuestAction, getUtcDateKey } from './quests';
 import { loadRooms, gameServersOnline, fpsRoomsBody } from './games';
 import { loadActiveSession, sessionReportStmts, toActiveSession } from '../utils/active-sessions';
 import { loadReservation, releaseBossReservation, reserveBossBounty } from '../utils/boss-bounty';
+import { loadBotReservation, payHappyHourBonus, releaseBotReservation, reserveBotBounty, BOT_ID_RE } from '../utils/live-economy';
+import { liveConfig } from '../utils/platform-settings';
+import { SKIN_BY_SLUG } from '@mwar/shared';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const gameRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -61,9 +66,12 @@ type EnterTokenInput = { mode: string; roomCode: string; entryId: string; ticket
 
 async function signPaidToken(c: { env: Env }, user: AuthUserPayload, t: EnterTokenInput, now: number) {
   const bountyRow = await c.env.DB.prepare('SELECT bounty_micro_usd FROM wallets WHERE user_id = ?1').bind(user.userId).first<{ bounty_micro_usd: number }>();
+  const skins = await equippedSkins(c.env, user.userId);
   return signEntryToken(c.env.INTERNAL_API_SECRET, {
     uid: user.userId,
     un: user.username,
+    ws: skins.weapon || undefined, // V1.2 C cosmetic weapon finish (equipped + still owned, from D1)
+    os: skins.outfit || undefined, // V1.2 C cosmetic outfit tint
     bty: bountyRow?.bounty_micro_usd ?? 0, // current head bounty (shown in-match, claimed by the killer)
     eid: t.entryId,
     tid: t.ticketIds[0], // ticket row the game server must name when it settles this life
@@ -74,6 +82,24 @@ async function signPaidToken(c: { env: Env }, user: AuthUserPayload, t: EnterTok
     rs: t.restake ? 1 : undefined, // "Play again" token: only accepted for a dead player of the same account
     exp: now + 120,
   });
+}
+
+/** V1.2 C: the slugs of the user's equipped (and still owned) cosmetic skins, for the signed entry token. */
+async function equippedSkins(env: Env, userId: string): Promise<{ weapon: string | null; outfit: string | null }> {
+  try {
+    const r = await env.DB
+      .prepare(
+        `SELECT (SELECT s.skin_slug FROM user_skins s WHERE s.id = u.equipped_weapon_skin_id AND s.owner_id = u.id) AS w,
+                (SELECT s.skin_slug FROM user_skins s WHERE s.id = u.equipped_outfit_skin_id AND s.owner_id = u.id) AS o
+         FROM users u WHERE u.id = ?1`
+      )
+      .bind(userId)
+      .first<{ w: string | null; o: string | null }>();
+    const ok = (v: string | null | undefined) => (v && SKIN_BY_SLUG[v] ? v : null);
+    return { weapon: ok(r?.w), outfit: ok(r?.o) };
+  } catch {
+    return { weapon: null, outfit: null }; // before migration 0028
+  }
 }
 
 gameRouter.post('/enter', authMiddleware, async (c) => {
@@ -122,7 +148,8 @@ gameRouter.post('/enter', authMiddleware, async (c) => {
       c.env.DB.prepare('INSERT INTO arena_entries (id, user_id, room_mode, created_at, room_code) VALUES (?1, ?2, ?3, ?4, ?5)').bind(entryId, user.userId, mode, now, roomCode || null),
       openPotStmt(c.env, entryId, user.userId, roomCode || null, now),
     ]);
-    const entryToken = await signEntryToken(c.env.INTERNAL_API_SECRET, { uid: user.userId, un: user.username, bty: 0, eid: entryId, fm: 1, mode, rc: roomCode || undefined, exp: now + 120 });
+    const fmSkins = await equippedSkins(c.env, user.userId);
+    const entryToken = await signEntryToken(c.env.INTERNAL_API_SECRET, { uid: user.userId, un: user.username, bty: 0, eid: entryId, fm: 1, mode, rc: roomCode || undefined, ws: fmSkins.weapon || undefined, os: fmSkins.outfit || undefined, exp: now + 120 });
     return c.json({ success: true, free: true, fastMini: true, entryToken, entryId, potId: entryId, energyTickets: await ecLeft() });
   }
   // Other free room: no EC spent and no entry token, so the match plays without cash payouts
@@ -258,6 +285,42 @@ gameRouter.post('/boss-bounty/reserve', async (c) => {
   return c.json(r);
 });
 
+/**
+ * GET /api/game/live-config — V1.2 C cold-start state (public): bot fill on/off + target, Happy Hour window
+ * (the badge in the lobby / HUD), streamer share and skin market fee. The game server polls it; it decides
+ * nothing about money (Happy Hour extras are decided and paid by the Worker at settlement time).
+ */
+gameRouter.get('/live-config', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json(await liveConfig(c.env));
+});
+
+/**
+ * GET /api/game/viewer-token — V1.2 C: a signed-in spectator's identity for the game server (room chat, gift
+ * display names). HMAC with INTERNAL_API_SECRET, 120 s, k: 'viewer' — never accepted as an entry / rejoin token.
+ */
+gameRouter.get('/viewer-token', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const now = Math.floor(Date.now() / 1000);
+  c.header('Cache-Control', 'no-store');
+  return c.json({ viewerToken: await signEntryToken(c.env.INTERNAL_API_SECRET, { k: 'viewer', uid: user.userId, un: user.username, exp: now + 120 }) });
+});
+
+/**
+ * POST /api/game/bot-bounty/reserve — V1.2 C cold-start bot bounty (game server only: INTERNAL_API_SECRET).
+ * Body { secret, gameId, roomId, botId }. The Worker picks 10–50 C (only while the Boss Bounty Pool holds ≥ 1,000 C,
+ * never more than it holds, per-room live / hourly caps) and moves it into a reservation in one D1 batch.
+ * Settled by BOT_BOUNTY_CLAIM (a paid player eliminated the bot) / BOT_BOUNTY_RELEASE (despawn, room closed).
+ */
+gameRouter.post('/bot-bounty/reserve', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = z.object({ secret: z.string().optional(), gameId: z.string().min(1).max(80), roomId: z.string().max(80).optional(), botId: z.string().regex(BOT_ID_RE) }).safeParse(body);
+  if (!parsed.success) return c.json({ error: 'Validation failed' }, 400);
+  const secret = parsed.data.secret || c.req.header('X-Internal-Secret');
+  if (!safeEqual(secret, c.env.INTERNAL_API_SECRET)) return c.json({ error: 'Unauthorized game server secret' }, 401);
+  return c.json(await reserveBotBounty(c.env, { gameId: parsed.data.gameId, roomId: parsed.data.roomId ?? null, botId: parsed.data.botId }));
+});
+
 // Batch Payout Sync Endpoint from Colyseus Game Engine
 gameRouter.post('/batch-payout', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -309,6 +372,21 @@ gameRouter.post('/batch-payout', async (c) => {
   // V1.2 Golden Boss results (the game server shows what the Worker really paid)
   const boss = { claimed: 0, claimedMicroUsd: 0, released: 0, releasedMicroUsd: 0 };
   const bossResults: Array<{ reservationId: string; killerId: string; victimId: string; amountMicroUsd: number; shooterMicroUsd: number }> = [];
+  // V1.2 C cold-start bot bounties + Happy Hour 2x extras (paid from the Boss Bounty Pool, decided here)
+  const bot = { claimed: 0, claimedMicroUsd: 0, released: 0, releasedMicroUsd: 0 };
+  const botResults: Array<{ reservationId: string; botId: string; killerId: string; amountMicroUsd: number; shooterMicroUsd: number; happyHourMicroUsd: number }> = [];
+  const hh = { bonuses: 0, microUsd: 0 };
+  const cfg = await liveConfig(c.env);
+  const happy = async (userId: string, earnerMicroUsd: number, sourceRef: string, actionType: string) => {
+    if (!cfg.happyHour.active || earnerMicroUsd <= 0) return 0;
+    const x = await payHappyHourBonus(c.env, { userId, earnerMicroUsd, sourceRef, actionType, gameId, cfg });
+    if (x > 0) {
+      hh.bonuses++;
+      hh.microUsd += x;
+      earnerCredited += x;
+    }
+    return x;
+  };
   const md = (it: { metadata?: Record<string, unknown> }) => (it.metadata || {}) as Record<string, unknown>;
   /** Items without a ticket (bounty claims, AFK claw-backs) are de-duplicated by the game server's payout id. */
   const firstTime = async (it: { metadata?: Record<string, unknown> }) => {
@@ -379,8 +457,9 @@ gameRouter.post('/batch-payout', async (c) => {
     if (item.actionType === 'TICKET_RETURN') {
       // R2: an unused "Play again" ticket (the room could not apply it) → back to available
       // R3 room_shutdown: an alive body's ticket when its room shut down (no outcome) → back to available, entry kept
-      const shutdown = md(item).reason === 'room_shutdown';
-      const n = await returnUnusedStake(c.env, md(item).ticketId, item.userId, md(item).entryId, { keepEntry: shutdown, reason: shutdown ? 'shutdown' : undefined });
+      // V1.2 C bot_kill: a cold-start bot eliminated this paid seat — bots never earn, so the stake is returned (entry kept)
+      const shutdown = md(item).reason === 'room_shutdown' || md(item).reason === 'bot_kill';
+      const n = await returnUnusedStake(c.env, md(item).ticketId, item.userId, md(item).entryId, { keepEntry: shutdown, reason: shutdown ? (md(item).reason === 'bot_kill' ? 'bot_kill' : 'shutdown') : undefined });
       if (n > 0) v11.ticketsReturned += n;
       else v11.duplicates++;
       continue;
@@ -484,7 +563,73 @@ gameRouter.post('/batch-payout', async (c) => {
       boss.claimed++;
       boss.claimedMicroUsd += Number(res.amount_micro_usd);
       earnerCredited += Number(split.earnerMicroUsd);
+      await happy(item.userId, Number(split.earnerMicroUsd), `hh:boss:${res.id}`, 'BOSS_BOUNTY_CLAIM');
       bossResults.push({ reservationId: res.id, killerId: item.userId, victimId, amountMicroUsd: Number(res.amount_micro_usd), shooterMicroUsd: Number(split.earnerMicroUsd) });
+      continue;
+    }
+    if (item.actionType === 'BOT_BOUNTY_RELEASE') {
+      // V1.2 C: a cold-start bot despawned / the room closed with its bounty unclaimed → back to the pool, once
+      const res = await loadBotReservation(c.env, md(item).reservationId);
+      if (!res || res.game_id !== gameId.slice(0, 80)) {
+        v11.rejectedTicket++;
+        continue;
+      }
+      const back = await releaseBotReservation(c.env, res.id, typeof md(item).reason === 'string' ? String(md(item).reason).slice(0, 24) : 'despawn', now);
+      if (back > 0) {
+        bot.released++;
+        bot.releasedMicroUsd += back;
+      } else v11.duplicates++;
+      continue;
+    }
+    if (item.actionType === 'BOT_BOUNTY_CLAIM') {
+      // V1.2 C: userId (a paid seat) eliminated the bot → the reservation amount (from D1, never the item's) is
+      // paid 55/15/5/5/20 once, guarded by the status flip (a reservation that is not 'reserved' aborts the batch)
+      const res = await loadBotReservation(c.env, md(item).reservationId);
+      if (!res || res.game_id !== gameId.slice(0, 80) || res.bot_id !== md(item).botId || !UUID_RE.test(item.userId)) {
+        v11.rejectedTicket++;
+        continue;
+      }
+      if (res.status !== 'reserved') {
+        v11.duplicates++;
+        continue;
+      }
+      const earnerEntered = await c.env.DB
+        .prepare("SELECT 1 AS ok FROM user_energy_tickets WHERE user_id = ?1 AND status IN ('in_match', 'settled') AND consumed_at >= ?2 LIMIT 1")
+        .bind(item.userId, now - 86_400)
+        .first<{ ok: number }>();
+      if (!earnerEntered) {
+        await releaseBotReservation(c.env, res.id, 'claim_rejected', now);
+        v11.rejectedTicket++;
+        continue;
+      }
+      let split: Awaited<ReturnType<typeof applyRewardSplit>>;
+      try {
+        split = await applyRewardSplit(c.env, {
+          earnerId: item.userId,
+          grossMicroUsd: Number(res.amount_micro_usd),
+          actionType: 'BOT_BOUNTY_CLAIM',
+          sourceId: `botb:${res.id}`.slice(0, 80),
+          dateKey,
+          guard: [
+            c.env.DB.prepare(
+              `UPDATE bot_bounty_reservations SET status = CASE WHEN status = 'reserved' THEN 'claimed' ELSE 'conflict' END,
+                     settled_at = ?2, claimed_by_user_id = ?3, settle_ref = ?4
+               WHERE id = ?1`
+            ).bind(res.id, now, item.userId, typeof md(item).pid === 'string' ? String(md(item).pid).slice(0, 80) : gameId.slice(0, 80)),
+          ],
+        });
+      } catch (e) {
+        if (isSettleConflict(e)) {
+          v11.duplicates++;
+          continue;
+        }
+        throw e;
+      }
+      bot.claimed++;
+      bot.claimedMicroUsd += Number(res.amount_micro_usd);
+      earnerCredited += Number(split.earnerMicroUsd);
+      const x = await happy(item.userId, Number(split.earnerMicroUsd), `hh:bot:${res.id}`, 'BOT_BOUNTY_CLAIM');
+      botResults.push({ reservationId: res.id, botId: res.bot_id, killerId: item.userId, amountMicroUsd: Number(res.amount_micro_usd), shooterMicroUsd: Number(split.earnerMicroUsd), happyHourMicroUsd: x });
       continue;
     }
     if (item.actionType !== 'GAME_KILL' && item.actionType !== 'CHEST_OPEN') {
@@ -548,6 +693,8 @@ gameRouter.post('/batch-payout', async (c) => {
     v11.ticketsSettled++;
     v11.settledMicroUsd += value;
     earnerCredited += Number(split.earnerMicroUsd);
+    // V1.2 C Happy Hour 2x: the extra 55 % share from the Boss Bounty Pool (kills only; the base payout is unchanged)
+    if (item.actionType === 'GAME_KILL') await happy(item.userId, Number(split.earnerMicroUsd), `hh:kill:${stake.matchId}:${victimId}`, 'GAME_KILL');
     if (item.actionType === 'GAME_KILL') killsByUser.set(item.userId, (killsByUser.get(item.userId) || 0) + 1);
     // Track daily quests for player: match played
     await trackQuestAction(c.env.DB, item.userId, 'finish_game_match', 1, dateKey);
@@ -619,6 +766,14 @@ gameRouter.post('/batch-payout', async (c) => {
     bossReleases: boss.released,
     bossReleasedMicroUsd: boss.releasedMicroUsd,
     boss: bossResults,
+    botClaims: bot.claimed,
+    botClaimedMicroUsd: bot.claimedMicroUsd,
+    botReleases: bot.released,
+    botReleasedMicroUsd: bot.releasedMicroUsd,
+    bots: botResults,
+    happyHourActive: cfg.happyHour.active,
+    happyHourBonuses: hh.bonuses,
+    happyHourMicroUsd: hh.microUsd,
     sessionUpserts: sess?.upserts ?? 0,
     sessionEnds: sess?.ends ?? 0,
   });

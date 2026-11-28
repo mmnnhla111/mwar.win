@@ -152,6 +152,8 @@ export const DirectLinkStartSchema = z
     seconds: z.coerce.number().refine((v) => v === 15 || v === 30, 'seconds must be 15 or 30'),
     targetType: z.enum(['post', 'profile', 'energy']).optional(),
     targetId: z.string().trim().min(1).max(64).optional().nullable(),
+    /** V1.2 C: the registry room the viewer watches (Streamer Room attribution of VERIFIED ad value). */
+    roomCode: z.string().trim().toUpperCase().max(16).optional().nullable(),
   })
   .refine((v) => v.purpose !== 'cheer' || (v.targetType && (v.targetType === 'energy' || !!v.targetId)), { message: 'targetId is required', path: ['targetId'] });
 

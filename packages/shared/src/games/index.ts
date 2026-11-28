@@ -73,11 +73,15 @@ export interface GameRoomConfig {
   sortOrder: number;
   rules: string[];
   updatedAt: number;
+  /** V1.2 C Streamer Showcase Room (opened by a Silver I+ player). */
+  isStreamerRoom?: boolean;
+  streamerUserId?: string | null;
+  streamerUsername?: string | null;
 }
 
 /** GET /api/games/rooms-config — what the game server needs (public, edge-cached 20 s). */
 export interface RoomsConfigResponse {
-  rooms: Array<Pick<GameRoomConfig, 'roomCode' | 'nodeId' | 'mode' | 'mapSize' | 'maxPlayers' | 'maxSpectators' | 'entryCostEc' | 'isActive'> & { engineMode: FpsRoomMode; gameSlug: string; nodeName?: string | null }>;
+  rooms: Array<Pick<GameRoomConfig, 'roomCode' | 'nodeId' | 'mode' | 'mapSize' | 'maxPlayers' | 'maxSpectators' | 'entryCostEc' | 'isActive'> & { engineMode: FpsRoomMode; gameSlug: string; nodeName?: string | null; isStreamerRoom?: boolean; streamerUserId?: string | null }>;
   updatedAt: number;
 }
 

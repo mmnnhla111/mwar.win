@@ -103,8 +103,10 @@ export const BatchPayoutItemSchema = z.object({
   // V1.1 R2 FAST_MINI_CLOSE: userId's Fast & Mini pot (metadata.potId) closed (left / AFK / room closed)
   // V1.2 BOSS_BOUNTY_CLAIM: userId eliminated the Golden Boss metadata.victimId → the Worker pays the
   //   reservation metadata.reservationId (amount from D1, never item.amountMicroUsd) through 55/15/5/5/20, once
+  // V1.2 Round C BOT_BOUNTY_CLAIM / BOT_BOUNTY_RELEASE: a cold-start bot's bounty reservation (metadata.reservationId,
+  // metadata.botId) won by userId (paid seats only, amount from D1) / returned to the Boss Bounty Pool, once
   // V1.2 BOSS_BOUNTY_RELEASE: the Golden Boss reservation metadata.reservationId ended unclaimed → back to the pool, once
-  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT', 'TICKET_RETURN', 'FAST_MINI_KILL', 'FAST_MINI_CLOSE', 'BOSS_BOUNTY_CLAIM', 'BOSS_BOUNTY_RELEASE']),
+  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT', 'TICKET_RETURN', 'FAST_MINI_KILL', 'FAST_MINI_CLOSE', 'BOSS_BOUNTY_CLAIM', 'BOSS_BOUNTY_RELEASE', 'BOT_BOUNTY_CLAIM', 'BOT_BOUNTY_RELEASE']),
   gameId: z.string(),
   metadata: z.record(z.any()).optional(),
 });

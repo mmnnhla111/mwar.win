@@ -140,7 +140,33 @@ export type FinancialActionType =
   /** V1.2: an unclaimed Golden Boss reservation returned to the pool (informational). */
   | 'BOSS_BOUNTY_RELEASE'
   /** V1.2: 3 % of verified gross ad value kept in the Platform Safety Reserve (informational). */
-  | 'AD_SAFETY_RESERVE';
+  | 'AD_SAFETY_RESERVE'
+  /** V1.2 C: a paid spectator gift debited from the sender's wallet (outflow). */
+  | 'GIFT_SEND'
+  /** V1.2 C: 70 % of a paid spectator gift credited to the watched player (inflow). */
+  | 'GIFT_RECEIVE'
+  /** V1.2 C: 30 % of a paid spectator gift kept by the platform (informational). */
+  | 'GIFT_PLATFORM_FEE'
+  /** V1.2 C: P2P skin purchase debited from the buyer (outflow). */
+  | 'SKIN_MARKET_BUY'
+  /** V1.2 C: P2P skin sale proceeds (price − fee) credited to the seller (inflow). */
+  | 'SKIN_MARKET_SALE'
+  /** V1.2 C: the 5–10 % P2P skin market fee kept by the platform (informational). */
+  | 'SKIN_MARKET_FEE'
+  /** V1.2 C: a cold-start bot bounty reserved from the Boss Bounty Pool (informational). */
+  | 'BOT_BOUNTY_RESERVE'
+  /** V1.2 C: an unclaimed bot bounty returned to the Boss Bounty Pool (informational). */
+  | 'BOT_BOUNTY_RELEASE'
+  /** V1.2 C: 55 % of a bot bounty credited to the paid player who eliminated the bot (inflow). */
+  | 'BOT_BOUNTY_CLAIM'
+  /** V1.2 C: Happy Hour 2x extra credited from the Boss Bounty Pool (inflow). */
+  | 'HAPPY_HOUR_BONUS'
+  /** V1.2 C: the streamer's 30–50 % of verified spectator ad value in their room (inflow). */
+  | 'STREAMER_AD_SHARE'
+  /** V1.2 C: a launch promo code minted a ticket backed from the marketing pool (informational). */
+  | 'PROMO_REDEEM'
+  /** V1.2 C: company money deposited into the marketing pool by super_admin (informational). */
+  | 'MARKETING_POOL_DEPOSIT';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
@@ -156,9 +182,14 @@ export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
   'BOUNTY_CLAIM',
   'CHEER_REWARD',
   'BOSS_BOUNTY_CLAIM',
+  'GIFT_RECEIVE',
+  'SKIN_MARKET_SALE',
+  'BOT_BOUNTY_CLAIM',
+  'HAPPY_HOUR_BONUS',
+  'STREAMER_AD_SHARE',
 ];
 /** Action types that SUBTRACT from the wallet balance. */
-export const LEDGER_OUTFLOW_ACTIONS: FinancialActionType[] = ['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT'];
+export const LEDGER_OUTFLOW_ACTIONS: FinancialActionType[] = ['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT', 'GIFT_SEND', 'SKIN_MARKET_BUY'];
 
 export interface FinancialLog {
   id?: number;

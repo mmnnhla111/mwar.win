@@ -24,7 +24,10 @@ import { isLocalDev, safeEqual } from '../utils/guards';
 import { bannerGateBody, bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { loadStatus, recordCheer, resolveTarget, settleCheerRevenue } from './cheer';
 import { safeValue } from '../utils/energy-tickets';
-import { getStatisticalAdMicroUsd, type AdFormat } from '@mwar/shared';
+import { getStatisticalAdMicroUsd, splitStreamerShare, STREAMER_ROOM_CODE_RE, type AdFormat } from '@mwar/shared';
+import { liveConfig } from '../utils/platform-settings';
+import { ledgerAfterUpdate } from '../utils/ledger';
+import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 
 /**
  * V1.1: gross revenue that may back EC — the slot value, but never above the statistical eCPM of its
@@ -160,12 +163,16 @@ adNetworksRouter.post('/direct-link/start', authMiddleware, async (c) => {
 
   const token = `dl_${crypto.randomUUID()}`;
   const country = cfCountryOf(c);
+  // V1.2 C Streamer Room attribution: only an EC-recharge visit of a viewer watching someone else's live streamer
+  // room is attributed (the streamer is credited later, and only from the VERIFIED postback value)
+  const streamer = purpose === 'ec_recharge' ? await streamerOfRoom(c.env, parsed.data.roomCode) : null;
+  const attributed = streamer && streamer.userId !== me.userId ? streamer : null;
   await c.env.DB
     .prepare(
-      `INSERT INTO ad_click_tokens (token, user_id, network, purpose, target_type, target_id, target_user_id, country_code, required_seconds, started_at, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending')`
+      `INSERT INTO ad_click_tokens (token, user_id, network, purpose, target_type, target_id, target_user_id, country_code, required_seconds, started_at, status, room_code, streamer_user_id)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12)`
     )
-    .bind(token, me.userId, link.network, purpose, target.targetType, target.targetId, target.targetUserId, country, seconds, now)
+    .bind(token, me.userId, link.network, purpose, target.targetType, target.targetId, target.targetUserId, country, seconds, now, attributed ? attributed.roomCode : null, attributed ? attributed.userId : null)
     .run();
 
   // Monetag direct links forward `ymid` to the S2S postback, so the postback can find this token
@@ -286,7 +293,7 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
  *   ec_recharge / EC-panel cheer -> V backs the viewer's EC (pending_ec_micro_usd)
  *   creator cheer -> V split 55 / 15 / 5 / 5 / 20 (settleCheerRevenue), the 20 % slice backs the viewer's EC
  */
-export async function applyVerifiedVisit(env: Env, token: string): Promise<{ applied: boolean; netMicroUsd: number; creatorMicroUsd: number; viewerBackingMicroUsd: number }> {
+export async function applyVerifiedVisit(env: Env, token: string): Promise<{ applied: boolean; netMicroUsd: number; creatorMicroUsd: number; viewerBackingMicroUsd: number; streamerMicroUsd?: number }> {
   const none = { applied: false, netMicroUsd: 0, creatorMicroUsd: 0, viewerBackingMicroUsd: 0 };
   const now = nowSec();
   const upd = await env.DB
@@ -306,8 +313,59 @@ export async function applyVerifiedVisit(env: Env, token: string): Promise<{ app
     }
     return { applied: true, netMicroUsd: h.netMicroUsd, creatorMicroUsd: split.creatorMicroUsd, viewerBackingMicroUsd: split.viewerBackingMicroUsd };
   }
-  const ec = await creditEcProgress(env, row.user_id, 0, `verified:${token}`, { microUsd: h.netMicroUsd, source: row.purpose === 'cheer' ? 'cheer_pool' : 'ad_charge', country, haircut: h });
-  return { applied: true, netMicroUsd: h.netMicroUsd, creatorMicroUsd: 0, viewerBackingMicroUsd: ec?.backedAddedMicroUsd ?? 0 };
+  // V1.2 C Streamer Room: the streamer gets 30–50 % (default 40 %) of the VERIFIED net value V of a spectator's ad
+  // watched in their room; the viewer's EC backing is the rest (G = 3 % + 5 % + streamer + viewer, exactly once)
+  const { backing, streamerMicroUsd } = await applyStreamerShare(env, row, h.netMicroUsd);
+  const ec = await creditEcProgress(env, row.user_id, 0, `verified:${token}`, { microUsd: backing, source: row.purpose === 'cheer' ? 'cheer_pool' : 'ad_charge', country, haircut: h });
+  return { applied: true, netMicroUsd: h.netMicroUsd, creatorMicroUsd: 0, viewerBackingMicroUsd: ec?.backedAddedMicroUsd ?? 0, streamerMicroUsd };
+}
+
+/**
+ * V1.2 C: credit the room's streamer floor(V × 30–50 %) of a VERIFIED net value V of an ec_recharge visit (once per
+ * token: streamer_micro_usd IS NULL guard; wallet + ledger in the same batch). Returns what is left to back the
+ * viewer's EC. Call only AFTER the visit's verified revenue was marked applied (verified_at).
+ */
+export async function applyStreamerShare(env: Env, row: any, netMicroUsd: number): Promise<{ backing: number; streamerMicroUsd: number }> {
+  if (row?.purpose !== 'ec_recharge' || !row.streamer_user_id || row.streamer_user_id === row.user_id || netMicroUsd <= 0) return { backing: netMicroUsd, streamerMicroUsd: 0 };
+  const pct = (await liveConfig(env)).streamerSharePct;
+  const share = splitStreamerShare(netMicroUsd, pct).streamerMicroUsd;
+  if (share <= 0) return { backing: netMicroUsd, streamerMicroUsd: 0 };
+  const token = String(row.token);
+  const t = nowSec();
+  const r = await env.DB.batch([
+    env.DB.prepare('UPDATE ad_click_tokens SET streamer_micro_usd = ?1 WHERE token = ?2 AND streamer_micro_usd IS NULL').bind(share, token),
+    env.DB.prepare('UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3 AND changes() = 1').bind(share, t, row.streamer_user_id),
+    ledgerAfterUpdate(env.DB, row.streamer_user_id, share, 'STREAMER_AD_SHARE', `stream:${row.room_code ?? ''}:${token}`, t),
+  ]);
+  if ((r[1].meta?.changes ?? 0) !== 1) {
+    // streamer wallet missing: nothing credited → the whole V stays with the viewer
+    if ((r[0].meta?.changes ?? 0) === 1) await env.DB.prepare('UPDATE ad_click_tokens SET streamer_micro_usd = 0 WHERE token = ?1').bind(token).run();
+    return { backing: netMicroUsd, streamerMicroUsd: 0 };
+  }
+  await logFinancialTransaction(env, {
+    transaction_id: `tx_stream_${token.slice(3, 21)}`,
+    user_id: row.streamer_user_id,
+    action_type: 'STREAMER_AD_SHARE',
+    amount_micro_usd: BigInt(share),
+    balance_after_micro_usd: await walletBalance(env.DB, row.streamer_user_id),
+    source_game_id: `stream:${row.room_code ?? ''}`.slice(0, 64),
+    related_user_id: row.user_id,
+  });
+  return { backing: netMicroUsd - share, streamerMicroUsd: share };
+}
+
+/** V1.2 C: the live streamer room behind a registry room code (null for a normal room / closed / unknown). */
+export async function streamerOfRoom(env: Env, roomCode: unknown): Promise<{ userId: string; roomCode: string } | null> {
+  if (typeof roomCode !== 'string' || !STREAMER_ROOM_CODE_RE.test(roomCode)) return null;
+  try {
+    const r = await env.DB
+      .prepare("SELECT streamer_user_id AS u, room_code AS rc FROM game_server_rooms WHERE room_code = ?1 AND is_streamer_room = 1 AND is_active = 1 AND game_id = 'fps'")
+      .bind(roomCode)
+      .first<{ u: string | null; rc: string }>();
+    return r?.u ? { userId: r.u, roomCode: r.rc } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Constant-time check of the shared postback secret (query `secret` or header `X-Postback-Secret`). */
@@ -420,7 +478,9 @@ adNetworksRouter.all('/postback/monetag', async (c) => {
           .run();
         const h = splitAdGross(verifiedGross);
         const ok = (mark.meta?.changes ?? 0) === 1;
-        const ec = await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`, ok ? { microUsd: h.netMicroUsd, source: 'ad_charge', country, haircut: h } : { microUsd: 0, source: 'ad_charge', country });
+        // V1.2 C: a viewer's ad in a Streamer Room → the streamer's share of the verified V first
+        const share = ok ? await applyStreamerShare(c.env, tokenRow, h.netMicroUsd) : { backing: 0, streamerMicroUsd: 0 };
+        const ec = await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`, ok ? { microUsd: share.backing, source: 'ad_charge', country, haircut: h } : { microUsd: 0, source: 'ad_charge', country });
         return c.json({ ok: true, note, valueSource: 'network', verified: ok, effectiveMicroUsd: value.effectiveMicroUsd, netMicroUsd: ok ? h.netMicroUsd : 0, ecProgressPct: Math.round(creditBp / 100), energyTickets: ec?.energyTickets ?? null }, 200);
       }
       await logAdImpression(c.env.DB, { userId: user.id, provider: 'monetag', country, format: value.format as any, purpose: tokenRow.purpose === 'cheer' ? 'cheer' : 'ec_recharge', microUsd: value.effectiveMicroUsd, source: 'network', ecBp: 0, slot });

@@ -7,6 +7,7 @@ import {
   QuestClaimSchema,
   formatMicroUsd,
   DAILY_MISSION_QUEST_IDS,
+  SKIN_FRAGMENTS_PER_QUEST,
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { authMiddleware } from '../middleware/auth';
@@ -77,7 +78,7 @@ export async function recordPendingMlmCommission(
   downlineUserId: string,
   depthLevel: number,
   amountMicroUsd: number,
-  sourceType: 'AD_WATCH' | 'GAME_KILL' | 'CHEST_OPEN' | 'CHEER_REWARD' | 'BOSS_BOUNTY_CLAIM',
+  sourceType: 'AD_WATCH' | 'GAME_KILL' | 'CHEST_OPEN' | 'CHEER_REWARD' | 'BOSS_BOUNTY_CLAIM' | 'BOT_BOUNTY_CLAIM',
   dateKey = getUtcDateKey()
 ): Promise<{ id: string; status: string }> {
   const unlocked = await isUserMlmUnlocked(db, sponsorUserId, dateKey);
@@ -362,14 +363,17 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
 
   // Daily quests award 0 coins and 0 cash — their sole function is unlocking the 5-tier MLM downline share.
   const rewardCoins = 0;
+  // V1.2 C mission drop: every claimed quest gives Skin Blueprint Fragment(s) — an ITEM, never cash (0 C)
   const res = await c.env.DB.batch([
     c.env.DB.prepare('UPDATE user_daily_quests SET is_claimed = 1 WHERE id = ?1 AND is_claimed = 0').bind(userQuest.id),
-    c.env.DB.prepare('SELECT COALESCE(coins, 0) AS coins FROM users WHERE id = ?1 AND changes() = 1').bind(authUser.userId),
+    c.env.DB.prepare('UPDATE users SET skin_fragments = COALESCE(skin_fragments, 0) + ?2 WHERE id = ?1 AND changes() = 1').bind(authUser.userId, SKIN_FRAGMENTS_PER_QUEST),
+    c.env.DB.prepare('SELECT COALESCE(coins, 0) AS coins, skin_fragments FROM users WHERE id = ?1').bind(authUser.userId),
   ]);
   if ((res[0].meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'Quest reward already claimed' }, 400);
   }
-  const coinsBalance = Number((res[1].results?.[0] as any)?.coins ?? 0);
+  const coinsBalance = Number((res[2].results?.[0] as any)?.coins ?? 0);
+  const skinFragments = Number((res[2].results?.[0] as any)?.skin_fragments ?? 0);
 
   return c.json({
     success: true,
@@ -378,6 +382,8 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
     coinsBalance,
     rewardMicroUsd: 0,
     formattedReward: '0 C',
+    skinFragmentsAwarded: SKIN_FRAGMENTS_PER_QUEST,
+    skinFragments,
   });
 });
 

@@ -1,4 +1,10 @@
 import { releaseExpiredReservations } from './utils/boss-bounty';
+import { releaseExpiredBotReservations, closeExpiredStreamerRooms } from './utils/live-economy';
+import { giftsRouter } from './routes/gifts';
+import { promoRouter } from './routes/promo';
+import { skinsRouter } from './routes/skins';
+import { streamerRouter } from './routes/streamer';
+import { adminColdStartRouter } from './routes/admin-cold-start';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
@@ -79,6 +85,12 @@ app.route('/api/practice', practiceRouter);
 app.route('/api/social', socialRouter);
 app.route('/api/games', gamesRouter);
 app.route('/api/admin/ads', adminAdsRouter);
+// V1.2 C live economy: cold-start tools (bot fill, Happy Hour, promo codes) in /admin → Game & Rooms
+app.route('/api/admin/cold-start', adminColdStartRouter);
+app.route('/api/gifts', giftsRouter);
+app.route('/api/promo', promoRouter);
+app.route('/api/skins', skinsRouter);
+app.route('/api/streamer', streamerRouter);
 app.route('/api/admin', adminRouter);
 // Self-hosted moderation workers (X-Internal-Secret): claim jobs, fetch media, submit batched results
 app.route('/api/moderation', moderationRouter);
@@ -182,6 +194,9 @@ export default {
     if (event?.cron === '*/10 * * * *') {
       // V1.2: Golden Boss reservations nobody settled (game-server crash) → back to the Boss Bounty Pool
       await releaseExpiredReservations(env).catch((e: unknown) => console.warn('[Cron] boss reservation sweep failed', e));
+      // V1.2 C: cold-start bot bounties nobody settled → back to the pool; streamer rooms past their 12 h → closed
+      await releaseExpiredBotReservations(env).catch((e: unknown) => console.warn('[Cron] bot reservation sweep failed', e));
+      await closeExpiredStreamerRooms(env).catch((e: unknown) => console.warn('[Cron] streamer room sweep failed', e));
       await flushAuditOutbox(env).catch((e: unknown) => console.warn('[Cron] audit outbox flush failed', e));
       return;
     }
@@ -193,6 +208,7 @@ export default {
     //        (R3: never a ticket whose body is still alive in a heart-beating room)
     await sweepStaleMatchTickets(env).catch((e: unknown) => console.warn('[Cron] stale ticket sweep failed', e));
     await releaseExpiredReservations(env).catch((e: unknown) => console.warn('[Cron] boss reservation sweep failed', e));
+    await releaseExpiredBotReservations(env).catch((e: unknown) => console.warn('[Cron] bot reservation sweep failed', e));
     await sweepStaleFastMiniPots(env).catch((e: unknown) => console.warn('[Cron] stale Fast & Mini pot sweep failed', e));
     await purgeOldSessions(env);
     await runRetentionJobs(env).catch((e: unknown) => console.warn('[Cron] retention failed', e));

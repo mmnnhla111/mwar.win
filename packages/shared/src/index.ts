@@ -17,3 +17,4 @@ export * from './audit-queue';
 export * from './maps/stairs';
 export * from './maps/stairData';
 export * from './maps/obstacles';
+export * from './live-economy';

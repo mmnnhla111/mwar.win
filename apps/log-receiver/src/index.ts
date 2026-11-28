@@ -273,7 +273,7 @@ app.get<{ Params: { userId: string }; Querystring: { since?: string; until?: str
     if (tables.length) {
       const union = tables.map((t) => `SELECT action_type, amount_micro_usd FROM ${t} WHERE user_id = $1 AND created_at >= to_timestamp($2) AND created_at < to_timestamp($3) AND amount_micro_usd <> 0`).join(' UNION ALL ');
       const res = await pgPool.query(`SELECT action_type, COALESCE(SUM(amount_micro_usd), 0)::text AS total, COUNT(*)::int AS n FROM (${union}) l GROUP BY action_type`, [userId, since, until]);
-      const outflow = new Set(['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT']);
+      const outflow = new Set(['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT', 'GIFT_SEND', 'SKIN_MARKET_BUY']);
       for (const r of res.rows as { action_type: string; total: string; n: number }[]) {
         if (!isWalletMovingAction(r.action_type)) continue;
         net += outflow.has(r.action_type) ? -BigInt(r.total) : BigInt(r.total);

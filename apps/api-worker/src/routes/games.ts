@@ -77,6 +77,9 @@ export function rowToRoom(r: any): GameRoomConfig {
     sortOrder: Number(r.sort_order) || 0,
     rules: parseList(r.rules),
     updatedAt: Number(r.updated_at) || 0,
+    isStreamerRoom: !!r.is_streamer_room,
+    streamerUserId: r.streamer_user_id || null,
+    streamerUsername: r.streamer_username || null,
   };
 }
 
@@ -114,6 +117,16 @@ export async function loadGames(c: Context<any>): Promise<GameRecord[]> {
 export async function loadRooms(c: Context<any>, gameId: string): Promise<GameRoomConfig[]> {
   return edgeCachedValue<GameRoomConfig[]>(c, roomsCacheKey(gameId), CONFIG_TTL, async () => {
     try {
+      try {
+        // V1.2 C: streamer rooms carry their streamer's username (migration 0027)
+        const { results } = await (c.env as Env).DB
+          .prepare('SELECT r.*, u.username AS streamer_username FROM game_server_rooms r LEFT JOIN users u ON u.id = r.streamer_user_id WHERE r.game_id = ?1 ORDER BY r.sort_order, r.room_code')
+          .bind(gameId)
+          .all<any>();
+        return (results || []).map(rowToRoom);
+      } catch {
+        /* before migration 0027 */
+      }
       const { results } = await (c.env as Env).DB
         .prepare('SELECT * FROM game_server_rooms WHERE game_id = ?1 ORDER BY sort_order, room_code')
         .bind(gameId)
@@ -251,6 +264,7 @@ export function roomToLive(cfg: GameRoomConfig, live?: LiveRoom): FpsRoomLive {
     players,
     spectators: live?.spectators ?? 0,
     isFull: !solo && players >= cfg.maxPlayers,
+    ...(cfg.isStreamerRoom ? { isStreamerRoom: true, streamerUserId: cfg.streamerUserId ?? null, streamerUsername: cfg.streamerUsername ?? null } : {}),
   };
 }
 
@@ -309,6 +323,7 @@ gamesRouter.get('/rooms-config', async (c) => {
           entryCostEc: r.entryCostEc,
           isActive: r.isActive && g.status === 'active',
           gameSlug: g.slug,
+          ...(r.isStreamerRoom ? { isStreamerRoom: true, streamerUserId: r.streamerUserId ?? null } : {}),
         });
       }
     }
