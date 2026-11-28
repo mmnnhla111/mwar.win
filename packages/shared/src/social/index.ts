@@ -346,7 +346,7 @@ export interface BootstrapUser {
   exp: number;
   /** Downline-based rank (5 levels): current tier + { totalDownlines, nextRank, downlinesNeeded }. */
   rank: PlayerRankStatus;
-  /** ฿ game coins (mission rewards; not withdrawable). */
+  /** C game coins (not withdrawable). */
   coins: number;
 }
 

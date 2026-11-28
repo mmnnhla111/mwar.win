@@ -114,7 +114,7 @@ export interface DailyMission {
   target: number;
   done: boolean;
   claimed: boolean;
-  /** ฿ game coins granted when claimed (never cash). */
+  /** C game coins granted when claimed (0 in V1.2: missions only unlock MLM). */
   rewardCoins: number;
 }
 

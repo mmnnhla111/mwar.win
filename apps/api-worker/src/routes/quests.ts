@@ -77,7 +77,7 @@ export async function recordPendingMlmCommission(
   downlineUserId: string,
   depthLevel: number,
   amountMicroUsd: number,
-  sourceType: 'AD_WATCH' | 'GAME_KILL' | 'CHEST_OPEN' | 'CHEER_REWARD',
+  sourceType: 'AD_WATCH' | 'GAME_KILL' | 'CHEST_OPEN' | 'CHEER_REWARD' | 'BOSS_BOUNTY_CLAIM',
   dateKey = getUtcDateKey()
 ): Promise<{ id: string; status: string }> {
   const unlocked = await isUserMlmUnlocked(db, sponsorUserId, dateKey);
@@ -255,7 +255,7 @@ questsRouter.get('/today', authMiddleware, async (c) => {
       description: q.description,
       target: q.target_count,
       current: prog.current_count,
-      rewardCoins: q.reward_coins,
+      rewardCoins: 0,
       actionType: q.action_type,
       isCompleted,
       isClaimed: prog.is_claimed === 1,
@@ -360,28 +360,24 @@ questsRouter.post('/claim', authMiddleware, async (c) => {
     .first<{ reward_coins: number; is_active: number }>();
   if (!def || def.is_active !== 1) return c.json({ error: 'This quest is not part of today\'s missions' }, 400);
 
-  // Mission rewards are ฿ game coins only (users.coins, not withdrawable) — never wallet cash.
-  // The coin credit only applies if this request flipped is_claimed 0 → 1 (changes() guard),
-  // so parallel double-claims pay once.
-  const rewardCoins = Math.max(0, Math.floor(def.reward_coins || 0));
+  // Daily quests award 0 coins and 0 cash — their sole function is unlocking the 5-tier MLM downline share.
+  const rewardCoins = 0;
   const res = await c.env.DB.batch([
     c.env.DB.prepare('UPDATE user_daily_quests SET is_claimed = 1 WHERE id = ?1 AND is_claimed = 0').bind(userQuest.id),
-    c.env.DB.prepare('UPDATE users SET coins = COALESCE(coins, 0) + ?1 WHERE id = ?2 AND changes() = 1').bind(rewardCoins, authUser.userId),
-    c.env.DB.prepare('SELECT COALESCE(coins, 0) AS coins FROM users WHERE id = ?1').bind(authUser.userId),
+    c.env.DB.prepare('SELECT COALESCE(coins, 0) AS coins FROM users WHERE id = ?1 AND changes() = 1').bind(authUser.userId),
   ]);
-  if ((res[1].meta?.changes ?? 0) !== 1) {
+  if ((res[0].meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'Quest reward already claimed' }, 400);
   }
-  const coinsBalance = Number((res[2].results?.[0] as any)?.coins ?? 0);
+  const coinsBalance = Number((res[1].results?.[0] as any)?.coins ?? 0);
 
   return c.json({
     success: true,
     questId,
     rewardCoins,
     coinsBalance,
-    /** Kept for older clients: no cash is paid any more. */
     rewardMicroUsd: 0,
-    formattedReward: `฿ ${rewardCoins.toLocaleString('en-US')}`,
+    formattedReward: '0 C',
   });
 });
 
@@ -481,29 +477,33 @@ export async function settleDailyMlm(
 
   for (const u of users) {
     const isUnlocked = await isUserMlmUnlocked(env.DB, u.user_id, dateKey);
+    // Audit M1: ONE D1 batch per sponsor. Statement 1 flips the still-open rows (guarded by their current status)
+    // and stamps them with a unique settle id; the next statements credit EXACTLY the sum of the rows stamped
+    // with that id. A concurrent trigger (cron + manual) finds no open rows left and credits 0 — never twice.
+    const settleId = `mlm_${dateKey}_${crypto.randomUUID()}`;
+    const stamped = '(SELECT COALESCE(SUM(amount_micro_usd), 0) FROM daily_mlm_pending_ledger WHERE settle_id = ?1)';
 
     if (isUnlocked) {
-      // Calculate total amount to credit
-      const sumRes = await env.DB
-        .prepare(
-          "SELECT SUM(amount_micro_usd) as total FROM daily_mlm_pending_ledger WHERE user_id = ?1 AND date_key = ?2 AND status IN ('pending_grey', 'unlocked_green')"
-        )
-        .bind(u.user_id, dateKey)
-        .first<{ total: number }>();
-
-      const totalToSettle = sumRes?.total || 0;
+      await env.DB.batch([
+        // only for a sponsor with a wallet row (otherwise the rows stay open instead of being paid into nothing)
+        env.DB.prepare(
+          `UPDATE daily_mlm_pending_ledger SET status = 'settled_paid', settle_id = ?1
+           WHERE user_id = ?2 AND date_key = ?3 AND status IN ('pending_grey', 'unlocked_green')
+             AND EXISTS (SELECT 1 FROM wallets WHERE user_id = ?2)`
+        ).bind(settleId, u.user_id, dateKey),
+        env.DB.prepare(
+          `UPDATE wallets SET balance_micro_usd = balance_micro_usd + ${stamped}, total_earned_micro_usd = total_earned_micro_usd + ${stamped}, updated_at = ?3
+           WHERE user_id = ?2 AND ${stamped} > 0`
+        ).bind(settleId, u.user_id, now),
+        env.DB.prepare(
+          `INSERT INTO wallet_ledger (id, user_id, delta_micro_usd, action_type, ref_id, created_at)
+           SELECT ?4, ?2, ${stamped}, 'MLM_COMMISSION', ?5, ?3 WHERE changes() = 1 AND ${stamped} > 0`
+        ).bind(settleId, u.user_id, now, `led_${crypto.randomUUID()}`, dateKey),
+      ]);
+      const got = await env.DB.prepare('SELECT COALESCE(SUM(amount_micro_usd), 0) AS total FROM daily_mlm_pending_ledger WHERE settle_id = ?1').bind(settleId).first<{ total: number }>();
+      const totalToSettle = Number(got?.total || 0);
 
       if (totalToSettle > 0) {
-        await env.DB.batch([
-          env.DB.prepare(
-            'UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3'
-          ).bind(totalToSettle, now, u.user_id),
-          ledgerAfterUpdate(env.DB, u.user_id, totalToSettle, 'MLM_COMMISSION', dateKey, now),
-          env.DB.prepare(
-            "UPDATE daily_mlm_pending_ledger SET status = 'settled_paid' WHERE user_id = ?1 AND date_key = ?2 AND status IN ('pending_grey', 'unlocked_green')"
-          ).bind(u.user_id, dateKey),
-        ]);
-
         await logFinancialTransaction(env, {
           transaction_id: `tx_mlm_settle_${dateKey}_${u.user_id.substring(0, 6)}_${Date.now()}`,
           user_id: u.user_id,
@@ -516,28 +516,21 @@ export async function settleDailyMlm(
         totalSettledMicroUsd += totalToSettle;
       }
     } else {
-      // Forfeited & Burned due to inactivity
-      const sumRes = await env.DB
-        .prepare(
-          "SELECT SUM(amount_micro_usd) as total FROM daily_mlm_pending_ledger WHERE user_id = ?1 AND date_key = ?2 AND status = 'pending_grey'"
-        )
-        .bind(u.user_id, dateKey)
-        .first<{ total: number }>();
-
-      const totalToBurn = sumRes?.total || 0;
+      // Forfeited & Burned due to inactivity. A locked upline is bypassed: the share goes to the platform
+      // balance (not to the locked sponsor) — again exactly the rows this batch flipped.
+      await env.DB.batch([
+        env.DB.prepare(
+          "UPDATE daily_mlm_pending_ledger SET status = 'forfeited_burned', settle_id = ?1 WHERE user_id = ?2 AND date_key = ?3 AND status = 'pending_grey'"
+        ).bind(settleId, u.user_id, dateKey),
+        env.DB.prepare(
+          `INSERT INTO system_balances (id, energy_pool_micro_usd, platform_micro_usd, updated_at) VALUES ('global', 0, ${stamped}, ?2)
+           ON CONFLICT(id) DO UPDATE SET platform_micro_usd = platform_micro_usd + ${stamped}, updated_at = ?2`
+        ).bind(settleId, now),
+      ]);
+      const got = await env.DB.prepare('SELECT COALESCE(SUM(amount_micro_usd), 0) AS total FROM daily_mlm_pending_ledger WHERE settle_id = ?1').bind(settleId).first<{ total: number }>();
+      const totalToBurn = Number(got?.total || 0);
 
       if (totalToBurn > 0) {
-        // A locked upline is bypassed: the share goes to the platform balance (not to the locked sponsor)
-        await env.DB.batch([
-          env.DB.prepare(
-            "UPDATE daily_mlm_pending_ledger SET status = 'forfeited_burned' WHERE user_id = ?1 AND date_key = ?2 AND status = 'pending_grey'"
-          ).bind(u.user_id, dateKey),
-          env.DB.prepare(
-            `INSERT INTO system_balances (id, energy_pool_micro_usd, platform_micro_usd, updated_at) VALUES ('global', 0, ?1, ?2)
-             ON CONFLICT(id) DO UPDATE SET platform_micro_usd = platform_micro_usd + ?1, updated_at = ?2`
-          ).bind(totalToBurn, now),
-        ]);
-
         await logFinancialTransaction(env, {
           transaction_id: `tx_mlm_forfeit_${dateKey}_${u.user_id.substring(0, 6)}_${Date.now()}`,
           user_id: u.user_id,

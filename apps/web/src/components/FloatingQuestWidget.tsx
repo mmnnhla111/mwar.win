@@ -217,7 +217,7 @@ function QuestModal({
   const [toast, setToast] = useState<string | null>(null);
 
   const syncBadge = (d: TodayQuestsResponse) => {
-    const left = d.quests.filter((q) => !q.isClaimed).length;
+    const left = d.quests.filter((q) => !q.isCompleted).length;
     patch((b) => ({
       ...b,
       remainingDailyQuestsCount: left,
@@ -307,22 +307,22 @@ function QuestModal({
         <ul className="space-y-2.5">
           {data?.quests.map((q) => {
             const pct = Math.min(100, Math.round((q.current / Math.max(1, q.target)) * 100));
-            const canClaim = (q.isCompleted || q.questId === 'Q_DAILY_CHECKIN') && !q.isClaimed;
+            const doneItem = q.isCompleted;
+            const canCheckIn = q.questId === 'Q_DAILY_CHECKIN' && !q.isCompleted;
             return (
               <li key={q.questId} className="rounded-2xl border border-stone-200/80 p-3.5">
                 <div className="flex items-start gap-3">
-                  <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${q.isClaimed ? 'bg-[#D1FAE5] text-emerald-700' : 'bg-stone-100 text-stone-700'}`}>
-                    <Icon name={q.isClaimed ? 'check' : QUEST_ICON[q.actionType] || 'sparkle'} size={20} />
+                  <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${doneItem ? 'bg-[#D1FAE5] text-emerald-700' : 'bg-stone-100 text-stone-700'}`}>
+                    <Icon name={doneItem ? 'check' : QUEST_ICON[q.actionType] || 'sparkle'} size={20} />
                   </span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                       <div className="font-bold text-sm text-stone-900 truncate">{tq(`quest.${q.questId}.title`, q.title)}</div>
-                      <div className="text-xs font-bold text-[#B08600] shrink-0">{t('quest.coins', { n: q.rewardCoins })}</div>
                     </div>
                     <div className="text-xs text-stone-500 mt-0.5">{tq(`quest.${q.questId}.desc`, q.description)}</div>
                     <div className="mt-2 flex items-center gap-2">
                       <div className="flex-1 h-2 rounded-full bg-stone-100 overflow-hidden">
-                        <div className={`h-full rounded-full ${q.isCompleted ? 'bg-[#34D399]' : 'bg-[#FACC15]'}`} style={{ width: `${pct}%` }} />
+                        <div className={`h-full rounded-full ${doneItem ? 'bg-[#34D399]' : 'bg-[#FACC15]'}`} style={{ width: `${pct}%` }} />
                       </div>
                       <span className="text-[11px] font-semibold text-stone-500 tabular-nums">
                         {Math.min(q.current, q.target)}/{q.target}
@@ -331,9 +331,9 @@ function QuestModal({
                   </div>
                 </div>
                 <div className="mt-2.5 flex justify-end">
-                  {q.isClaimed ? (
+                  {doneItem ? (
                     <span className="text-xs font-bold text-emerald-700 bg-[#D1FAE5] rounded-full px-3 py-1.5">{t('quest.claimed')}</span>
-                  ) : canClaim ? (
+                  ) : canCheckIn ? (
                     <button
                       onClick={() => claim(q)}
                       disabled={claiming === q.questId}
