@@ -138,7 +138,8 @@ CREATE TABLE user_energy_tickets (
     settled_micro_usd INTEGER,                    -- มูลค่าที่จ่ายผ่านสูตร 55/15/5/5/20
     settle_ref TEXT                               -- game id
 );
--- index: (user_id, status, created_at) ล็อกแบบ FIFO · (match_id) · (status, consumed_at) cron กวาดตั๋วค้าง
+-- หมายเหตุสคีมา (0021): ตารางนี้ไม่มี FOREIGN KEY REFERENCES users(id)
+-- index: idx_energy_tickets_user_status(user_id, status, created_at ASC) · idx_energy_tickets_match(match_id) · idx_energy_tickets_status_consumed(status, consumed_at)
 
 -- 7. (V1.1) EC progress ที่ยังไม่ครบ 1 ตั๋ว ถือมูลค่ารองรับค้างไว้ที่นี่ (ไม่สูญ ไม่เสก)
 ALTER TABLE users ADD COLUMN pending_ec_micro_usd INTEGER NOT NULL DEFAULT 0;
@@ -163,6 +164,7 @@ CREATE TABLE user_staff_roles (
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, role_key)
 );
+-- หมายเหตุสคีมา (0022): ไม่มี ON DELETE CASCADE · index: idx_user_staff_roles_role(role_key)
 ALTER TABLE game_nodes ADD COLUMN mod_pending INTEGER;   -- คิวตรวจเนื้อหาที่โหนด moderator รายงาน
 ALTER TABLE game_nodes ADD COLUMN mod_processed INTEGER;
 ALTER TABLE game_nodes ADD COLUMN pg_status TEXT;        -- 'ok' | 'down' (โหนด log: PostgreSQL)
@@ -263,7 +265,7 @@ CREATE INDEX idx_logs_action ON logs_2026_11(action_type);
 * **Rejoin** (`/game?rejoin=<roomId>`): ต่อเข้าตัวเดิม (clone state ไปยัง sessionId ใหม่) **ไม่ใช้ EC ใหม่ ไม่ล็อกตั๋วใหม่ ไม่มีตัวซ้ำ** หน้า Loadout กลายเป็น "กลับเข้าควบคุม" แล้ว deploy ที่ตำแหน่ง/เลือด/อาวุธ/กระสุน/prop เดิม (ไม่ส่ง `player_deploy`) — เปิด 2 การเชื่อมต่อพร้อมกัน: อันใหม่ยึดตัว อันเก่าได้ `session_replaced` แล้วถูกปิด (4002) · ระหว่างมีตัวค้างสนาม `POST /api/game/enter` (ห้องเสีย EC / Fast & Mini) ตอบ **409 `ACTIVE_SESSION`** (ไม่ล็อกตั๋ว) และหน้าเกมพาไป Rejoin แทน
 * **Popup "ตัวละครของคุณยังอยู่ในสนามรบ"** (`apps/web/src/components/shell/ActiveMatchPopup.tsx` ใน `AppShell` ทุกหน้าที่ไม่ใช่เกม/auth): ตรวจทุก 30 วิ (เฉพาะแท็บที่มองเห็น) + ทุกครั้งที่เปลี่ยนหน้า แสดงโหมด, badge แปลงร่าง, เลือด, รหัสห้อง และปุ่ม "กลับเข้าเล่น (Rejoin)" → `/game?rejoin=<roomId>` · ✕ ซ่อนเฉพาะแท็บนี้ (`sessionStorage`) **ไม่แตะตัวละคร** (ข้อความ `rejoin.*` / `persist.*` ครบ 10 ภาษา)
 * **session สิ้นสุด** เมื่อ (ก) ตายจริง (`died`) (ข) ห้องปิด (`room_shutdown`) (ค) ที่นั่งถูกลบด้วยเหตุอื่น (`afk_kick` ถูกเตะ AFK, `left` ที่นั่งที่ไม่ค้างสนาม)
-* **ห้องที่เหลือแต่ตัวค้างสนาม** ไม่ถูก auto-dispose ทันที แต่ปิดเองหลัง `BODY_ONLY_ROOM_TTL_SECONDS` (ค่าเริ่มต้น 1,800 วิ, env override) ถ้าไม่มีใครเชื่อมต่อเลย — มีคนเข้า/rejoin = ยกเลิกตัวนับ · ห้อง legacy ไม่นับตัวค้างสนามเข้า `maxClients` (ตัวค้างสนามไม่ใช่ client)
+* **ห้องที่เหลือแต่ตัวค้างสนาม** ไม่ถูก auto-dispose ทันที แต่ปิดเองหลัง `BODY_ONLY_ROOM_TTL_SECONDS` (ค่าเริ่มต้น 30 นาที = 1,800 วิ, env override) ถ้าไม่มีใครเชื่อมต่อเลย — มีคนเข้า/rejoin = ยกเลิกตัวนับ · ห้อง legacy ไม่นับตัวค้างสนามเข้า `maxClients` (ตัวค้างสนามไม่ใช่ client) · **เมื่อห้องปิดเพราะเหลือแต่ตัวค้างสนามครบ 30 นาที หรือเซิร์ฟเวอร์รีสตาร์ต: ตั๋ว EC (`TICKET_RETURN`) และค่าหัวที่ยังไม่ถูกเก็บจะคืนกลับให้เจ้าของตัวละคร**
 
 ### 5.4 ฟิสิกส์บันไดทึบ / กระสุนชนบันได / ปุ่มผู้ชม / Z-Fighting แมพ 100 คน — V1.1 รอบที่ 4
 * **บันไดทึบ (Solid Stairs):** `Kit.stairs()` (`apps/web/src/game/assets/kit.ts`) สร้างบันไดเป็นบล็อกทึบ 1 ก้อนต่อ 1 ขั้น ตั้งแต่พื้นเชิงบันไดถึงหน้าขั้น (ไม่มีโพรงใต้/หลัง/ข้างบันได) ลงทะเบียนเป็น AABB `walkable + blocksMovement + blocksBullets + pushOut` ใน `CollisionWorld` พร้อมคง Ramp เดิมไว้เป็นพื้นเดินลื่น
@@ -360,6 +362,7 @@ $V = 10.00\text{ USD} = 10,000,000\text{ Micro-USD}$ และมีสายง
 | **รวม** | **$100\%$** | **10,000,000** | **10.00** |
 
 *(ถ้ามีสายงานเพียงชั้นที่ 1–2 ส่วนของชั้นที่ 3–5 รวม $6\%$ = 600,000 จะเข้า Platform ทำให้ Platform ได้ $11\%$ = 1,100,000)*
+*(กติกา Floor 5% ของ Platform: Platform ได้รับยอดคงเหลือ `V - sum(others)` โดยมีขั้นต่ำ `Math.floor(V * 0.05)` เสมอ — หากการปัดเศษ 0.007 C ทำให้ผลรวมส่วนอื่นเกิน `V - Math.floor(V * 0.05)` ระบบจะลดส่วนอื่นลง 1 µUSD ตามลำดับเพื่อไม่ให้ Platform ต่ำกว่าขั้นต่ำ)*
 *(ตัวอย่างเศษ V1.1: $V = 333$ ครบ 5 ชั้น → ผู้ยิง 183 (183.15 ปัดลง) / ชั้น 16·13·**10**·6·3 (ชั้น 3 = 9.99 ปัดขึ้นตามกฎ 0.007 C) / ค่าหัว 16 / Energy Pool 66 → Platform 16 + เศษ 4 = **20** รวม 333)*
 *(ตัวอย่างตั๋วจริง: banner US 3,000 Micro-USD × 0.95 = 2,850 → ผู้ยิง 1,567 / ชั้น 142·114·85·57·28 / ค่าหัว 142 / Pool 570 / Platform 145 — แสดงผล "15.67 C ($0.0016)")*
 
@@ -403,7 +406,7 @@ $V = 10.00\text{ USD} = 10,000,000\text{ Micro-USD}$ และมีสายง
 ### 7.6 Safety Haircut & Cheer Split (V1.1)
 
 * **Safety Haircut:** มูลค่ารองรับ EC จากโฆษณาจริง = `floor(min(effective, gross ทางสถิติ) × AD_SAFETY_MULTIPLIER)` ช่วงที่ยอมรับ 0.90–0.95 (ค่าเริ่มต้น 0.92; ค่านอกช่วงถูก clamp) เช่น 3,000 → 2,760 (0.92) / 2,700–2,850
-* โฆษณา / Cheer แบบจำลอง (test mode) **ไม่สร้างเงินใหม่**: มูลค่ารองรับ EC ดึงจาก Energy Pool เฉพาะเมื่อมีคงเหลือพอ (เงื่อนไขอยู่ใน UPDATE เดียวกับการให้ EC — ไม่มีวันติดลบ)
+* โฆษณา / Cheer แบบจำลองในแอป (Test Mode ที่ไม่มีเครือข่ายโฆษณาจ่ายจริง) **ไม่สร้างเงินใหม่และให้มูลค่าเงินสดแก่เจ้าของโพสต์ = `0` µUSD**: มูลค่ารองรับ EC ของผู้ดูดึงจาก Energy Pool เฉพาะเมื่อมีคงเหลือพอ (เงื่อนไขอยู่ใน UPDATE เดียวกับการให้ EC — ไม่มีวันติดลบ) ส่วนเจ้าของโพสต์ได้เฉพาะยอดนับ `cheer_count` (0 เงินสดถอนได้) จนกว่าจะเชื่อมต่อโฆษณาที่เครือข่ายจ่ายจริง
 * **Cheer (ดูโฆษณาให้ผู้สร้าง):** มูลค่าโฆษณาหลัง haircut $V$ แบ่ง **55% ผู้สร้าง · 15% สายงานของผู้สร้าง · 5% ค่าหัว (ผู้สร้าง) · 5% Platform · 20% รองรับ EC ของผู้ดู** (`calculateCheerSplit()`, action `CHEER_REWARD`) — ส่วน 20% ผ่าน Energy Pool (เข้าและถูกดึงทันที, log `ENERGY_POOL_DRAW`) แล้วกลายเป็นตั๋ว `cheer_pool` ของผู้ดู ตัวอย่าง $V = 2,760$: ผู้สร้าง 1,518 / ชั้น 138·110·83·55·27 / ค่าหัว 138 / Platform 139 / EC ผู้ดู 552
 * EC progress (basis points) ที่ยังไม่ครบตั๋วเก็บมูลค่ารองรับไว้ใน `users.pending_ec_micro_usd` และแบ่งเข้าตั๋วที่ mint ตามสัดส่วน (`allocateEcProgress()`) — ผลรวมตั๋ว + pending = มูลค่าที่ได้รับเสมอ
 

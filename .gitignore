@@ -13,3 +13,6 @@ coverage
 docs/Cloudflare/
 .dev.vars
 Ads/
+
+# local-only audit test state (tests/local-audit)
+.local-audit/

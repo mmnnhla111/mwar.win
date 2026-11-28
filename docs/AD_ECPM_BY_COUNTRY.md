@@ -24,20 +24,20 @@ In programmatic mobile and web advertising, ad networks quote inventory pricing 
    $$\text{Coins} = \frac{\text{micro\_usd}}{100} = \text{eCPM} \times 10$$
    *(Since 1 Coin = 100 micro_usd = $0.0001 USD)*
 
-### 100% Economy Revenue Split per Ad View
-Every ad impression processed by the MWAR platform (via Server-to-Server postback from AdswedMedia, OnClickA, Google AdMob, AppLovin MAX, or Unity Ads) distributes 100% of the gross value $V$ according to the system specification:
+### 100% Economy Revenue Split per Ad View (V1.1)
+Every ad impression processed by the MWAR platform distributes 100% of the backed value $V$ (after the Safety Haircut, default `0.92`) using integer `micro_usd` and the **0.007 C rounding rule** (`fraction ≥ 0.7 µUSD` rounds up, `< 0.7 µUSD` rounds down; `round007`):
 
 | Beneficiary | Split Rate | Basis Points | Calculation Formula |
 |:---|:---:|:---:|:---|
-| **Ad Watcher (Shooter)** | **55%** | 5,500 bps | $\text{watcher} = \lfloor V \times 0.55 \rfloor$ |
-| **Level 1 Direct Sponsor** | **5%** | 500 bps | $\text{L1} = \lfloor V \times 0.05 \rfloor$ |
-| **Level 2 Upline** | **4%** | 400 bps | $\text{L2} = \lfloor V \times 0.04 \rfloor$ |
-| **Level 3 Upline** | **3%** | 300 bps | $\text{L3} = \lfloor V \times 0.03 \rfloor$ |
-| **Level 4 Upline** | **2%** | 200 bps | $\text{L4} = \lfloor V \times 0.02 \rfloor$ |
-| **Level 5 Upline** | **1%** | 100 bps | $\text{L5} = \lfloor V \times 0.01 \rfloor$ |
-| **Head Bounty Pool** | **5%** | 500 bps | Added directly to earner's 3D arena death bounty |
-| **Platform System Fee** | **5% + remainder** | 500 bps + rem | Unclaimed uplines & rounding remainders roll to system |
-| **Energy Recharge Reserve Pool** | **20%** | 2,000 bps | $\lfloor V \times 0.20 \rfloor$ → `system_balances.energy_pool_micro_usd` (backs ad / Cheer EC recharges) |
+| **Ad Watcher (Shooter)** | **55%** | 5,500 bps | $\text{round007}(V \times 0.55)$ |
+| **Level 1 Direct Sponsor** | **5%** | 500 bps | $\text{round007}(V \times 0.05)$ |
+| **Level 2 Upline** | **4%** | 400 bps | $\text{round007}(V \times 0.04)$ |
+| **Level 3 Upline** | **3%** | 300 bps | $\text{round007}(V \times 0.03)$ |
+| **Level 4 Upline** | **2%** | 200 bps | $\text{round007}(V \times 0.02)$ |
+| **Level 5 Upline** | **1%** | 100 bps | $\text{round007}(V \times 0.01)$ |
+| **Head Bounty Pool** | **5%** | 500 bps | $\text{round007}(V \times 0.05)$ → added to earner's 3D arena death bounty |
+| **Platform System Fee** | **5% floor + remainder** | ≥ 500 bps | $V - \sum(\text{others})$, with minimum floor $\lfloor V \times 0.05 \rfloor$ (unclaimed uplines roll to system) |
+| **Energy Recharge Reserve Pool** | **20%** | 2,000 bps | $\text{round007}(V \times 0.20)$ → `system_balances.energy_pool_micro_usd` (backs ad / Cheer EC recharges) |
 
 ---
 
@@ -45,35 +45,35 @@ Every ad impression processed by the MWAR platform (via Server-to-Server postbac
 
 All figures reflect realistic programmatic publisher net yields across mobile web and hybrid HTML5/WebAssembly gaming environments.
 
-| Country Name | Code | Tier | Banner eCPM ($) | 5s Video eCPM ($) | 15s Video eCPM ($) | 30s Video eCPM ($) | 30s Single View (`micro_usd`) | 30s Total Coins | 75% Earner Coins (pre-2026-11-25; now 55%) |
+| Country Name | Code | Tier | Banner eCPM ($) | 5s Video eCPM ($) | 15s Video eCPM ($) | 30s Video eCPM ($) | 30s Single View (`micro_usd`) | 30s Gross Coins (`C`) | 55% Earner Coins (Gross, V1.1 `0.007 C`) |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **United States** | `US` | **Tier 1** | **$1.50** | **$6.50** | **$18.00** | **$32.00** | 32,000 µ$ | 320 | **240** |
-| **Australia** | `AU` | **Tier 1** | **$1.30** | **$5.50** | **$15.00** | **$27.00** | 27,000 µ$ | 270 | **202** |
-| **United Kingdom** | `GB` | **Tier 1** | **$1.20** | **$5.20** | **$14.50** | **$26.00** | 26,000 µ$ | 260 | **195** |
-| **Canada** | `CA` | **Tier 1** | **$1.15** | **$5.00** | **$14.00** | **$25.00** | 25,000 µ$ | 250 | **187** |
-| **Japan** | `JP` | **Tier 1** | **$1.10** | **$4.80** | **$13.50** | **$24.00** | 24,000 µ$ | 240 | **180** |
-| **Germany** | `DE` | **Tier 1** | **$1.00** | **$4.50** | **$13.00** | **$23.00** | 23,000 µ$ | 230 | **172** |
-| **Singapore** | `SG` | **Tier 1** | **$1.05** | **$4.60** | **$13.00** | **$22.50** | 22,500 µ$ | 225 | **168** |
-| **South Korea** | `KR` | **Tier 1** | **$0.95** | **$4.20** | **$12.00** | **$21.00** | 21,000 µ$ | 210 | **157** |
-| **United Arab Emirates** | `AE` | **Tier 2** | **$0.70** | **$3.00** | **$8.50** | **$15.00** | 15,000 µ$ | 150 | **112** |
-| **Taiwan** | `TW` | **Tier 2** | **$0.65** | **$2.80** | **$8.00** | **$14.00** | 14,000 µ$ | 140 | **105** |
-| **Saudi Arabia** | `SA` | **Tier 2** | **$0.60** | **$2.60** | **$7.50** | **$13.50** | 13,500 µ$ | 135 | **101** |
-| **Malaysia** | `MY` | **Tier 2** | **$0.40** | **$1.80** | **$5.00** | **$9.50** | 9,500 µ$ | 95 | **71** |
-| **Thailand** | `TH` | **Tier 2** | **$0.35** | **$1.60** | **$4.50** | **$8.50** | 8,500 µ$ | 85 | **63** |
-| **Mexico** | `MX` | **Tier 2** | **$0.32** | **$1.40** | **$4.00** | **$7.50** | 7,500 µ$ | 75 | **56** |
-| **Brazil** | `BR` | **Tier 2** | **$0.30** | **$1.30** | **$3.80** | **$7.00** | 7,000 µ$ | 70 | **52** |
-| **Russia** | `RU` | **Tier 2** | **$0.25** | **$1.10** | **$3.20** | **$6.00** | 6,000 µ$ | 60 | **45** |
-| **Turkey** | `TR` | **Tier 2** | **$0.22** | **$1.00** | **$2.90** | **$5.50** | 5,500 µ$ | 55 | **41** |
-| **Vietnam** | `VN` | **Tier 3** | **$0.18** | **$0.80** | **$2.20** | **$4.20** | 4,200 µ$ | 42 | **31** |
-| **Philippines** | `PH` | **Tier 3** | **$0.18** | **$0.75** | **$2.10** | **$4.00** | 4,000 µ$ | 40 | **30** |
-| **Indonesia** | `ID` | **Tier 3** | **$0.16** | **$0.70** | **$2.00** | **$3.80** | 3,800 µ$ | 38 | **28** |
-| **Cambodia** | `KH` | **Tier 3** | **$0.12** | **$0.55** | **$1.50** | **$2.80** | 2,800 µ$ | 28 | **21** |
-| **India** | `IN` | **Tier 3** | **$0.12** | **$0.50** | **$1.40** | **$2.80** | 2,800 µ$ | 28 | **21** |
-| **Myanmar** | `MM` | **Tier 3** | **$0.10** | **$0.45** | **$1.30** | **$2.50** | 2,500 µ$ | 25 | **18** |
-| **Laos** | `LA` | **Tier 3** | **$0.10** | **$0.45** | **$1.30** | **$2.50** | 2,500 µ$ | 25 | **18** |
-| **Bangladesh** | `BD` | **Tier 3** | **$0.08** | **$0.35** | **$1.00** | **$2.00** | 2,000 µ$ | 20 | **15** |
-| **Pakistan** | `PK` | **Tier 3** | **$0.08** | **$0.35** | **$1.00** | **$2.00** | 2,000 µ$ | 20 | **15** |
-| **Global Fallback** | `GLOBAL` | **Default** | **$0.25** | **$1.10** | **$3.20** | **$6.00** | 6,000 µ$ | 60 | **45** |
+| **United States** | `US` | **Tier 1** | **$1.50** | **$6.50** | **$18.00** | **$32.00** | 32,000 µ$ | 320 | **176.00** |
+| **Australia** | `AU` | **Tier 1** | **$1.30** | **$5.50** | **$15.00** | **$27.00** | 27,000 µ$ | 270 | **148.50** |
+| **United Kingdom** | `GB` | **Tier 1** | **$1.20** | **$5.20** | **$14.50** | **$26.00** | 26,000 µ$ | 260 | **143.00** |
+| **Canada** | `CA` | **Tier 1** | **$1.15** | **$5.00** | **$14.00** | **$25.00** | 25,000 µ$ | 250 | **137.50** |
+| **Japan** | `JP` | **Tier 1** | **$1.10** | **$4.80** | **$13.50** | **$24.00** | 24,000 µ$ | 240 | **132.00** |
+| **Germany** | `DE` | **Tier 1** | **$1.00** | **$4.50** | **$13.00** | **$23.00** | 23,000 µ$ | 230 | **126.50** |
+| **Singapore** | `SG` | **Tier 1** | **$1.05** | **$4.60** | **$13.00** | **$22.50** | 22,500 µ$ | 225 | **123.75** |
+| **South Korea** | `KR` | **Tier 1** | **$0.95** | **$4.20** | **$12.00** | **$21.00** | 21,000 µ$ | 210 | **115.50** |
+| **United Arab Emirates** | `AE` | **Tier 2** | **$0.70** | **$3.00** | **$8.50** | **$15.00** | 15,000 µ$ | 150 | **82.50** |
+| **Taiwan** | `TW` | **Tier 2** | **$0.65** | **$2.80** | **$8.00** | **$14.00** | 14,000 µ$ | 140 | **77.00** |
+| **Saudi Arabia** | `SA` | **Tier 2** | **$0.60** | **$2.60** | **$7.50** | **$13.50** | 13,500 µ$ | 135 | **74.25** |
+| **Malaysia** | `MY` | **Tier 2** | **$0.40** | **$1.80** | **$5.00** | **$9.50** | 9,500 µ$ | 95 | **52.25** |
+| **Thailand** | `TH` | **Tier 2** | **$0.35** | **$1.60** | **$4.50** | **$8.50** | 8,500 µ$ | 85 | **46.75** |
+| **Mexico** | `MX` | **Tier 2** | **$0.32** | **$1.40** | **$4.00** | **$7.50** | 7,500 µ$ | 75 | **41.25** |
+| **Brazil** | `BR` | **Tier 2** | **$0.30** | **$1.30** | **$3.80** | **$7.00** | 7,000 µ$ | 70 | **38.50** |
+| **Russia** | `RU` | **Tier 2** | **$0.25** | **$1.10** | **$3.20** | **$6.00** | 6,000 µ$ | 60 | **33.00** |
+| **Turkey** | `TR` | **Tier 2** | **$0.22** | **$1.00** | **$2.90** | **$5.50** | 5,500 µ$ | 55 | **30.25** |
+| **Vietnam** | `VN` | **Tier 3** | **$0.18** | **$0.80** | **$2.20** | **$4.20** | 4,200 µ$ | 42 | **23.10** |
+| **Philippines** | `PH` | **Tier 3** | **$0.18** | **$0.75** | **$2.10** | **$4.00** | 4,000 µ$ | 40 | **22.00** |
+| **Indonesia** | `ID` | **Tier 3** | **$0.16** | **$0.70** | **$2.00** | **$3.80** | 3,800 µ$ | 38 | **20.90** |
+| **Cambodia** | `KH` | **Tier 3** | **$0.12** | **$0.55** | **$1.50** | **$2.80** | 2,800 µ$ | 28 | **15.40** |
+| **India** | `IN` | **Tier 3** | **$0.12** | **$0.50** | **$1.40** | **$2.80** | 2,800 µ$ | 28 | **15.40** |
+| **Myanmar** | `MM` | **Tier 3** | **$0.10** | **$0.45** | **$1.30** | **$2.50** | 2,500 µ$ | 25 | **13.75** |
+| **Laos** | `LA` | **Tier 3** | **$0.10** | **$0.45** | **$1.30** | **$2.50** | 2,500 µ$ | 25 | **13.75** |
+| **Bangladesh** | `BD` | **Tier 3** | **$0.08** | **$0.35** | **$1.00** | **$2.00** | 2,000 µ$ | 20 | **11.00** |
+| **Pakistan** | `PK` | **Tier 3** | **$0.08** | **$0.35** | **$1.00** | **$2.00** | 2,000 µ$ | 20 | **11.00** |
+| **Global Fallback** | `GLOBAL` | **Default** | **$0.25** | **$1.10** | **$3.20** | **$6.00** | 6,000 µ$ | 60 | **33.00** |
 
 ---
 
@@ -136,8 +136,8 @@ To avoid floating-point inaccuracies, all financial ledgers in MWAR execute in w
 - **Characteristics:**
   - Enormous user volume and high social sharing velocity (ideal for 5-tier MLM viral referral loops).
   - While individual impression yield is lower ($2.00–$4.20 eCPM for 30s video), user volume can be 10x–50x greater than Tier 1.
-  - Serving a 30s video in Vietnam (`VN`) or Philippines (`PH`) provides **30–31 Coins** to the earner, which holds significant local micro-purchasing power.
-  - In frontier Southeast Asian markets (`MM`, `LA`, `KH`), conservative baselines ($2.50–$2.80 eCPM) guarantee reliable 18–21 Coins per video.
+  - Serving a 30s video in Vietnam (`VN`) or Philippines (`PH`) provides **22.00–23.10 Coins** (55% gross) to the earner, which holds significant local micro-purchasing power.
+  - In frontier Southeast Asian markets (`MM`, `LA`, `KH`), conservative baselines ($2.50–$2.80 eCPM) guarantee reliable **13.75–15.40 Coins** (55% gross) per video.
 
 ---
 
@@ -164,7 +164,7 @@ To avoid floating-point inaccuracies, all financial ledgers in MWAR execute in w
   - Energy Ticket (`EC`) instant recharge (+1 EC or +50% progress).
   - Cash Arena Victory multiplier.
 - **Completion Rate:** High value exchange ensures 90–95% completion.
-- **Economic Role:** Primary revenue driver for the 75/15/5/5 distribution engine and head bounty pool accumulation.
+- **Economic Role:** Primary revenue driver for the 55/15/5/5/20 distribution engine, head bounty pool, and Energy Pool accumulation.
 
 ---
 

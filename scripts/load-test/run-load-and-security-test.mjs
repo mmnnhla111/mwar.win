@@ -53,6 +53,7 @@
  *   --game-url=ws://host:port      use a running game server (no probe, no leak check)
  *   --api=http://127.0.0.1:8787    api-worker under test (PART B)
  *   --worker-dir=apps/api-worker   where `wrangler d1 execute core_db --local` runs
+ *   --persist-to=dir               isolated wrangler D1 state dir (default: OS temp dir)
  *   --tg-bot-token=…  --postback-secret=…  --internal-secret=…   must match the worker's .dev.vars (local test values)
  *   --report=path.json             write the full JSON report (default: OS temp dir)
  *   --server-cpu-prof=dir          also write a V8 CPU profile of the game server (.cpuprofile)
@@ -294,6 +295,7 @@ if (isMainThread) {
     gameUrl: args['game-url'] || null,
     api: String(args.api || 'http://127.0.0.1:8787').replace(/\/+$/, ''),
     workerDir: path.resolve(ROOT, String(args['worker-dir'] || 'apps/api-worker')),
+    persistTo: args['persist-to'] ? path.resolve(String(args['persist-to'])) : path.join(os.tmpdir(), 'mwar-loadtest-wrangler-state'),
     tgBotToken: String(args['tg-bot-token'] || process.env.TELEGRAM_BOT_TOKEN || '123456789:TESTtokenABC'),
     postbackSecret: String(args['postback-secret'] || process.env.AD_POSTBACK_SECRET || 'test-postback'),
     internalSecret: String(args['internal-secret'] || process.env.INTERNAL_API_SECRET || 'test-internal'),
@@ -1138,18 +1140,20 @@ if (isMainThread) {
       if (!r.body?.token) throw new Error(`signup ${label} failed: ${r.status} ${JSON.stringify(r.body)}`);
       return { label, id: r.body.user.id, token: r.body.token };
     };
+    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    const wranglerExecOpts = { cwd: OPT.workerDir, shell: process.platform === 'win32', encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
     const sqlFile = (statements) => {
       const f = path.join(os.tmpdir(), `mwar-lt-${process.pid}-${Date.now()}.sql`);
       fs.writeFileSync(f, statements.join('\n'));
       try {
-        const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'core_db', '--local', '--json', '--file', f], { cwd: OPT.workerDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        const out = execFileSync(npxCmd, ['wrangler', 'd1', 'execute', 'core_db', '--local', '--persist-to', OPT.persistTo, '--json', '--file', f], wranglerExecOpts);
         return JSON.parse(out.slice(out.indexOf('[')));
       } finally {
         fs.rmSync(f, { force: true });
       }
     };
     const sqlQuery = (q) => {
-      const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'core_db', '--local', '--json', '--command', q], { cwd: OPT.workerDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const out = execFileSync(npxCmd, ['wrangler', 'd1', 'execute', 'core_db', '--local', '--persist-to', OPT.persistTo, '--json', '--command', q], wranglerExecOpts);
       return JSON.parse(out.slice(out.indexOf('[')))[0].results;
     };
 
