@@ -1,4 +1,5 @@
 import type { AuditLayer1, AuditLayer2, AuditLayer3, CashoutAuditReport, FlagSeverity } from '@mwar/shared';
+import { HEADSHOT_MIN_SAMPLE_KILLS, HEADSHOT_RATIO_THRESHOLD } from '@mwar/shared';
 import type { Env } from '../types';
 import { logReceiverBase, logReceiverSecret, signedHeaders } from '../utils/audit-logger';
 
@@ -7,13 +8,13 @@ import { logReceiverBase, logReceiverSecret, signedHeaders } from '../utils/audi
  *   Layer 1 — exact Micro-USD reconciliation of wallets.balance against the D1 wallet ledger
  *             (+ a signed cross-check against the Mini PC PostgreSQL copy when LOG_RECEIVER_URL is set).
  *   Layer 2 — behaviour: headshot ratio > 0.85 with ≥ 30 kills, chest collection > 3σ above the room.
- *   Layer 3 — collusion graph: kills on accounts sharing an IP hash / device fingerprint, or in a
- *             direct 1-on-1 referral loop; collusion ratio and the earnings from those kills.
+ *   Layer 3 — collusion graph: kills or paid spectator gifts on accounts sharing an IP hash / device
+ *             fingerprint, or in a direct 1-on-1 referral loop; collusion ratio and collusive earnings.
  * Returns the report; flags are written to anticheat_flags. Score 1.00 = clean, 0.00 = high risk.
  */
 export const AUDIT_WINDOW_DAYS = 90;
-export const HEADSHOT_RATIO_LIMIT = 0.85;
-export const HEADSHOT_MIN_KILLS = 30;
+export const HEADSHOT_RATIO_LIMIT = HEADSHOT_RATIO_THRESHOLD;
+export const HEADSHOT_MIN_KILLS = HEADSHOT_MIN_SAMPLE_KILLS;
 export const CHEST_SIGMA_LIMIT = 3;
 export const CHEST_MIN_ROOM_PLAYERS = 11; // a 3σ outlier is mathematically impossible below 11 players
 export const COLLUSION_MIN_KILLS = 3;
@@ -151,7 +152,7 @@ export async function layer2Behaviour(env: Env, userId: string, since: number): 
 }
 
 export async function layer3Collusion(env: Env, userId: string, since: number): Promise<AuditLayer3> {
-  const [victims, shared, refs] = await env.DB.batch([
+  const [victims, shared, refs, gifts] = await env.DB.batch([
     env.DB.prepare(
       `SELECT victim_id, COUNT(*) AS kills, COALESCE(SUM(earner_micro_usd), 0) AS earned
        FROM combat_events WHERE user_id = ?1 AND action_type IN ('GAME_KILL', 'FAST_MINI_KILL') AND victim_id IS NOT NULL AND created_at >= ?2
@@ -166,6 +167,16 @@ export async function layer3Collusion(env: Env, userId: string, since: number): 
       `SELECT id FROM users WHERE referrer_id = ?1
        UNION SELECT referrer_id FROM users WHERE id = ?1 AND referrer_id IS NOT NULL`
     ).bind(userId),
+    env.DB.prepare(
+      `SELECT CASE WHEN receiver_id = ?1 THEN sender_id ELSE receiver_id END AS partner_id,
+              COUNT(*) AS gift_count,
+              COALESCE(SUM(CASE WHEN receiver_id = ?1 THEN receiver_micro_usd ELSE 0 END), 0) AS received_micro_usd,
+              COALESCE(SUM(gross_micro_usd), 0) AS gross_micro_usd
+       FROM gift_transactions
+       WHERE status = 'done' AND gross_micro_usd > 0 AND created_at >= ?2
+         AND (receiver_id = ?1 OR sender_id = ?1) AND receiver_id IS NOT NULL
+       GROUP BY partner_id`
+    ).bind(userId, since),
   ]);
   const ipPartners = new Set<string>();
   const fpPartners = new Set<string>();
@@ -174,8 +185,17 @@ export async function layer3Collusion(env: Env, userId: string, since: number): 
 
   let kills = 0;
   let suspiciousKills = 0;
+  let suspiciousGifts = 0;
+  let collusiveGiftMicroUsd = 0;
   let collusive = 0;
-  const partners: Array<{ userId: string; kills: number; reasons: string[] }> = [];
+  const partnerMap = new Map<string, { userId: string; kills: number; reasons: Set<string> }>();
+  const addPartner = (pid: string, addKills: number, reasons: string[]) => {
+    const cur = partnerMap.get(pid) || { userId: pid, kills: 0, reasons: new Set<string>() };
+    cur.kills += addKills;
+    for (const r of reasons) cur.reasons.add(r);
+    partnerMap.set(pid, cur);
+  };
+
   for (const v of (victims.results || []) as any[]) {
     const c = n(v.kills);
     kills += c;
@@ -186,8 +206,30 @@ export async function layer3Collusion(env: Env, userId: string, since: number): 
     if (!reasons.length) continue;
     suspiciousKills += c;
     collusive += n(v.earned);
-    partners.push({ userId: v.victim_id, kills: c, reasons });
+    addPartner(v.victim_id, c, reasons);
   }
+
+  for (const g of (gifts.results || []) as any[]) {
+    const pid = String(g.partner_id || '');
+    if (!pid || pid === userId) continue;
+    const sameIp = ipPartners.has(pid);
+    const sameFp = fpPartners.has(pid);
+    if (!sameIp && !sameFp) continue;
+    const reasons: string[] = ['gift_collusion'];
+    if (sameIp) reasons.push('same_ip');
+    if (sameFp) reasons.push('same_device');
+    if (refPartners.has(pid)) reasons.push('referral_loop');
+    suspiciousGifts += n(g.gift_count);
+    collusive += n(g.received_micro_usd);
+    collusiveGiftMicroUsd += n(g.gross_micro_usd);
+    addPartner(pid, 0, reasons);
+  }
+
+  const partners = Array.from(partnerMap.values()).map((p) => ({
+    userId: p.userId,
+    kills: p.kills,
+    reasons: Array.from(p.reasons),
+  }));
   partners.sort((a, b) => b.kills - a.kills);
   const top = partners.slice(0, 5);
   const names = new Map<string, string>();
@@ -198,10 +240,12 @@ export async function layer3Collusion(env: Env, userId: string, since: number): 
     for (const r of rows.results || []) names.set(r.id, r.username);
   }
   const ratio = kills > 0 ? round2(suspiciousKills / kills) : 0;
+  const giftCollusionCritical = suspiciousGifts >= 2 || collusiveGiftMicroUsd >= 50_000;
+  const giftCollusionSuspicious = suspiciousGifts >= 1;
   const status: AuditLayer3['status'] =
-    suspiciousKills >= COLLUSION_MIN_KILLS && ratio >= COLLUSION_RATIO_CRITICAL
+    (suspiciousKills >= COLLUSION_MIN_KILLS && ratio >= COLLUSION_RATIO_CRITICAL) || giftCollusionCritical
       ? 'collusion'
-      : suspiciousKills >= COLLUSION_MIN_KILLS && ratio >= COLLUSION_RATIO_FLAG
+      : (suspiciousKills >= COLLUSION_MIN_KILLS && ratio >= COLLUSION_RATIO_FLAG) || giftCollusionSuspicious
         ? 'suspicious'
         : 'clean';
   return {

@@ -208,7 +208,10 @@ export function nextBannerIntervalSeconds(rand: () => number = Math.random): num
 /** Anti-AFK: charging screens pause after this long without mouse / touch / key input (or a hidden tab). */
 export const AD_IDLE_PAUSE_MS = 35_000;
 /** Anti-AFK: the API rejects a banner ping whose last verified input is older than this (400 idle_paused). */
-export const AD_IDLE_REJECT_MS = 40_000;
+export const AD_IDLE_REJECT_MS = 35_000;
+/** Spec §6 Layer-2 anti-cheat thresholds: flag headshot ratio > 0.85 once sample kills >= 30. */
+export const HEADSHOT_MIN_SAMPLE_KILLS = 30;
+export const HEADSHOT_RATIO_THRESHOLD = 0.85;
 /** Rewarded video EC credit: 15 s = +50 % (2 views = 1 EC), 30 s = +100 % (1 view = 1 EC). */
 export const AD_VIDEO_EC_BP: Record<'video_15s' | 'video_30s', number> = { video_15s: 5_000, video_30s: 10_000 };
 export const AD_VIDEO_SECONDS: Record<'video_5s' | 'video_15s' | 'video_30s', number> = { video_5s: 5, video_15s: 15, video_30s: 30 };

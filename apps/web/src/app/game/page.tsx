@@ -3355,7 +3355,7 @@ export default function GamePage() {
           potMicroUsd={fastMiniPot}
           busy={deathBusy}
           error={deathError}
-          bottomPad={showAdBanner ? (isMobile ? 80 : 92) : 0}
+          bottomPad={showAdBanner ? (isMobile ? 88 : 96) : 0}
           onRestake={restakeNow}
           onFreePlay={freePlayAgain}
           onCharge={() => openVideoAd('video_30s')}
@@ -3676,7 +3676,7 @@ export default function GamePage() {
                 }
               : null
           }
-          bottomPad={showAdBanner ? (isMobile ? 80 : 92) : 0}
+          bottomPad={showAdBanner ? (isMobile ? 88 : 96) : 0}
         />
       )}
 

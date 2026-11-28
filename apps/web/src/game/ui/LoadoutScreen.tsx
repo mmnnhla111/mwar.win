@@ -141,7 +141,7 @@ export default function LoadoutScreen(p: Props) {
             {/* RIGHT: operator avatar + deploy */}
             <div className="flex flex-col gap-2 min-w-0">
               <div className="text-[10px] font-black text-slate-400 tracking-widest">2 · OPERATOR AVATAR</div>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                 {CHARACTERS.map((c) => {
                   const sel = p.character === c.id;
                   const img = p.portraits[c.id];
