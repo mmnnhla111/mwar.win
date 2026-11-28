@@ -167,7 +167,7 @@ export async function claimQuest(questId: string, dateKey?: string) {
     success: boolean;
     questId: string;
     rewardCoins: number;
-    /** ฿ game coins after the claim (missions never pay cash). */
+    /** C game coins after the claim (missions never pay cash). */
     coinsBalance?: number;
     rewardMicroUsd: number;
     formattedReward: string;

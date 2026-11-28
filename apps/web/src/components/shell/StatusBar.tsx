@@ -11,7 +11,7 @@ import { RankProgressionModal } from '../rank/RankProgressionModal';
 const nf = (n: number) => Math.max(0, Math.floor(n || 0)).toLocaleString('en-US');
 
 /**
- * Slim header strip under the TopNav: rank, ฿ game coins, ¢ cash balance, referral counts and today's
+ * Slim header strip under the TopNav: rank, C game coins, ¢ cash balance, referral counts and today's
  * upline-share lock (4 of 5 daily missions). Tapping "Locked" opens the daily missions drawer.
  */
 export function StatusBar() {
@@ -41,8 +41,8 @@ export function StatusBar() {
         </button>
 
         <span className="flex items-center gap-1 rounded-full bg-[#FFF6C2] text-[#7A5B00] px-2.5 h-7 shrink-0" title={t('currency.coinsHint')} data-coins>
-          <span className="font-black">฿</span>
           <span className="tabular-nums">{nf(coins)}</span>
+          <span className="font-black">C</span>
         </span>
 
         <Link href="/wallet" className="flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-800 hover:bg-emerald-100 px-2.5 h-7 shrink-0" title={t('currency.centsHint')} data-cents>
