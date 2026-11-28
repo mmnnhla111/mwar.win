@@ -401,7 +401,7 @@ if (isMainThread) {
       const child = spawn(process.execPath, [...profArgs, '--expose-gc', '--max-old-space-size=4096', '--require', path.join(HERE, 'server-probe.cjs'), '--import', 'tsx', 'src/index.ts'], {
         cwd: gsDir,
         // V1.1 R3: rooms that only hold disconnected bodies shut down after 5 s here (30 min in production)
-        env: { ...process.env, GAME_PORT: String(port), PORT: String(port), WORKER_API_URL: mockUrl, API_BASE_URL: mockUrl, INTERNAL_API_SECRET: secret, REDIS_URL: 'disabled', NODE_ENV: 'production', BODY_ONLY_ROOM_TTL_SECONDS: '5', GAME_PUBLIC_URL: `ws://127.0.0.1:${port}` },
+        env: { ...process.env, GAME_PORT: String(port), PORT: String(port), WORKER_API_URL: mockUrl, API_BASE_URL: mockUrl, INTERNAL_API_SECRET: secret, REDIS_URL: 'disabled', NODE_ENV: 'loadtest', MWAR_LOADTEST_TRUST_CLIENT_HITS: '1', BODY_ONLY_ROOM_TTL_SECONDS: '5', GAME_PUBLIC_URL: `ws://127.0.0.1:${port}` },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       children.push(child);
@@ -1347,15 +1347,15 @@ if (isMainThread) {
     );
     check(S, 'Energy Pool never overdrawn (pool − drawn ≥ 0)', Number(poolB.p) - Number(poolB.d) >= 0, `pool ${poolB.p} drawn ${poolB.d} (before test: ${pool0.p}/${pool0.d})`);
 
-    // 3. entry: FIFO lock, the token carries the ticket id + value
+    // 3. entry: ad-backed tickets first (FIFO among them), the 0-value starter only when none is left (audit §8)
     const decode = (tok) => JSON.parse(Buffer.from(String(tok).split('.')[0], 'base64url').toString('utf8'));
-    const e1 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
-    const t1 = e1.body.entryToken ? decode(e1.body.entryToken) : {};
     const e2 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
     const t2 = e2.body.entryToken ? decode(e2.body.entryToken) : {};
+    const e1 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
+    const t1 = e1.body.entryToken ? decode(e1.body.entryToken) : {};
     const e3 = await call('/api/game/enter', { method: 'POST', token: Vc.token, body: { mode: 'mini_30' } });
-    check(S, 'entry #1 locks the oldest ticket (the 0-backed promo) and signs its value', e1.status === 200 && /^tkt_/.test(t1.tid) && t1.tv === 0, `HTTP ${e1.status} tid ${t1.tid} tv ${t1.tv}`);
-    check(S, 'entry #2 locks the minted ticket: token tv = its backed µUSD', e2.status === 200 && t2.tv === Number(minted[minted.length - 1]?.v) && t2.tv > 0, `tv ${t2.tv}`);
+    check(S, 'entry #1 locks the ad-backed minted ticket first: token tv = its backed µUSD', e2.status === 200 && t2.tv === Number(minted[minted.length - 1]?.v) && t2.tv > 0, `HTTP ${e2.status} tid ${t2.tid} tv ${t2.tv}`);
+    check(S, 'entry #2 falls back to the 0-backed starter promo ticket', e1.status === 200 && /^tkt_/.test(t1.tid) && t1.tv === 0, `HTTP ${e1.status} tid ${t1.tid} tv ${t1.tv}`);
     check(S, 'no ticket left → 402 NO_EC', e3.status === 402 && e3.body.code === 'NO_EC', `${e3.status}`);
     const st2 = q1(`SELECT status, match_id FROM user_energy_tickets WHERE id = '${t2.tid}'`);
     check(S, 'locked ticket is in_match with the entry id', st2.status === 'in_match' && st2.match_id === t2.eid, JSON.stringify(st2));

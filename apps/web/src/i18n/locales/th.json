@@ -951,6 +951,8 @@
   "death.ecCharged": "EC ที่ชาร์จ (โฆษณา)",
   "death.bounty": "ค่าหัว",
   "death.bountyLost": "เสียให้ผู้ฆ่า {v}",
+  "death.heldTaken": "คุณถือ {v} — ถูก {name} เก็บไป",
+  "death.heldChest": "คุณถือ {v} — อยู่ในหีบค่าหัว (30 นาที)",
   "death.bountyKept": "ยังเก็บไว้ {v}",
   "death.bountyNone": "ไม่มี",
   "death.question": "ต้องการเล่นต่อไหม?",

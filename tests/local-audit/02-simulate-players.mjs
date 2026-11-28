@@ -257,6 +257,7 @@ function drive(p, room, sess) {
         if (Number(msg.bountyClaimedMicroUsd || 0) > 0) game.bountyEvents++;
       }
     }
+    if (type === 'player_damaged' && msg?.rejected) game.rejected = (game.rejected || 0) + 1;
     if (type === 'player_eliminated') {
       p.stats.deaths++;
       const diedAt = Date.now();
@@ -305,18 +306,40 @@ function drive(p, room, sess) {
     const me = ps?.get(room.sessionId);
     if (!me || me.isGhost) return;
     tick++;
-    room.send('player_move', { x: me.x + rnd(-0.7, 0.7), y: me.y, z: me.z + rnd(-0.7, 0.7), rotationY: rnd(0, 6.28), stance: 'stand' });
+    // like a player: walk toward the nearest live enemy, face it, shoot when it is within ~40 m (H1: the
+    // server checks range, aim and walls itself, so a bot that shoots blindly hits nothing)
+    let best = null;
+    let bestD = Infinity;
+    ps.forEach((o, sid) => {
+      if (sid === room.sessionId || o.isGhost || o.isSpectator) return;
+      const d = Math.hypot(o.x - me.x, o.z - me.z);
+      if (d < bestD) { bestD = d; best = { o, sid }; }
+    });
+    let nx = me.x + rnd(-0.6, 0.6);
+    let nz = me.z + rnd(-0.6, 0.6);
+    let yaw = me.rotationY || 0;
+    if (best) {
+      yaw = Math.atan2(-(best.o.x - me.x), -(best.o.z - me.z));
+      if (bestD > 12) {
+        nx = me.x + ((best.o.x - me.x) / bestD) * 0.9 + rnd(-0.3, 0.3);
+        nz = me.z + ((best.o.z - me.z) / bestD) * 0.9 + rnd(-0.3, 0.3);
+      }
+    }
+    room.send('player_move', { x: nx, y: me.y, z: nz, rotationY: yaw, stance: 'stand' });
     if (tick % 5 === 0) {
-      const targets = [];
-      ps.forEach((o, sid) => { if (sid !== room.sessionId && !o.isGhost && !o.isSpectator) targets.push(sid); });
       const chests = [];
-      room.state?.chests?.forEach((c, id) => chests.push(id));
-      if (chests.length && Math.random() < 0.3) {
-        room.send('player_shoot', { targetType: 'chest', targetId: pick(chests), damage: 34 });
+      room.state?.chests?.forEach((c, id) => chests.push({ id, c }));
+      const nearChest = chests.find(({ c }) => Math.hypot(c.x - me.x, c.z - me.z) < 30);
+      if (nearChest && Math.random() < 0.3) {
+        const cy = Math.atan2(-(nearChest.c.x - me.x), -(nearChest.c.z - me.z));
+        room.send('player_move', { x: nx, y: me.y, z: nz, rotationY: cy, stance: 'stand' });
+        room.send('player_shoot', { targetType: 'chest', targetId: nearChest.id, damage: 34, yaw: cy });
         game.chestHits++;
-      } else if (targets.length && Math.random() < 0.3) {
+      } else if (best && bestD < 40 && Math.random() < 0.45) {
         room.send('player_fired', {});
-        room.send('player_shoot', { targetType: 'player', targetId: pick(targets), damage: 34, headshot: Math.random() < 0.2 });
+        const head = Math.random() < 0.2;
+        room.send('player_shoot', { targetType: 'player', targetId: best.sid, damage: head ? 68 : 34, yaw, hit: { x: best.o.x, y: best.o.y + (head ? 1.68 : 1.1), z: best.o.z } });
+        game.shots = (game.shots || 0) + 1;
       }
     }
   }, 100);
@@ -470,7 +493,7 @@ clearInterval(hbTimer);
 
 check(SEC, '§5.2 Paid-EC / Fast & Mini rooms: no automatic respawn', game.autoRespawn === 0, `${game.autoRespawn} automatic respawns`);
 check(SEC, 'all game-server joins succeeded', game.joinFail === 0, `${game.joinFail} failed ${game.joinErrors.join(' | ')}`);
-note(SEC, `game: ${game.killEvents} kills seen by room observers (${game.paidKillEvents} paid by a ticket, ${game.bountyEvents} with bounty) · restake ok ${game.restakeOk} / refused ${game.restakeFail} ${JSON.stringify(game.restakeCodes)} · to lobby ${game.toLobby} · free respawn ${game.freeRespawn} · suicides ${game.suicides} · chest hits ${game.chestHits}`);
+note(SEC, `game: ${game.killEvents} kills seen by room observers (${game.paidKillEvents} paid by a ticket, ${game.bountyEvents} with bounty) · restake ok ${game.restakeOk} / refused ${game.restakeFail} ${JSON.stringify(game.restakeCodes)} · to lobby ${game.toLobby} · free respawn ${game.freeRespawn} · suicides ${game.suicides} · chest hits ${game.chestHits} · shots sent ${game.shots || 0}, refused by server ballistics ${game.rejected || 0}`);
 note(SEC, `enter codes ${JSON.stringify(game.enterCodes)} · banner pings ${JSON.stringify(game.bannerCodes)}`);
 check(SEC, '§7.5 self-cheer refused on post/profile (direct link + in-app)', cheer.selfBlocked === cheer.selfTried, `${cheer.selfBlocked}/${cheer.selfTried}`);
 note(SEC, `cheers: ${cheer.ok} paid direct-link cheers, creator paid in ${cheer.creatorPaid} · codes ${JSON.stringify(cheer.codes)}`);

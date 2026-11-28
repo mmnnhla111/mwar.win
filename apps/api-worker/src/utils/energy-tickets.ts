@@ -104,7 +104,8 @@ export interface LockedStake {
 }
 
 /**
- * POST /api/game/enter: atomically move the user's `cost` oldest available tickets (FIFO) to in_match
+ * POST /api/game/enter: atomically move the user's `cost` available tickets to in_match — tickets with real
+ * ad backing first (FIFO among them), 0-value starter / promo tickets only when no backed ticket is left —
  * for this entry, all or nothing, and refresh the cached EC count + match stats in the same batch.
  */
 export async function lockEntryTickets(env: Env, userId: string, cost: number, entryId: string, expPerMatch: number): Promise<LockedStake | null> {
@@ -115,7 +116,7 @@ export async function lockEntryTickets(env: Env, userId: string, cost: number, e
     db
       .prepare(
         `UPDATE user_energy_tickets SET status = 'in_match', match_id = ?2, consumed_at = ?3
-         WHERE id IN (SELECT id FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available' ORDER BY created_at ASC, id ASC LIMIT ?4)
+         WHERE id IN (SELECT id FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available' ORDER BY (backed_micro_usd > 0) DESC, created_at ASC, id ASC LIMIT ?4)
            AND status = 'available'
            AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND status = 'active')`
       )
@@ -383,7 +384,7 @@ export async function ticketSummary(db: D1Database, userId: string) {
   const r = await db
     .prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(backed_micro_usd), 0) AS v,
-              (SELECT backed_micro_usd FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available' ORDER BY created_at ASC, id ASC LIMIT 1) AS next_v,
+              (SELECT backed_micro_usd FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available' ORDER BY (backed_micro_usd > 0) DESC, created_at ASC, id ASC LIMIT 1) AS next_v,
               (SELECT pending_ec_micro_usd FROM users WHERE id = ?1) AS pending
        FROM user_energy_tickets WHERE user_id = ?1 AND status = 'available'`
     )

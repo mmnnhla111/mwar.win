@@ -51,6 +51,8 @@ export function isWalletMovingAction(a: string): boolean {
 }
 const WALLET_MOVING_ACTIONS = new Set<string>([
   'GAME_KILL',
+  'FAST_MINI_KILL',
+  'CHEER_REWARD',
   'CHEST_OPEN',
   'AD_WATCH',
   'MLM_COMMISSION',

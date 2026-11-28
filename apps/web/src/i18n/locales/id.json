@@ -951,6 +951,8 @@
   "death.ecCharged": "EC terisi (iklan)",
   "death.bounty": "Bounty kepala",
   "death.bountyLost": "Hilang {v} ke pembunuhmu",
+  "death.heldTaken": "Kamu membawa {v} — diambil oleh {name}",
+  "death.heldChest": "Kamu membawa {v} — ada di peti hadiahmu (30 menit)",
   "death.bountyKept": "Tetap {v}",
   "death.bountyNone": "Tidak ada",
   "death.question": "Main lagi?",

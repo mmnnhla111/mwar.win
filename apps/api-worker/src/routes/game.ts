@@ -1,3 +1,4 @@
+import { safeEqual } from '../utils/guards';
 import { Hono } from 'hono';
 import {
   GameBatchPayoutSchema,
@@ -260,7 +261,7 @@ gameRouter.post('/batch-payout', async (c) => {
   });
 
   // Validate internal shared secret
-  if (secret !== c.env.INTERNAL_API_SECRET) {
+  if (!safeEqual(secret, c.env.INTERNAL_API_SECRET)) {
     return c.json({ error: 'Unauthorized game server secret' }, 401);
   }
 

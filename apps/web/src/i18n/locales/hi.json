@@ -951,6 +951,8 @@
   "death.ecCharged": "चार्ज हुए EC (विज्ञापन)",
   "death.bounty": "सिर का इनाम",
   "death.bountyLost": "आपको मारने वाले को {v} मिला",
+  "death.heldTaken": "आपके पास {v} था — {name} ने ले लिया",
+  "death.heldChest": "आपके पास {v} था — आपके बाउंटी चेस्ट में है (30 मिनट)",
   "death.bountyKept": "{v} बचा रहा",
   "death.bountyNone": "कोई नहीं",
   "death.question": "फिर से खेलें?",

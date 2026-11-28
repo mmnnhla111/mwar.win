@@ -951,6 +951,8 @@
   "death.ecCharged": "チャージした EC（広告）",
   "death.bounty": "首の懸賞金",
   "death.bountyLost": "倒した相手に {v} を奪われた",
+  "death.heldTaken": "所持 {v} — {name} に奪われた",
+  "death.heldChest": "所持 {v} — 賞金チェストの中 (30分)",
   "death.bountyKept": "{v} を維持",
   "death.bountyNone": "なし",
   "death.question": "もう一度プレイしますか？",

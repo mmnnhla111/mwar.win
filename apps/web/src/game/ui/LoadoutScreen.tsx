@@ -12,6 +12,9 @@ interface Props {
   character: CharacterId;
   portraits: Partial<Record<CharacterId, string>>;
   kbLockSupported: boolean;
+  /** M4: Ctrl also crouches (opt-in; Z always does). */
+  ctrlCrouch?: boolean;
+  onCtrlCrouch?: (on: boolean) => void;
   onPrimary(id: PrimaryId): void;
   onCharacter(id: CharacterId): void;
   onDeploy(dragLook: boolean): void;
@@ -115,7 +118,7 @@ export default function LoadoutScreen(p: Props) {
                   <span>G drop · F pick</span>
                   <span>V grenade</span>
                   <span>Q/E lean</span>
-                  <span>Ctrl/Z stance</span>
+                  <span>{p.ctrlCrouch ? 'Z/Ctrl stance' : 'Z stance'}</span>
                   <span>X prone</span>
                   <span>Space jump/stand</span>
                   <span>C prop wheel</span>
@@ -126,6 +129,12 @@ export default function LoadoutScreen(p: Props) {
                 <div className="text-[9.5px] text-sky-300/80 font-semibold">
                   🔒 Browser shortcuts blocked in game{p.kbLockSupported ? ' • Ctrl+W fully safe in ⛶ fullscreen' : ''}
                 </div>
+              )}
+              {!p.isMobile && p.onCtrlCrouch && (
+                <label className="flex items-center gap-1.5 text-[9.5px] text-slate-400 font-semibold cursor-pointer select-none">
+                  <input type="checkbox" className="accent-sky-400" checked={!!p.ctrlCrouch} onChange={(e) => p.onCtrlCrouch?.(e.target.checked)} />
+                  Ctrl also crouches (Ctrl+W may close the tab outside fullscreen)
+                </label>
               )}
             </div>
 

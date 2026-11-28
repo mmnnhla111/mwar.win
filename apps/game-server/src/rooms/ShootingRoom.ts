@@ -21,12 +21,24 @@ import {
   LARGE_MAP_SIZE,
   SMALL_MAP_SIZE,
   BODY_ONLY_ROOM_TTL_SECONDS,
+  CHEST_PAUSE_RADIUS_M,
+  CHEST_MAX_AGE_MS,
+  WEAPON_RANGE_M,
+  KILL_BURST_LIMIT,
+  KILL_BURST_WINDOW_MS,
+  KILL_MINUTE_LIMIT,
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
 import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState, clonePlayerState } from '../schema/GameState';
 import { getRegistryRoom } from '../roomRegistry';
-import { stairIndexForMap, shotBlockedByStairs } from '../stairLineOfSight';
+import { validateShot } from '../ballistics';
+
+/**
+ * Load-test harness switch: the legacy "trust the client's hit" rule, so scripted bots that do not aim can
+ * still produce kills for payout / settlement checks. Never in production (index.ts refuses to start then).
+ */
+const RELAXED_BALLISTICS = process.env.MWAR_LOADTEST_TRUST_CLIENT_HITS === '1' && process.env.NODE_ENV !== 'production';
 
 interface RoomOptions {
   mode?: 'mini_30' | 'standard_100' | 'fast_mini';
@@ -120,11 +132,11 @@ export const WEAPON_SPECS: Record<
   string,
   { magSize: number; reserve: number; damage: number; headMult: number; range: number }
 > = {
-  sniper: { magSize: 5, reserve: 20, damage: 92, headMult: 2.5, range: 200 },
-  ak47: { magSize: 30, reserve: 90, damage: 34, headMult: 2.0, range: 45 },
-  m16: { magSize: 30, reserve: 90, damage: 27, headMult: 2.0, range: 55 },
-  uzi: { magSize: 40, reserve: 160, damage: 17, headMult: 1.6, range: 22 },
-  pistol: { magSize: 15, reserve: 45, damage: 24, headMult: 2.0, range: 25 },
+  sniper: { magSize: 5, reserve: 20, damage: 92, headMult: 2.5, range: WEAPON_RANGE_M.sniper },
+  ak47: { magSize: 30, reserve: 90, damage: 34, headMult: 2.0, range: WEAPON_RANGE_M.ak47 },
+  m16: { magSize: 30, reserve: 90, damage: 27, headMult: 2.0, range: WEAPON_RANGE_M.m16 },
+  uzi: { magSize: 40, reserve: 160, damage: 17, headMult: 1.6, range: WEAPON_RANGE_M.uzi },
+  pistol: { magSize: 15, reserve: 45, damage: 24, headMult: 2.0, range: WEAPON_RANGE_M.pistol },
 };
 
 /** Server-only (never synced) per-session data used for payouts and anti-cheat. */
@@ -167,6 +179,10 @@ interface SessionMeta {
   /** Last snapshot sent to the Worker ('' = send again at the next flush). */
   sessionSig?: string;
   lastMoveAt?: number;
+  /** H1 kill-rate guard: ms timestamps of this shooter's recent kills. */
+  killTimes?: number[];
+  /** H1: shots the server refused (range / aim / blocked / kill burst), for logs and the cashout audit. */
+  rejectedShots?: number;
 }
 
 /** V1.1 R3 session report items (see GameSessionReportSchema in @mwar/shared). */
@@ -293,6 +309,9 @@ export class ShootingRoom extends Room<GameState> {
   private chestBounty = new Map<string, { victimId: string; victimSession: string; amount: number; ticketId: string }>();
   /** chestId → ticket stake of the player whose suicide / environmental death dropped the chest. */
   private chestStake = new Map<string, TicketStake>();
+  /** chestId → ms of "nobody within 50 m" time left before the chest expires (paused while someone is near). */
+  private chestRemaining = new Map<string, number>();
+  private lastChestTick = 0;
   /** Unique id per queued payout item (the Worker de-duplicates re-sent batches with it). */
   private payoutSeq = 0;
   /** Head bounty the last elimination moved to the killer (for the victim's death summary). */
@@ -629,40 +648,68 @@ export class ShootingRoom extends Room<GameState> {
     });
 
     // Weapon Shooting & Hit Verification
-    this.onMessage('player_shoot', (client, data: { targetType: 'player' | 'chest'; targetId: string; damage: number; headshot?: boolean }) => {
-      const shooter = this.state.players.get(client.sessionId);
-      if (!shooter || shooter.isGhost) return;
-      const m = this.meta.get(client.sessionId);
-      const now = Date.now();
+    this.onMessage(
+      'player_shoot',
+      (client, data: { targetType: 'player' | 'chest'; targetId: string; damage: number; headshot?: boolean; hit?: { x: number; y: number; z: number }; yaw?: number }) => {
+        const shooter = this.state.players.get(client.sessionId);
+        if (!shooter || shooter.isGhost || shooter.isProp) return;
+        const m = this.meta.get(client.sessionId);
+        const now = Date.now();
 
-      // Anti-cheat rate limit: no faster than the equipped weapon can fire (20 % tolerance)
-      const weapon = WEAPON_SPECS[shooter.currentWeapon] ? shooter.currentWeapon : 'ak47';
-      const minGap = (WEAPON_MIN_SHOT_INTERVAL_MS[weapon] ?? 80) * 0.8;
-      if (m && now - m.lastShotAt < minGap) return;
-      if (m) m.lastShotAt = now;
+        // Anti-cheat rate limit: no faster than the equipped weapon can fire (20 % tolerance)
+        const weapon = WEAPON_SPECS[shooter.currentWeapon] ? shooter.currentWeapon : 'ak47';
+        const minGap = (WEAPON_MIN_SHOT_INTERVAL_MS[weapon] ?? 80) * 0.8;
+        if (m && now - m.lastShotAt < minGap) return;
+        if (m) m.lastShotAt = now;
+        shooter.lastActiveTime = now;
+        const spec = WEAPON_SPECS[weapon];
 
-      shooter.lastActiveTime = now;
-      // Damage clamp: never above the weapon's own (head-shot) damage
-      const spec = WEAPON_SPECS[weapon];
-      const maxDmg = Math.round(spec.damage * (data.headshot ? spec.headMult : 1));
-      const damage = Math.min(Math.max(1, Math.round(data.damage || 25)), maxDmg, 100);
-
-      if (m && data.targetType === 'player') {
-        m.hits += 1;
-        if (data.headshot) m.headshots += 1;
-        // Layer 2: aim headshot ratio > 85 % after enough hits → flag (rewards zeroed)
-        if (!m.flagged && m.hits >= HEADSHOT_MIN_SAMPLE_HITS && m.headshots / m.hits > HEADSHOT_RATIO_FLAG) {
-          m.flagged = `headshot_ratio_${(m.headshots / m.hits).toFixed(2)}`;
-          console.warn(`[AntiCheat L2] ${shooter.id} flagged: ${m.flagged}`);
+        if (data?.targetType === 'chest') {
+          const chest = this.state.chests.get(String(data.targetId));
+          if (!chest) return;
+          // H1: chests obey the same range / aim / line-of-sight rules as players
+          const v = RELAXED_BALLISTICS
+            ? { ok: true, distance: 0, reason: undefined }
+            : validateShot({ shooter, target: { x: chest.x, y: chest.y, z: chest.z, stance: 'prone' }, weapon, aimYaw: data.yaw, largeMap: this.largeMap });
+          if (!v.ok) return this.rejectShot(client, m, String(data.targetId), v.reason ?? 'blocked', v.distance);
+          this.handleChestHit(shooter, client, String(data.targetId), Math.min(Math.max(1, Math.round(data.damage || 25)), spec.damage, 100));
+          return;
         }
-      }
+        if (data?.targetType !== 'player') return;
+        const target = this.state.players.get(String(data.targetId));
+        if (!target || target.isGhost || target.isSpectator || data.targetId === client.sessionId) return;
 
-      if (data.targetType === 'player') {
-        this.handlePlayerHit(shooter, client, data.targetId, damage);
-      } else if (data.targetType === 'chest') {
-        this.handleChestHit(shooter, client, data.targetId, damage);
+        // H1 kill-rate guard: an impossible burst of kills → further hits are ignored for a while
+        if (m) {
+          m.killTimes = (m.killTimes ?? []).filter((t) => now - t < 60_000);
+          const burst = m.killTimes.filter((t) => now - t < KILL_BURST_WINDOW_MS).length;
+          if (burst >= KILL_BURST_LIMIT || m.killTimes.length >= KILL_MINUTE_LIMIT) return this.rejectShot(client, m, String(data.targetId), 'kill_rate', 0);
+        }
+
+        // H1 server-authoritative ballistics: range, aim cone, walls / buildings / terrain, server-side headshot
+        // (load-test harness only: MWAR_LOADTEST_TRUST_CLIENT_HITS=1 keeps the legacy trust-the-client rule; refused in production)
+        const v = RELAXED_BALLISTICS
+          ? { ok: true, headshot: !!data.headshot, distance: 0, reason: undefined }
+          : validateShot({ shooter, target, weapon, hit: data.hit, aimYaw: data.yaw, largeMap: this.largeMap });
+        if (!v.ok) return this.rejectShot(client, m, String(data.targetId), v.reason ?? 'blocked', v.distance);
+        if (typeof data.yaw === 'number' && Number.isFinite(data.yaw)) shooter.rotationY = data.yaw;
+
+        // Damage clamp: never above the weapon's own damage (x head multiplier only for a SERVER headshot)
+        const maxDmg = Math.round(spec.damage * (v.headshot ? spec.headMult : 1));
+        const damage = Math.min(Math.max(1, Math.round(data.damage || spec.damage)), maxDmg, 100);
+
+        if (m) {
+          m.hits += 1;
+          if (v.headshot) m.headshots += 1;
+          // Layer 2: SERVER-computed headshot ratio > 85 % after enough hits → flag (rewards zeroed)
+          if (!m.flagged && m.hits >= HEADSHOT_MIN_SAMPLE_HITS && m.headshots / m.hits > HEADSHOT_RATIO_FLAG) {
+            m.flagged = `headshot_ratio_${(m.headshots / m.hits).toFixed(2)}`;
+            console.warn(`[AntiCheat L2] ${shooter.id} flagged: ${m.flagged}`);
+          }
+        }
+        this.handlePlayerHit(shooter, client, String(data.targetId), damage);
       }
-    });
+    );
 
     // Gunshot radar blip: every shot is relayed (server position, not client-reported) so enemies
     // within radar range see a 2-second red dot on their minimap. Rate-limited per player.
@@ -774,15 +821,18 @@ export class ShootingRoom extends Room<GameState> {
     });
   }
 
+  /** H1: the server refused a hit — the shooter sees 0 damage (no health change, nothing paid). */
+  private rejectShot(client: Client, m: SessionMeta | undefined, targetId: string, reason: string, distance: number) {
+    if (m) m.rejectedShots = (m.rejectedShots ?? 0) + 1;
+    const target = this.state.players.get(targetId);
+    client.send('player_damaged', { targetSessionId: targetId, newHealth: target?.health ?? 0, damage: 0, rejected: reason });
+    if (m && (m.rejectedShots ?? 0) % 50 === 1) console.warn(`[AntiCheat H1] shot refused (${reason}, ${distance.toFixed(1)} m) - ${m.rejectedShots} refused this session`);
+  }
+
   private handlePlayerHit(shooter: PlayerState, shooterClient: Client, targetSessionId: string, damage: number) {
     const target = this.state.players.get(targetSessionId);
     if (!target || target.isGhost || targetSessionId === shooterClient.sessionId) return;
-
-    // V1.1 R4: solid stairs stop bullets - a target fully hidden behind a staircase takes no damage.
-    if (shotBlockedByStairs(stairIndexForMap(this.largeMap), shooter, target)) {
-      shooterClient.send('player_damaged', { targetSessionId, newHealth: target.health, damage: 0 });
-      return;
-    }
+    void shooter; // line of sight (solid stairs included) is checked by validateShot before this point
 
     // Break prop disguise on damage
     if (target.isProp) {
@@ -815,6 +865,8 @@ export class ShootingRoom extends Room<GameState> {
     target.isGhost = true;
     target.deaths += 1;
     const tm = this.meta.get(targetSessionId);
+    // What this life carried (ticket value still at stake) — shown on the victim's death summary
+    const stakeHeldMicroUsd = tm && tm.ticketLive ? Math.max(0, tm.ticketValue) : 0;
     if (tm) tm.diedAt = Date.now();
     // V1.1 R3: the life is over → its live session ends now (delivered with this death's settlement items)
     this.endSession(targetSessionId, 'died');
@@ -838,6 +890,8 @@ export class ShootingRoom extends Room<GameState> {
       // 1. Weapon/Combat Kill by another player:
       // Kills by another player do NOT drop a Bounty Chest!
       killer.kills += 1;
+      const km0 = this.meta.get(killerSessionId);
+      if (km0) (km0.killTimes ??= []).push(Date.now());
       const collusion = this.isCollusionKill(killerSessionId, targetSessionId, killer, target);
       if (collusion) console.warn(`[AntiCheat L3] kill ${killer.id} -> ${target.id} pays 0 (${collusion})`);
       // V1.1: the kill is worth exactly the victim's live ticket value (real ad backing), never a constant
@@ -899,6 +953,8 @@ export class ShootingRoom extends Room<GameState> {
         sessionEarningsMicroUsd: target.sessionEarningsMicroUsd,
         bountyMicroUsd: target.bountyMicroUsd,
         bountyLostMicroUsd: killer && killerSessionId !== targetSessionId ? Math.max(0, this.lastBountyLost) : 0,
+        /** Ticket value this life held (taken by the killer's 55/15/5/5/20 split, or dropped in the chest). */
+        stakeLostMicroUsd: stakeHeldMicroUsd,
       });
     }
     this.lastBountyLost = 0;
@@ -934,6 +990,7 @@ export class ShootingRoom extends Room<GameState> {
       });
       const winner = this.state.players.get(topSession) ?? shooter;
       this.chestDamage.delete(chestId);
+      this.chestRemaining.delete(chestId);
       this.state.chests.delete(chestId);
       this.state.activeChestsCount = this.state.chests.size;
 
@@ -1002,7 +1059,9 @@ export class ShootingRoom extends Room<GameState> {
     chest.isDeathDrop = true;
     chest.bountyMicroUsd = this.chestBounty.get(chestId)?.amount ?? 0;
     chest.spawnedAt = Date.now();
-    chest.expiresAt = Date.now() + CHEST_LIFETIME_MS; // 15-second lifespan
+    // 30 minutes of "nobody within 50 m" time; the countdown pauses while anyone alive is near (update())
+    chest.expiresAt = Date.now() + CHEST_LIFETIME_MS;
+    this.chestRemaining.set(chestId, CHEST_LIFETIME_MS);
 
     this.state.chests.set(chestId, chest);
     this.state.activeChestsCount = this.state.chests.size;
@@ -1112,10 +1171,26 @@ export class ShootingRoom extends Room<GameState> {
   private update(deltaTime: number) {
     const now = Date.now();
 
-    // 1. Expire 15-second death bounty chests
+    // 1. Death bounty chests: 30 min countdown that only runs while nobody alive is within 50 m
+    const chestDt = this.lastChestTick ? Math.min(1000, now - this.lastChestTick) : 0;
+    this.lastChestTick = now;
     this.state.chests.forEach((chest, id) => {
-      if (chest.isDeathDrop && chest.expiresAt > 0 && now >= chest.expiresAt) {
+      if (!chest.isDeathDrop) return;
+      let left = this.chestRemaining.get(id) ?? Math.max(0, chest.expiresAt - now);
+      let near = false;
+      this.state.players.forEach((p) => {
+        if (near || p.isGhost || p.isSpectator || p.isDisconnected) return;
+        if ((p.x - chest.x) ** 2 + (p.z - chest.z) ** 2 <= CHEST_PAUSE_RADIUS_M ** 2) near = true;
+      });
+      if (!near) left -= chestDt;
+      this.chestRemaining.set(id, left);
+      if (near !== chest.timerPaused) chest.timerPaused = near;
+      // Keep expiresAt meaningful for clients: a paused chest's deadline slides forward (synced at most 1x/s)
+      const shown = now + Math.max(0, left);
+      if (Math.abs(shown - chest.expiresAt) > 1000) chest.expiresAt = shown;
+      if (left <= 0 || now - chest.spawnedAt >= CHEST_MAX_AGE_MS) {
         this.state.chests.delete(id);
+        this.chestRemaining.delete(id);
         this.chestDamage.delete(id);
         this.returnChestBounty(id);
         const stake = this.chestStake.get(id);

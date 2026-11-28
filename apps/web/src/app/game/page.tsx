@@ -8,7 +8,7 @@ import type { ActiveGameSession } from '@mwar/shared';
 import { setFastMiniBannerPot } from '../../lib/bannerContext';
 import { DeathSummaryOverlay, type DeathPromptData } from '../../game/ui/DeathSummary';
 import { useTranslation } from '../../i18n/I18nProvider';
-import { formatCoins2, formatCoinsAndUsd, formatUsdPrecise } from '@mwar/shared';
+import { formatCoins2, formatCoinsAndUsd, formatUsdPrecise, earnerAndBountyShares, weaponMaxShotRange } from '@mwar/shared';
 import { QuestSpectateIcon } from '../../components/icons';
 import { soundFX } from '../../game/audio';
 import { CollisionWorld, MoveBody } from '../../game/physics/collision';
@@ -30,6 +30,8 @@ import {
   characterArmColors,
   CHARACTER_IDS,
   createCharacter,
+  makeValueBadge,
+  type ValueBadge,
   randomCharacterId,
   renderCharacterPortraits,
 } from '../../game/assets/characters';
@@ -341,6 +343,27 @@ export default function GamePage() {
   // Loadout / deploy, prop wheel, fullscreen, scope, command bar
   const [deployed, setDeployed] = useState(false);
   const [loadoutPrimary, setLoadoutPrimary] = useState<PrimaryId>('m16');
+  // M4: Ctrl-to-crouch is optional (off by default); stored per browser
+  const [ctrlCrouch, setCtrlCrouch] = useState(false);
+  const ctrlCrouchRef = useRef(false);
+  useEffect(() => {
+    try {
+      const on = localStorage.getItem('mwar_ctrl_crouch') === '1';
+      setCtrlCrouch(on);
+      ctrlCrouchRef.current = on;
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  const setCtrlCrouchPref = (on: boolean) => {
+    setCtrlCrouch(on);
+    ctrlCrouchRef.current = on;
+    try {
+      localStorage.setItem('mwar_ctrl_crouch', on ? '1' : '0');
+    } catch {
+      /* private mode */
+    }
+  };
   const [loadoutCharacter, setLoadoutCharacter] = useState<CharacterId>('specops');
   const [portraits, setPortraits] = useState<Partial<Record<CharacterId, string>>>({});
   const [propMenu, setPropMenu] = useState<{ open: boolean; hover: number | null; cursor: { x: number; y: number } | null }>({ open: false, hover: null, cursor: null });
@@ -1262,7 +1285,17 @@ export default function GamePage() {
       stance: Stance;
       /** Dead (waiting to respawn) or a spectator: no mesh, no hitbox. */
       hidden: boolean;
+      /** §8 floating "💰 162 C" badge: what killing this player pays (55 % of their ticket + their head bounty). */
+      badge: ValueBadge;
     }
+    /** Killer's take of a player carrying `ticket` µUSD + `bounty` µUSD, as badge text (null = nothing to win). */
+    const bountyBadgeText = (ticket: number, bounty: number): string | null => {
+      const v = earnerAndBountyShares(Math.max(0, Math.floor(ticket || 0))).earner + Math.max(0, Math.floor(bounty || 0));
+      if (v <= 0) return null;
+      return `💰 ${v >= 100 ? `${Math.floor(v / 100).toLocaleString()} C` : formatCoins2(v)}`;
+    };
+    const refreshBadge = (rp: { badge: ValueBadge; hidden: boolean; propId: unknown }, p: any) =>
+      rp.badge.set(rp.hidden || rp.propId ? null : bountyBadgeText(Number(p.ticketMicroUsd) || 0, Number(p.bountyMicroUsd) || 0));
     const validStance = (v: unknown): Stance => (v === 'crouch' || v === 'prone' ? v : 'stand');
     const remotePlayers = new Map<string, Remote>();
     let currentRoom: Room | null = null;
@@ -1450,10 +1483,13 @@ export default function GamePage() {
               propId: null,
               stance: validStance(p.stance),
               hidden: !!p.isGhost || !!p.isSpectator,
+              badge: makeValueBadge(),
             };
+            rig.root.add(rp.badge.sprite);
             rig.root.visible = !rp.hidden;
             remotePlayers.set(key, rp);
             setRemoteProp(key, rp, !!p.isProp && !rp.hidden, p.propType);
+            refreshBadge(rp, p);
           }
           p.onChange(() => {
             if (key === roomInstance.sessionId) {
@@ -1484,6 +1520,8 @@ export default function GamePage() {
                 rp.stance = validStance(p.stance);
                 setRemoteProp(key, rp, !!p.isProp && !rp.hidden, p.propType);
                 rp.rig.root.visible = !rp.hidden && !rp.propId;
+                // never on a prop disguise (it would give the hider away)
+                refreshBadge(rp, p);
               }
             }
           });
@@ -1493,6 +1531,7 @@ export default function GamePage() {
           if (rp) {
             setRemoteProp(key, rp, false, null);
             scene.remove(rp.rig.root);
+            rp.badge.dispose();
             rp.rig.dispose();
             remotePlayers.delete(key);
           }
@@ -1610,6 +1649,7 @@ export default function GamePage() {
             earningsMicroUsd: Number(data?.sessionEarningsMicroUsd) || 0,
             bountyMicroUsd: Number(data?.bountyMicroUsd) || 0,
             bountyLostMicroUsd: Number(data?.bountyLostMicroUsd) || 0,
+            stakeLostMicroUsd: Number(data?.stakeLostMicroUsd) || 0,
             freeAt: Date.now() + Math.max(0, Number(data?.respawnInMs) || 3000),
           });
         });
@@ -1991,9 +2031,20 @@ export default function GamePage() {
           setHitMarker({ at: performance.now(), kill: killed, head });
           if (killed) onBotKilled(hit.object.userData.botId, head ? 'HEADSHOT • ' : '');
         } else if (hit.object.userData.remoteId && currentRoom) {
-          currentRoom.send('player_shoot', { targetType: 'player', targetId: hit.object.userData.remoteId, damage: Math.min(100, Math.round(dmg)), headshot: head });
-          soundFX.playHitMarker();
-          setHitMarker({ at: performance.now(), kill: false, head });
+          // H1: the server decides range / line of sight / headshot; beyond the weapon's range nothing is sent
+          if (hit.distance <= weaponMaxShotRange(def.id)) {
+            const yaw = player.isProp ? player.propYaw : look.yaw;
+            currentRoom.send('player_move', { x: body.x, y: body.y, z: body.z, rotationY: yaw, stance: stanceRef.current });
+            currentRoom.send('player_shoot', {
+              targetType: 'player',
+              targetId: hit.object.userData.remoteId,
+              damage: Math.min(100, Math.round(dmg)),
+              hit: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
+              yaw,
+            });
+            soundFX.playHitMarker();
+            setHitMarker({ at: performance.now(), kill: false, head });
+          }
         }
       } else if (chestHits[0]) {
         endPoint = chestHits[0].point.clone();
@@ -2006,7 +2057,7 @@ export default function GamePage() {
         soundFX.playHitMarker();
         if (foundId) {
           if (currentRoom && !botMode) {
-            currentRoom.send('player_shoot', { targetType: 'chest', targetId: foundId, damage: 25 });
+            currentRoom.send('player_shoot', { targetType: 'chest', targetId: foundId, damage: 25, yaw: look.yaw });
           } else {
             soundFX.playChestPickup();
             player.chests += 1;
@@ -2149,7 +2200,8 @@ export default function GamePage() {
         else if (nearestWeapon(2.0) && !player.isProp) pickupRef.current();
         else firingRef.current = true;
       }
-      if (!isGhostSpectator && (e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === 'KeyZ') && !e.repeat) cycleStance();
+      // M4: Z is the crouch key; Ctrl only when the player opted in (Ctrl + W closes the tab outside fullscreen)
+      if (!isGhostSpectator && (e.code === 'KeyZ' || (ctrlCrouchRef.current && (e.code === 'ControlLeft' || e.code === 'ControlRight'))) && !e.repeat) cycleStance();
       if (e.code === 'KeyX' && !e.repeat) setStance(stanceRef.current === 'prone' ? 'stand' : 'prone');
       if (e.code === 'KeyG' && !e.repeat) throwWeaponRef.current();
       if (e.code === 'KeyV' && !e.repeat) throwGrenade(true);
@@ -3462,6 +3514,8 @@ export default function GamePage() {
           character={loadoutCharacter}
           portraits={portraits}
           kbLockSupported={kbLockSupported}
+          ctrlCrouch={ctrlCrouch}
+          onCtrlCrouch={setCtrlCrouchPref}
           onPrimary={setLoadoutPrimary}
           onCharacter={setLoadoutCharacter}
           onDeploy={deploy}

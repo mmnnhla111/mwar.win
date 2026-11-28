@@ -198,7 +198,8 @@ const ups = (n) => Array.from({ length: n }, (_, i) => ({ userId: `u${i + 1}`, d
 check(SEC, '§6 L2 headshot flag at ratio > 85 %', S.HEADSHOT_RATIO_FLAG === 0.85, `${S.HEADSHOT_RATIO_FLAG}`);
 check(SEC, '§6 L2 headshot check starts when kills ≥ 30 (spec) — code counts HITS ≥ HEADSHOT_MIN_SAMPLE_HITS', S.HEADSHOT_MIN_SAMPLE_HITS === 30, `HEADSHOT_MIN_SAMPLE_HITS = ${S.HEADSHOT_MIN_SAMPLE_HITS} (hits, not kills)`);
 check(SEC, '§6 L2 chest-rate anomaly at > 3σ', S.CHEST_RATE_SIGMA_LIMIT === 3, `${S.CHEST_RATE_SIGMA_LIMIT}`);
-check(SEC, '§5.5 chest lifetime 15 s', S.CHEST_LIFETIME_MS === 15_000, `${S.CHEST_LIFETIME_MS}`);
+check(SEC, '§5.5 (updated 2026-11-28) bounty chest: 30 min of time with nobody within 50 m (countdown pauses while someone is near)', S.CHEST_LIFETIME_MS === 30 * 60_000 && S.CHEST_PAUSE_RADIUS_M === 50, `${S.CHEST_LIFETIME_MS} ms · ${S.CHEST_PAUSE_RADIUS_M} m`);
+check(SEC, 'L9 same-victim collusion limit raised to 5 kills / 10 min', S.COLLUSION_REPEAT_KILL_LIMIT === 5 && S.COLLUSION_WINDOW_MS === 600_000, `${S.COLLUSION_REPEAT_KILL_LIMIT}`);
 check(SEC, '§5.1 server tick 20 Hz', S.GAME_TICK_RATE_HZ === 20, `${S.GAME_TICK_RATE_HZ}`);
 check(SEC, '§3 log retention 90 days, chat 12 months', S.LOG_RETENTION_DAYS === 90 && S.CHAT_RETENTION_MONTHS === 12);
 

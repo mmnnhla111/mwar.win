@@ -951,6 +951,8 @@
   "death.ecCharged": "EC charged (ads)",
   "death.bounty": "Head bounty",
   "death.bountyLost": "Lost {v} to your killer",
+  "death.heldTaken": "You carried {v} — taken by {name}",
+  "death.heldChest": "You carried {v} — it is in your bounty chest (30 min)",
   "death.bountyKept": "Kept {v}",
   "death.bountyNone": "None",
   "death.question": "Play Again?",

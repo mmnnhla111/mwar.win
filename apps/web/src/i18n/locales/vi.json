@@ -951,6 +951,8 @@
   "death.ecCharged": "EC đã sạc (quảng cáo)",
   "death.bounty": "Tiền thưởng đầu",
   "death.bountyLost": "Mất {v} cho người hạ bạn",
+  "death.heldTaken": "Bạn mang {v} — đã bị {name} lấy",
+  "death.heldChest": "Bạn mang {v} — nằm trong rương tiền thưởng (30 phút)",
   "death.bountyKept": "Giữ lại {v}",
   "death.bountyNone": "Không có",
   "death.question": "Chơi tiếp?",

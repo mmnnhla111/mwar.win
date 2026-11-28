@@ -137,7 +137,7 @@ async function startGameServer() {
   const port = await freePort();
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: path.join(ROOT, 'apps/game-server'),
-    env: { ...process.env, GAME_PORT: String(port), PORT: String(port), WORKER_API_URL: API, API_BASE_URL: API, INTERNAL_API_SECRET: SECRET, REDIS_URL: 'disabled', GAME_PUBLIC_URL: `ws://127.0.0.1:${port}`, NODE_ENV: 'production' },
+    env: { ...process.env, GAME_PORT: String(port), PORT: String(port), WORKER_API_URL: API, API_BASE_URL: API, INTERNAL_API_SECRET: SECRET, REDIS_URL: 'disabled', GAME_PUBLIC_URL: `ws://127.0.0.1:${port}`, NODE_ENV: 'loadtest', MWAR_LOADTEST_TRUST_CLIENT_HITS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.push(child);

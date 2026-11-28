@@ -951,6 +951,8 @@
   "death.ecCharged": "已充 EC（广告）",
   "death.bounty": "人头悬赏",
   "death.bountyLost": "{v} 被击杀者夺走",
+  "death.heldTaken": "你携带 {v} — 被 {name} 夺走",
+  "death.heldChest": "你携带 {v} — 在你的赏金箱中（30 分钟）",
   "death.bountyKept": "保留 {v}",
   "death.bountyNone": "无",
   "death.question": "再玩一局？",

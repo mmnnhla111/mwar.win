@@ -110,7 +110,9 @@ export class ChestState extends Schema {
   // The dead player's head bounty carried inside their suicide / environmental-death chest
   @type('number') bountyMicroUsd: number = 0;
   @type('number') spawnedAt: number = 0;
-  @type('number') expiresAt: number = 0; // 15s lifespan for suicide bounty chests
+  @type('number') expiresAt: number = 0; // 30 min of "nobody within 50 m" time (slides forward while paused)
+  /** True while someone alive is within 50 m (the chest's countdown is paused). */
+  @type('boolean') timerPaused: boolean = false;
 }
 
 export class GameState extends Schema {

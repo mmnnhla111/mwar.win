@@ -20,6 +20,8 @@ export interface DeathPromptData {
   earningsMicroUsd: number;
   bountyMicroUsd: number;
   bountyLostMicroUsd: number;
+  /** Ticket value this life carried (now taken by the killer, or inside the death chest). */
+  stakeLostMicroUsd?: number;
   /** ms epoch when the free "Play again" unlocks (server minimum 3 s). */
   freeAt: number;
 }
@@ -83,6 +85,16 @@ export function DeathSummaryOverlay({
         <div className="px-5 pt-4 pb-3 text-center border-b border-slate-800">
           <div className="text-rose-400 font-black text-xl tracking-widest">{t('death.title')}</div>
           {data.killer && <div className="text-slate-300 text-xs font-bold mt-0.5">{t('death.byKiller', { name: data.killer })}</div>}
+          {(() => {
+            // §8: what this life carried — "คุณถือ X C — ถูก <killer> เก็บไป" (suicide / fall: it waits in the chest)
+            const held = Math.max(0, Number(data.stakeLostMicroUsd) || 0) + Math.max(0, data.bountyLostMicroUsd || 0);
+            if (held <= 0) return null;
+            return (
+              <div className="mt-1 text-[11px] font-black text-amber-300" data-death-held>
+                {data.killer ? t('death.heldTaken', { v: formatCoins2(held), name: data.killer }) : t('death.heldChest', { v: formatCoins2(held) })}
+              </div>
+            );
+          })()}
           {data.fastMini && <div className="mt-1 text-[11px] font-bold text-sky-300">{t('fastmini.freeMode')}</div>}
         </div>
 

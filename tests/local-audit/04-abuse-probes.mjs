@@ -83,7 +83,7 @@ if (ra && rv) {
 }
 
 // 4. Headshot ratio is self-reported --------------------------------------------------------------
-note(SEC, `Layer-2 headshot flag uses the client's own "headshot" boolean (> ${S.HEADSHOT_RATIO_FLAG * 100} % after ${S.HEADSHOT_MIN_SAMPLE_HITS} hits): an aimbot that reports headshot:false is never flagged`);
+note(SEC, `Layer-2 headshot ratio (> ${S.HEADSHOT_RATIO_FLAG * 100} % after ${S.HEADSHOT_MIN_SAMPLE_HITS} hits) now uses the SERVER's headshot (hit height), not the client's flag`);
 
 export const abuseResults = results;
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

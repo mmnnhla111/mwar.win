@@ -951,6 +951,8 @@
   "death.ecCharged": "EC cargada (anuncios)",
   "death.bounty": "Recompensa por tu cabeza",
   "death.bountyLost": "Perdiste {v} con tu asesino",
+  "death.heldTaken": "Llevabas {v} — se lo llevó {name}",
+  "death.heldChest": "Llevabas {v} — está en tu cofre de recompensa (30 min)",
   "death.bountyKept": "Conservas {v}",
   "death.bountyNone": "Ninguna",
   "death.question": "¿Jugar otra vez?",

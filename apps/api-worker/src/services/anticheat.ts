@@ -104,7 +104,7 @@ export async function layer1Reconcile(env: Env, userId: string): Promise<AuditLa
 export async function layer2Behaviour(env: Env, userId: string, since: number): Promise<AuditLayer2> {
   const [k, aim, rooms] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT SUM(CASE WHEN action_type = 'GAME_KILL' THEN 1 ELSE 0 END) AS kills, SUM(CASE WHEN action_type = 'CHEST_OPEN' THEN 1 ELSE 0 END) AS chests
+      `SELECT SUM(CASE WHEN action_type IN ('GAME_KILL', 'FAST_MINI_KILL') THEN 1 ELSE 0 END) AS kills, SUM(CASE WHEN action_type = 'CHEST_OPEN' THEN 1 ELSE 0 END) AS chests
        FROM combat_events WHERE user_id = ?1 AND created_at >= ?2`
     ).bind(userId, since),
     // Session totals are cumulative: the max per game is that game's total
@@ -154,7 +154,7 @@ export async function layer3Collusion(env: Env, userId: string, since: number): 
   const [victims, shared, refs] = await env.DB.batch([
     env.DB.prepare(
       `SELECT victim_id, COUNT(*) AS kills, COALESCE(SUM(earner_micro_usd), 0) AS earned
-       FROM combat_events WHERE user_id = ?1 AND action_type = 'GAME_KILL' AND victim_id IS NOT NULL AND created_at >= ?2
+       FROM combat_events WHERE user_id = ?1 AND action_type IN ('GAME_KILL', 'FAST_MINI_KILL') AND victim_id IS NOT NULL AND created_at >= ?2
        GROUP BY victim_id`
     ).bind(userId, since),
     env.DB.prepare(

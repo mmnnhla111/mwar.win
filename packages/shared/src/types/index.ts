@@ -81,6 +81,8 @@ export interface DirectMessage {
 
 export type FinancialActionType =
   | 'GAME_KILL'
+  /** Fast & Mini kill: 90 % of the victim's banner pot credited to the shooter (inflow; 10 % platform). */
+  | 'FAST_MINI_KILL'
   | 'CHEST_OPEN'
   | 'AD_WATCH'
   | 'MLM_COMMISSION'
@@ -133,6 +135,7 @@ export type FinancialActionType =
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
   'GAME_KILL',
+  'FAST_MINI_KILL',
   'CHEST_OPEN',
   'AD_WATCH',
   'MLM_COMMISSION',

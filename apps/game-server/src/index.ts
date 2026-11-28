@@ -25,6 +25,32 @@ for (const candidate of envCandidates) {
   }
 }
 
+// ---- Fatal error logging (audit M7): never die silently — log the reason, then exit for pm2 to restart ----
+function fatal(kind: string, err: unknown) {
+  const e = err as { stack?: string; message?: string } | undefined;
+  console.error(`[Game Server] FATAL ${kind} at ${new Date().toISOString()}: ${e?.stack || e?.message || String(err)}`);
+  process.exitCode = 1;
+  // give stdout / stderr a moment to flush to the pm2 log file
+  setTimeout(() => process.exit(1), 200).unref();
+}
+process.on('uncaughtException', (err) => fatal('uncaughtException', err));
+process.on('unhandledRejection', (reason) => fatal('unhandledRejection', reason));
+process.on('exit', (code) => console.error(`[Game Server] process exit code=${code} at ${new Date().toISOString()}`));
+
+// ---- Secret hardening (audit L8): production must never run with a missing / dev entry-token secret ----
+const DEV_FALLBACK_SECRET = 'local-dev-internal-game-secret-2026';
+if (process.env.NODE_ENV === 'production') {
+  if (process.env.MWAR_LOADTEST_TRUST_CLIENT_HITS === '1') {
+    console.error('[Game Server] Refusing to start: MWAR_LOADTEST_TRUST_CLIENT_HITS is a load-test switch and is not allowed in production.');
+    process.exit(1);
+  }
+  const s = process.env.INTERNAL_API_SECRET || '';
+  if (!s || s === DEV_FALLBACK_SECRET) {
+    console.error('[Game Server] Refusing to start: INTERNAL_API_SECRET is missing or equals the dev fallback (NODE_ENV=production).');
+    process.exit(1);
+  }
+}
+
 const port = Number(process.env.GAME_PORT || process.env.PORT) || 2567;
 const host = '0.0.0.0';
 const app = express();

@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "i18n:check": "node scripts/check-i18n.mjs",
     "gen:stairs": "node --import ../game-server/node_modules/tsx/dist/loader.mjs scripts/gen-stair-data.ts",
+    "gen:obstacles": "node --import ../game-server/node_modules/tsx/dist/loader.mjs scripts/gen-obstacle-data.ts",
     "test:geometry": "node --import ../game-server/node_modules/tsx/dist/loader.mjs --test \"src/game/__tests__/*.test.ts\"",
     "prebuild": "node scripts/check-i18n.mjs",
     "deploy:pages": "next build && wrangler pages deploy out --project-name=mwar-web --branch=main"

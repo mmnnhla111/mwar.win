@@ -951,6 +951,8 @@
   "death.ecCharged": "충전한 EC (광고)",
   "death.bounty": "현상금",
   "death.bountyLost": "처치자에게 {v} 빼앗김",
+  "death.heldTaken": "보유 {v} — {name}에게 빼앗김",
+  "death.heldChest": "보유 {v} — 현상금 상자에 있음 (30분)",
   "death.bountyKept": "{v} 유지",
   "death.bountyNone": "없음",
   "death.question": "다시 플레이할까요?",

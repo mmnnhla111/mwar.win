@@ -189,6 +189,57 @@ function makeNameTag(text: string, color: string) {
   return s;
 }
 
+/**
+ * §8 floating bounty badge ("💰 162 C") above an enemy: what killing them pays (55 % of their ticket + their
+ * head bounty). One canvas sprite per remote player, redrawn only when the text changes.
+ */
+export interface ValueBadge {
+  sprite: THREE.Sprite;
+  set(text: string | null): void;
+  dispose(): void;
+}
+export function makeValueBadge(): ValueBadge {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 64;
+  const ctx = c.getContext('2d')!;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false, depthTest: false, transparent: true }));
+  sprite.scale.set(1.3, 0.33, 1);
+  sprite.position.y = 2.62;
+  sprite.renderOrder = 10;
+  sprite.visible = false;
+  let last: string | null = null;
+  return {
+    sprite,
+    set(text) {
+      if (text === last) return;
+      last = text;
+      sprite.visible = !!text;
+      if (!text) return;
+      ctx.clearRect(0, 0, 256, 64);
+      ctx.fillStyle = 'rgba(66,32,6,0.85)';
+      ctx.strokeStyle = 'rgba(250,204,21,0.95)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(6, 8, 244, 48, 16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#fde047';
+      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, 128, 33);
+      tex.needsUpdate = true;
+    },
+    dispose() {
+      tex.dispose();
+      sprite.material.dispose();
+    },
+  };
+}
+
 export function createCharacter(id: CharacterId, opts: { name?: string; tagColor?: string; weapon?: WeaponId } = {}): CharacterRig {
   const st = characterStyle(id);
   const female = st.gender === 'female';

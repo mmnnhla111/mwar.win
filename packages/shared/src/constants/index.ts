@@ -128,8 +128,14 @@ export const PRACTICE_MIN_ROUND_SECONDS = 60;
 export const PRACTICE_EC_PROGRESS_PER_ROUND = 25;
 /** EC spent to enter a paid (cash) arena. */
 export const EC_COST_PER_PAID_MATCH = 1;
-/** Death-drop bounty chest lifetime. */
-export const CHEST_LIFETIME_MS = 15_000;
+/**
+ * Death-drop bounty chest lifetime: 30 minutes of time with NOBODY within CHEST_PAUSE_RADIUS_M. While any
+ * alive, connected player is within that radius the countdown is paused (it only runs while the area is empty).
+ * CHEST_MAX_AGE_MS is a hard cap (wall clock) so a camped chest can never outlive its ticket's stale sweep.
+ */
+export const CHEST_LIFETIME_MS = 30 * 60_000;
+export const CHEST_PAUSE_RADIUS_M = 50;
+export const CHEST_MAX_AGE_MS = 4 * 3600_000;
 /** Layer 2: headshot ratio above this (after enough hits) flags the account and zeroes rewards. */
 export const HEADSHOT_RATIO_FLAG = 0.85;
 export const HEADSHOT_MIN_SAMPLE_HITS = 20;
@@ -137,8 +143,32 @@ export const HEADSHOT_MIN_SAMPLE_HITS = 20;
 export const CHEST_RATE_SIGMA_LIMIT = 3;
 export const CHEST_RATE_MIN_SAMPLE_PLAYERS = 4;
 /** Layer 3: same IP / device kills pay 0; the same killer→victim pair pays at most this often per window. */
-export const COLLUSION_REPEAT_KILL_LIMIT = 3;
+export const COLLUSION_REPEAT_KILL_LIMIT = 5;
 export const COLLUSION_WINDOW_MS = 10 * 60_000;
+/**
+ * Server-authoritative ballistics (audit H1): maximum distance (m) at which a weapon can register a hit.
+ * Shared by the game server (rejects longer shots) and the web client (does not send / mark them).
+ */
+export const WEAPON_RANGE_M: Record<string, number> = {
+  sniper: 200,
+  ak47: 45,
+  m16: 55,
+  uzi: 24,
+  pistol: 25,
+};
+/** Latency / position-lag tolerance on top of the weapon range: +10 % + 2 m. */
+export const SHOT_RANGE_TOLERANCE_PCT = 10;
+export const SHOT_RANGE_TOLERANCE_M = 2;
+export function weaponMaxShotRange(weaponId: string): number {
+  const r = WEAPON_RANGE_M[weaponId] ?? WEAPON_RANGE_M.ak47;
+  return r * (1 + SHOT_RANGE_TOLERANCE_PCT / 100) + SHOT_RANGE_TOLERANCE_M;
+}
+/** The shot must lie within this half-angle (degrees) of where the shooter is facing (+ the target's own angular size). */
+export const SHOT_AIM_CONE_DEG = 35;
+/** Kill-rate sanity guard: more kills than this in the window → further hits are ignored (impossible burst). */
+export const KILL_BURST_LIMIT = 6;
+export const KILL_BURST_WINDOW_MS = 10_000;
+export const KILL_MINUTE_LIMIT = 20;
 /** Server-side minimum ms between shots per weapon (fire-rate rate limit, with 20 % tolerance applied). */
 export const WEAPON_MIN_SHOT_INTERVAL_MS: Record<string, number> = {
   sniper: 1100,

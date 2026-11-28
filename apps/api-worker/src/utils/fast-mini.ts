@@ -15,7 +15,7 @@ import { ENERGY_POOL_ACCOUNT_ID, PLATFORM_ACCOUNT_ID } from './guards';
  * split once: 50 % into the pot (a fast_mini_pot_credits row), 50 % into normal EC backing. Nothing the
  * game server or the client sends is ever used as an amount:
  *   · FAST_MINI_KILL {killer, victimId, potId, diedAt}: V = Σ open credits of the victim's pot created up
- *     to the moment of death → 90 % shooter wallet (ledger GAME_KILL) / 10 % platform, credits → paid.
+ *     to the moment of death → 90 % shooter wallet (ledger FAST_MINI_KILL) / 10 % platform, credits → paid.
  *     Credits after the death fund the victim's next life. Each credit can be paid at most once (CHECK).
  *   · FAST_MINI_CLOSE (left / AFK / room closed) and the daily stale sweep: open credits → platform.
  * Test-mode (simulated) banners earn no revenue, so their pot share is drawn from the Energy Pool's
@@ -164,7 +164,7 @@ export async function settleFastMiniKill(
       db
         .prepare('UPDATE wallets SET balance_micro_usd = balance_micro_usd + ?1, total_earned_micro_usd = total_earned_micro_usd + ?1, updated_at = ?2 WHERE user_id = ?3')
         .bind(shooter, now, opts.killerId),
-      ledgerAfterUpdate(db, opts.killerId, shooter, 'GAME_KILL', ref, now),
+      ledgerAfterUpdate(db, opts.killerId, shooter, 'FAST_MINI_KILL', ref, now),
       // 10 % to the platform (+ the shooter share too if the shooter has no wallet row: nothing is lost)
       db
         .prepare(
@@ -175,7 +175,7 @@ export async function settleFastMiniKill(
       db
         .prepare(
           `INSERT INTO combat_events (id, user_id, game_id, action_type, victim_id, gross_micro_usd, earner_micro_usd, session_hits, session_headshots, created_at)
-           VALUES (?1, ?2, ?3, 'GAME_KILL', ?4, ?5, ?6, ?7, ?8, ?9)`
+           VALUES (?1, ?2, ?3, 'FAST_MINI_KILL', ?4, ?5, ?6, ?7, ?8, ?9)`
         )
         .bind(`ce_${crypto.randomUUID()}`, opts.killerId, opts.gameId.slice(0, 80), victimId.slice(0, 64), value, shooter, opts.hits ?? null, opts.headshots ?? null, now),
       db.prepare('UPDATE users SET total_kills = total_kills + 1, exp = COALESCE(exp, 0) + ?2 WHERE id = ?1').bind(opts.killerId, EXP_PER_KILL),
@@ -188,7 +188,7 @@ export async function settleFastMiniKill(
   await logFinancialTransaction(env, {
     transaction_id: `tx_fm_kill_${pid.slice(-24)}_${now}`,
     user_id: opts.killerId,
-    action_type: 'GAME_KILL',
+    action_type: 'FAST_MINI_KILL',
     amount_micro_usd: BigInt(shooter),
     balance_after_micro_usd: await walletBalance(db, opts.killerId),
     source_game_id: src,

@@ -951,6 +951,8 @@
   "death.ecCharged": "EC carregada (anúncios)",
   "death.bounty": "Recompensa pela cabeça",
   "death.bountyLost": "Perdeu {v} para quem te abateu",
+  "death.heldTaken": "Você carregava {v} — levado por {name}",
+  "death.heldChest": "Você carregava {v} — está no seu baú de recompensa (30 min)",
   "death.bountyKept": "Manteve {v}",
   "death.bountyNone": "Nenhuma",
   "death.question": "Jogar de novo?",
