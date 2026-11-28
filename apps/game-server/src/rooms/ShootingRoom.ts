@@ -27,6 +27,8 @@ import {
   KILL_BURST_LIMIT,
   KILL_BURST_WINDOW_MS,
   KILL_MINUTE_LIMIT,
+  BOSS_BOUNTY_EVENT_INTERVAL_MS,
+  BOSS_BOUNTY_MIN_PLAYERS,
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
 import type { BatchPayoutItem } from '@mwar/shared';
@@ -351,6 +353,13 @@ export class ShootingRoom extends Room<GameState> {
   private bodyOnlyTtlMs = BODY_ONLY_ROOM_TTL_SECONDS * 1000;
   private engineMode: 'mini_30' | 'standard_100' | 'fast_mini' = 'mini_30';
   private publicUrl = '';
+  /**
+   * V1.2 Golden Boss of this room: the Worker's reservation (amount held there, out of the Boss Bounty Pool).
+   * Ends exactly once: BOSS_BOUNTY_CLAIM (eliminated by a paid seat) or BOSS_BOUNTY_RELEASE (anything else).
+   */
+  private boss: { reservationId: string; userId: string; entryId: string; amount: number; startedAt: number } | null = null;
+  private bossDrawing = false;
+  private bossIntervalMs = BOSS_BOUNTY_EVENT_INTERVAL_MS;
 
   onCreate(options: RoomOptions) {
     this.setState(new GameState());
@@ -419,6 +428,11 @@ export class ShootingRoom extends Room<GameState> {
     // 4. Bounty chests: only spawned on suicide / non-player death
     // 5. Financial Batching Interval (Every 10 Seconds)
     this.clock.setInterval(() => this.flushPayoutBatch(), GAME_BATCH_SYNC_INTERVAL_MS);
+
+    // 6. V1.2 Golden Boss Bounty Event: every 10 min in Paid-EC PvP rooms (tests may shorten it)
+    const bossSec = Number(process.env.BOSS_BOUNTY_INTERVAL_SECONDS);
+    if (Number.isFinite(bossSec) && bossSec > 0 && process.env.NODE_ENV !== 'production') this.bossIntervalMs = bossSec * 1000;
+    if (this.paidRoom && !this.fastMini) this.clock.setInterval(() => void this.goldenBossTick(), this.bossIntervalMs);
   }
 
   private registerMessageHandlers() {
@@ -914,6 +928,8 @@ export class ShootingRoom extends Room<GameState> {
       const bountyClaimed = collusion || this.fastMini ? 0 : this.queueBountyClaim(killerSessionId, killer, target.bountyMicroUsd, target.id, vm?.ticketId ?? '');
       if (bountyClaimed > 0) target.bountyMicroUsd = 0;
       this.lastBountyLost = bountyClaimed;
+      // V1.2 Golden Boss eliminated: the killer wins the reservation (paid seats only, never a collusion kill)
+      const bossWon = this.settleBossOnDeath(target, killer, killerSessionId, !!collusion);
 
       this.broadcast('player_killed', {
         killerId: killer.id,
@@ -926,10 +942,13 @@ export class ShootingRoom extends Room<GameState> {
         ticketMicroUsd: stake && this.stakeQueued(stake.ticketId) ? stake.value : 0,
         /** Fast & Mini: the victim's banner pot is settled by the Worker (fast_mini_reward follows). */
         fastMini: fastMiniQueued,
+        /** V1.2: the victim was the Golden Boss — reservation amount won by the killer (paid 55/15/5/5/20). */
+        goldenBossMicroUsd: bossWon,
       });
     } else {
       // 2. Suicide / Non-Player death:
       // Spawns 15-second Bounty Chest!
+      this.settleBossOnDeath(target);
       this.spawnDeathChest(target.x, target.y, target.z, target, targetSessionId);
       this.broadcast('player_suicide', {
         victimUsername: target.username,
@@ -1360,6 +1379,8 @@ export class ShootingRoom extends Room<GameState> {
         if (res.ok) {
           const j = (await res.json().catch(() => null)) as { fastMini?: Array<{ killerId: string; victimId: string; status: string; valueMicroUsd: number; shooterMicroUsd: number }> } | null;
           if (j && Array.isArray(j.fastMini)) this.applyFastMiniResults(j.fastMini);
+          const jb = j as { boss?: Array<{ killerId: string; victimId: string; amountMicroUsd: number; shooterMicroUsd: number }> } | null;
+          if (jb && Array.isArray(jb.boss)) this.applyBossResults(jb.boss);
           return true;
         }
       } catch {
@@ -1453,6 +1474,101 @@ export class ShootingRoom extends Room<GameState> {
       fmPot: fmSeat && entry && UUID_RE.test(entry.eid) && UUID_RE.test(entry.uid) ? entry.eid : '',
     });
     return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0, ticket: paid ? entry.tv : 0 } : { userId: null };
+  }
+
+  // ---- V1.2 Golden Boss Bounty Event ("เป้าหมายค่าหัวทองคำ") ------------------------------------------
+
+  /**
+   * Every BOSS_BOUNTY_EVENT_INTERVAL_MS: the previous boss (if still alive) expires (reservation → pool), then one
+   * random alive, connected Paid-EC seat becomes the Golden Boss — only if the Worker can reserve a draw from the
+   * Boss Bounty Pool (≥ 500 C). The amount comes from the Worker; nothing is invented here.
+   */
+  private async goldenBossTick() {
+    if (this.bossDrawing) return;
+    this.bossDrawing = true;
+    try {
+      if (this.boss) this.releaseBoss('expired');
+      const candidates: Array<{ sid: string; p: PlayerState; m: SessionMeta }> = [];
+      this.state.players.forEach((p, sid) => {
+        const m = this.meta.get(sid);
+        if (!m || !m.paid || m.flagged || !m.ticketLive || !m.ticketId || !m.entryId) return;
+        if (p.isGhost || p.isSpectator || p.health <= 0 || p.isDisconnected || p.afkKicked || !UUID_RE.test(p.id)) return;
+        candidates.push({ sid, p, m });
+      });
+      if (candidates.length < BOSS_BOUNTY_MIN_PLAYERS) return;
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      type Reserve = { reserved?: boolean; reservationId?: string; amountMicroUsd?: number; reason?: string };
+      const r: Reserve | null = await (async (): Promise<Reserve | null> => {
+        try {
+          const res = await fetch(`${this.workerApiUrl}/api/game/boss-bounty/reserve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ secret: this.internalSecret, gameId: this.gameId, roomId: this.roomId, targetUserId: pick.p.id, entryId: pick.m.entryId }),
+          });
+          return res.ok ? ((await res.json().catch(() => null)) as Reserve | null) : null;
+        } catch {
+          return null; // Worker unreachable: no event this round
+        }
+      })();
+      if (!r?.reserved || typeof r.reservationId !== 'string' || !(Number(r.amountMicroUsd) > 0)) return;
+      const amount = Math.floor(Number(r.amountMicroUsd));
+      // The pick may have died / left while the Worker answered: give the reservation straight back
+      const sid = this.findBody(pick.p.id, pick.m.entryId);
+      const p = sid ? this.state.players.get(sid) : undefined;
+      this.boss = { reservationId: r.reservationId, userId: pick.p.id, entryId: pick.m.entryId, amount, startedAt: Date.now() };
+      if (!p || p.isGhost || p.health <= 0) {
+        this.releaseBoss('target_gone');
+        return;
+      }
+      p.goldenBossMicroUsd = amount;
+      console.log(`[ShootingRoom] Golden Boss: ${p.username} carries ${amount} µUSD (reservation ${r.reservationId})`);
+      this.broadcast('golden_boss_spawned', { sessionId: sid, userId: p.id, username: p.username, amountMicroUsd: amount, endsInMs: this.bossIntervalMs });
+    } finally {
+      this.bossDrawing = false;
+    }
+  }
+
+  /** The Golden Boss ended without a winner: the Worker returns the reservation to the pool (exactly once). */
+  private releaseBoss(reason: string) {
+    const b = this.boss;
+    if (!b) return;
+    this.boss = null;
+    this.state.players.forEach((p) => {
+      if (p.id === b.userId) p.goldenBossMicroUsd = 0;
+    });
+    this.pendingPayouts.push({ userId: b.userId, amountMicroUsd: 0, actionType: 'BOSS_BOUNTY_RELEASE', gameId: this.gameId, metadata: { reservationId: b.reservationId, reason: reason.slice(0, 24), pid: this.nextPid() } });
+    this.broadcast('golden_boss_ended', { userId: b.userId, reason });
+  }
+
+  /**
+   * The player `target` died. If they were the Golden Boss: a paid, unflagged killer (no collusion) wins the
+   * reservation (BOSS_BOUNTY_CLAIM — the Worker pays its amount 55/15/5/5/20); any other death releases it.
+   * Returns the reservation amount won (0 = none).
+   */
+  private settleBossOnDeath(target: PlayerState, killer?: PlayerState, killerSessionId?: string, collusion = false): number {
+    const b = this.boss;
+    if (!b || b.userId !== target.id) return 0;
+    const km = killerSessionId ? this.meta.get(killerSessionId) : undefined;
+    if (!killer || !km?.paid || km.flagged || collusion || killer.id === target.id || !UUID_RE.test(killer.id)) {
+      this.releaseBoss(collusion ? 'collusion' : killer ? 'unpaid_kill' : 'died');
+      return 0;
+    }
+    this.boss = null;
+    target.goldenBossMicroUsd = 0;
+    // HUD: the killer's 55 % share (what the Worker credits); uplines / bounty / fee / pool are applied there
+    const { earner, bounty } = earnerAndBountyShares(b.amount);
+    km.earned += earner;
+    killer.sessionEarningsMicroUsd += earner;
+    killer.bountyMicroUsd += bounty;
+    this.pendingPayouts.push({ userId: killer.id, amountMicroUsd: b.amount, actionType: 'BOSS_BOUNTY_CLAIM', gameId: this.gameId, metadata: { reservationId: b.reservationId, victimId: target.id, hits: km.hits, headshots: km.headshots, pid: this.nextPid() } });
+    this.broadcast('golden_boss_claimed', { killerId: killer.id, killerUsername: killer.username, victimId: target.id, victimUsername: target.username, amountMicroUsd: b.amount, shooterMicroUsd: earner });
+    void this.flushPayoutBatch();
+    return b.amount;
+  }
+
+  /** What the Worker really paid for Golden Boss claims (logged; a refused claim was released there). */
+  private applyBossResults(list: Array<{ killerId: string; victimId: string; amountMicroUsd: number; shooterMicroUsd: number }>) {
+    for (const r of list) console.log(`[ShootingRoom] Golden Boss claim paid: ${r.killerId} won ${r.amountMicroUsd} µUSD (shooter ${r.shooterMicroUsd})`);
   }
 
   /** Queue a payout only for verified paid seats that are not flagged by anti-cheat. */
@@ -1747,6 +1863,7 @@ export class ShootingRoom extends Room<GameState> {
    * alive Paid-EC seat never gets here, it stays as a body) keeps the V1.1 zero-deficit rule: forfeited.
    */
   private removeSeat(sessionId: string, player: PlayerState, reason: string) {
+    if (this.boss && this.boss.userId === player.id) this.releaseBoss(reason === 'afk_kick' ? 'afk_kick' : 'left');
     const stake = this.takeStake(sessionId, player);
     if (stake) this.queueTicketForfeit(stake, reason === 'afk_kick' ? 'afk_kick' : 'left');
     // V1.1 R2 Fast & Mini: the pot closes with the seat (its unpaid credits → platform, by the Worker)
@@ -1930,6 +2047,8 @@ export class ShootingRoom extends Room<GameState> {
   async onDispose() {
     this.bodyOnlyTimer?.clear();
     this.bodyOnlyTimer = undefined;
+    // V1.2: a Golden Boss still alive when the room closes → the reservation returns to the pool
+    if (this.boss) this.releaseBoss('room_closed');
     for (const [sid, m] of this.meta) {
       const p = this.state.players.get(sid);
       // V1.1 R3 room-shutdown rule (body-only room TTL, server restart / SIGTERM): a body still ALIVE has no

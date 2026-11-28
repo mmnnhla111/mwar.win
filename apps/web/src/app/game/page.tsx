@@ -19,6 +19,7 @@ import { PLAY_HALF } from '../../game/assets/skyAndTerrain';
 import { buildLargeArena } from '../../game/maps/largeMap';
 import { LARGE_PLAY_HALF, LARGE_TERRAIN_BOUNDS, largeMapTerrainHeight, mapKindForMode, MAX_ENERGY_TICKETS, INITIAL_ENERGY_TICKETS } from '@mwar/shared';
 import { animateBountyChest, createBountyChest } from '../../game/assets/props';
+import { makeGoldenBossMarker, type GoldenBossMarker } from '../../game/assets/bossMarker';
 import { Viewmodel } from '../../game/viewmodel';
 import { CombatEffects } from '../../game/effects';
 import { BotManager } from '../../game/ai/bots';
@@ -206,6 +207,8 @@ interface HudState {
   bountyMicroUsd: number;
   /** V1.1: real backed value of your live Energy Ticket — what your killer is paid (0 once settled). */
   ticketMicroUsd: number;
+  /** V1.2: you are the Golden Boss — reward reserved on your head (0 = not the boss). */
+  goldenBossMicroUsd: number;
   isProp: boolean;
   isGhost: boolean;
   ammo: number;
@@ -270,6 +273,7 @@ export default function GamePage() {
     earningsMicroUsd: 0,
     bountyMicroUsd: 0,
     ticketMicroUsd: 0,
+    goldenBossMicroUsd: 0,
     isProp: false,
     isGhost: false,
     ammo: 0,
@@ -1287,7 +1291,10 @@ export default function GamePage() {
       hidden: boolean;
       /** §8 floating "💰 162 C" badge: what killing this player pays (55 % of their ticket + their head bounty). */
       badge: ValueBadge;
+      /** V1.2 golden crown + glow while this player is the Golden Boss (shown even on a prop disguise). */
+      boss: GoldenBossMarker;
     }
+    const bossText = (micro: number): string | null => (micro > 0 ? `${Math.floor(micro / 100).toLocaleString()} C` : null);
     /** Killer's take of a player carrying `ticket` µUSD + `bounty` µUSD, as badge text (null = nothing to win). */
     const bountyBadgeText = (ticket: number, bounty: number): string | null => {
       const v = earnerAndBountyShares(Math.max(0, Math.floor(ticket || 0))).earner + Math.max(0, Math.floor(bounty || 0));
@@ -1484,8 +1491,11 @@ export default function GamePage() {
               stance: validStance(p.stance),
               hidden: !!p.isGhost || !!p.isSpectator,
               badge: makeValueBadge(),
+              boss: makeGoldenBossMarker(),
             };
             rig.root.add(rp.badge.sprite);
+            scene.add(rp.boss.group);
+            rp.boss.set(rp.hidden ? null : bossText(Number(p.goldenBossMicroUsd) || 0));
             rig.root.visible = !rp.hidden;
             remotePlayers.set(key, rp);
             setRemoteProp(key, rp, !!p.isProp && !rp.hidden, p.propType);
@@ -1505,6 +1515,7 @@ export default function GamePage() {
                 earningsMicroUsd: p.sessionEarningsMicroUsd,
                 bountyMicroUsd: p.bountyMicroUsd ?? 0,
                 ticketMicroUsd: p.ticketMicroUsd ?? 0,
+                goldenBossMicroUsd: p.goldenBossMicroUsd ?? 0,
                 isGhost: p.isGhost,
               }));
               if (!p.isProp && player.isProp) setProp(null, false);
@@ -1522,6 +1533,8 @@ export default function GamePage() {
                 rp.rig.root.visible = !rp.hidden && !rp.propId;
                 // never on a prop disguise (it would give the hider away)
                 refreshBadge(rp, p);
+                // V1.2 Golden Boss crown: always shown while the boss is alive (the boss is meant to be hunted)
+                rp.boss.set(rp.hidden ? null : bossText(Number(p.goldenBossMicroUsd) || 0));
               }
             }
           });
@@ -1532,6 +1545,8 @@ export default function GamePage() {
             setRemoteProp(key, rp, false, null);
             scene.remove(rp.rig.root);
             rp.badge.dispose();
+            scene.remove(rp.boss.group);
+            rp.boss.dispose();
             rp.rig.dispose();
             remotePlayers.delete(key);
           }
@@ -1670,6 +1685,17 @@ export default function GamePage() {
           setFastMiniPot((p) => Math.max(0, p - v));
           feed(`💸 ${tRef.current('fastmini.potLostFeed', { v: formatCoinsAndUsd(v) })}`);
         });
+        // V1.2 Golden Boss Bounty Event
+        roomInstance.onMessage('golden_boss_spawned', (data: any) => {
+          const v = formatCoinsAndUsd(Number(data?.amountMicroUsd) || 0);
+          const me = data?.sessionId === roomInstance.sessionId;
+          feed(`👑 ${me ? tRef.current('boss.youAreBoss', { v }) : tRef.current('boss.spawnFeed', { name: String(data?.username || '?'), v })}`);
+        });
+        roomInstance.onMessage('golden_boss_claimed', (data: any) => {
+          soundFX.playChestPickup();
+          feed(`👑 ${tRef.current('boss.claimedFeed', { killer: String(data?.killerUsername || '?'), victim: String(data?.victimUsername || '?'), v: formatCoinsAndUsd(Number(data?.amountMicroUsd) || 0) })}`);
+        });
+        roomInstance.onMessage('golden_boss_ended', () => feed(`👑 ${tRef.current('boss.endedFeed')}`));
         roomInstance.onMessage('player_fired', (data: any) => {
           if (typeof data?.x === 'number' && typeof data?.z === 'number') addBlip(data.x, data.z);
         });
@@ -2790,6 +2816,7 @@ export default function GamePage() {
             world.setDynamicBox(`remote_${key}`, { minX: p.x - w / 2, maxX: p.x + w / 2, minZ: p.z - d / 2, maxZ: p.z + d / 2, minY: p.y, maxY: p.y + def.size[2] });
           }
         } else animateCharacter(rp.rig, tSec, rp.speed, false, rp.stance === 'crouch' ? 1 : 0, 0.2, rp.stance === 'prone' ? 1 : 0);
+        rp.boss.update(rp.rig.root.position, tSec);
       });
 
       chestMeshes.forEach((g) => animateBountyChest(g, now));
@@ -3376,6 +3403,11 @@ export default function GamePage() {
                 <span className="text-[10px] text-slate-400 font-bold block uppercase">{t('econ.hud.headBounty')}</span>
                 <span className="text-sm sm:text-base font-black text-rose-300 font-mono block leading-tight">{formatCoins2(hudStats.bountyMicroUsd)}</span>
                 <span className="text-[10px] font-bold text-rose-200/70 font-mono block leading-tight">{formatUsdPrecise(hudStats.bountyMicroUsd)}</span>
+                {hudStats.goldenBossMicroUsd > 0 && (
+                  <span className="text-[9px] font-black text-yellow-300 font-mono block leading-tight animate-pulse" data-hud-golden-boss>
+                    👑 {t('boss.youAreBoss', { v: formatCoins2(hudStats.goldenBossMicroUsd) })}
+                  </span>
+                )}
                 {hudStats.ticketMicroUsd > 0 && (
                   <span className="text-[9px] font-bold text-amber-300/80 font-mono block leading-tight" title={t('econ.hud.ticketHint')} data-hud-ticket>
                     {t('econ.hud.ticket', { v: formatCoins2(hudStats.ticketMicroUsd) })}

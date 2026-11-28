@@ -143,6 +143,51 @@ const ups = (n) => Array.from({ length: n }, (_, i) => ({ userId: `u${i + 1}`, d
   check(SEC, 'docs/AD_ECPM_BY_COUNTRY.md still documents floor() splits (V1.1 uses 0.007 C rounding) — doc out of date', !docFloor, docFloor ? 'section 1 shows ⌊V×0.55⌋ etc.' : '');
 }
 
+// ---- V1.2 §7.1 / §7.3: 3 % safety + 5 % Boss Bounty Pool + 5 % redirected fee ----------------------
+{
+  let bad = 0;
+  const ex = [];
+  for (let g = 0; g <= 100_000; g++) {
+    const h = S.splitAdGross(g);
+    const ok =
+      h.safetyReserveMicroUsd + h.bossPoolMicroUsd + h.netMicroUsd === g &&
+      h.bossPoolMicroUsd === Math.floor((g * 5) / 100) &&
+      h.safetyReserveMicroUsd >= Math.floor((g * 3) / 100) &&
+      h.netMicroUsd <= Math.floor((g * 95) / 100) &&
+      (g < 100 || h.netMicroUsd === g - Math.floor((g * 3) / 100) - Math.floor((g * 5) / 100));
+    if (!ok) {
+      bad++;
+      if (ex.length < 3) ex.push(`G=${g}`);
+    }
+  }
+  check(SEC, 'V1.2 §7.1 G → S_risk = ⌊3 %⌋ + B = ⌊5 %⌋ + V = G − S − B (92 %, ≤ 95 %), Σ = G for G = 0…100,000', bad === 0 && S.AD_SAFETY_HAIRCUT_PCT === 3 && S.BOSS_POOL_GROSS_PCT === 5, `${bad} bad ${ex.join(' ')}`);
+  const h = S.splitAdGross(1_000_000);
+  const r = S.calculateRewardSplit(h.netMicroUsd, ups(5));
+  const bossTotal = h.bossPoolMicroUsd + Number(r.platformFeeMicroUsd);
+  check(
+    SEC,
+    'V1.2 §7.3 $1 verified gross: safety 30,000 · boss 50,000 (5 % gross) + 46,000 (5 % fee of V) = 96,000 · shooter 506,000 (55 % of V 920,000)',
+    h.safetyReserveMicroUsd === 30_000 && h.netMicroUsd === 920_000 && bossTotal === 96_000 && Number(r.earnerMicroUsd) === 506_000,
+    `safety ${h.safetyReserveMicroUsd} · V ${h.netMicroUsd} · boss ${bossTotal} · shooter ${r.earnerMicroUsd}`
+  );
+  check(SEC, 'V1.2 admin switch redirect_platform_fee_to_boss defaults to ON at launch', S.REDIRECT_PLATFORM_FEE_TO_BOSS_DEFAULT === true && S.REDIRECT_PLATFORM_FEE_TO_BOSS_KEY === 'redirect_platform_fee_to_boss');
+  let drawBad = 0;
+  for (let i = 0; i < 20_000; i++) {
+    const pool = Math.floor(Math.random() * 400_000);
+    const v = S.drawBossBountyMicroUsd(pool);
+    if (pool < 50_000 ? v !== 0 : v < Math.min(50_000, pool) || v > 200_000 || v > pool) drawBad++;
+  }
+  check(SEC, 'V1.2 §5.6 Golden Boss draw: 0 below a 500 C pool, else 500 C – 2,000 C and never more than the pool holds', drawBad === 0 && S.BOSS_BOUNTY_EVENT_INTERVAL_MS === 600_000, `${drawBad} bad of 20,000`);
+  check(SEC, 'V1.2 §6 L2 banner cap: MAX_DAILY_BANNER_IMPRESSIONS = 60 per user per day', S.MAX_DAILY_BANNER_IMPRESSIONS === 60, `${S.MAX_DAILY_BANNER_IMPRESSIONS}`);
+  const M = S.DEFAULT_AD_MULTIPLIERS;
+  check(SEC, 'V1.2 §7.1 P3 launch multipliers: direct link 35 %, banner 60 %', M.monetag_direct === 35 && M.adsterra_smartlink === 35 && M.adsterra_300x250 === 60 && M.adsterra_320x50 === 60, JSON.stringify(M));
+  // M1 (static): the settlement credits exactly the rows its own batch flipped (unique settle id), never a pre-read SUM
+  const q = fs.readFileSync(path.join(ROOT, 'apps/api-worker/src/routes/quests.ts'), 'utf8');
+  const body = q.slice(q.indexOf('export async function settleDailyMlm'), q.indexOf("questsRouter.post('/settle-daily-mlm'"));
+  const atomic = /settle_id = \?1/.test(body) && /WHERE settle_id = \?1/.test(body) && !/SELECT SUM\(amount_micro_usd\) as total FROM daily_mlm_pending_ledger WHERE user_id/.test(body);
+  check(SEC, 'M1 MLM settlement is atomic: one batch flips the open rows (status-guarded, stamped settle_id) and credits Σ of exactly those rows', atomic);
+}
+
 // ---- §7.2 tickets: no fixed price, cap 300, signup 0-backed, backing conserved ---------------------
 {
   check(SEC, '§7.2 EC cap 300, 1 EC at sign-up', S.MAX_ENERGY_TICKETS === 300 && S.INITIAL_ENERGY_TICKETS === 1);

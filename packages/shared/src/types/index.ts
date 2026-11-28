@@ -130,7 +130,17 @@ export type FinancialActionType =
   /** V1.1 R2: part of a Fast & Mini banner's safe value credited to the viewer's pot (informational). */
   | 'FAST_MINI_POT_CREDIT'
   /** V1.1 R2: a closed Fast & Mini pot's unpaid remainder kept by the platform (informational). */
-  | 'FAST_MINI_POT_FORFEIT';
+  | 'FAST_MINI_POT_FORFEIT'
+  /** V1.2: 55 % of a Golden Boss reservation credited to whoever eliminated the boss (inflow). */
+  | 'BOSS_BOUNTY_CLAIM'
+  /** V1.2: µUSD credited to the Boss Bounty Pool (5 % of verified gross ad value or a redirected 5 % fee; informational). */
+  | 'BOSS_POOL_CREDIT'
+  /** V1.2: a Golden Boss draw reserved from the Boss Bounty Pool (informational). */
+  | 'BOSS_BOUNTY_RESERVE'
+  /** V1.2: an unclaimed Golden Boss reservation returned to the pool (informational). */
+  | 'BOSS_BOUNTY_RELEASE'
+  /** V1.2: 3 % of verified gross ad value kept in the Platform Safety Reserve (informational). */
+  | 'AD_SAFETY_RESERVE';
 
 /** Action types that ADD to the wallet balance (Layer-1 ledger reconciliation). */
 export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
@@ -145,6 +155,7 @@ export const LEDGER_INFLOW_ACTIONS: FinancialActionType[] = [
   'MARKET_SELL',
   'BOUNTY_CLAIM',
   'CHEER_REWARD',
+  'BOSS_BOUNTY_CLAIM',
 ];
 /** Action types that SUBTRACT from the wallet balance. */
 export const LEDGER_OUTFLOW_ACTIONS: FinancialActionType[] = ['CASHOUT_REQUEST', 'MARKET_BUY', 'AFK_FORFEIT'];

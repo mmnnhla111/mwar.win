@@ -292,3 +292,51 @@ export const BODY_ONLY_ROOM_TTL_SECONDS = 30 * 60;
  * (STALE_RETURN); a ticket whose session still heart-beats (body alive in a running room) is never swept.
  */
 export const ACTIVE_SESSION_SWEEP_GRACE_SECONDS = 15 * 60;
+
+// ---- V1.2 Round B: 3 % safety haircut + 10 % (5 % + 5 %) Boss Bounty Pool · verified-ad-only cash ------
+/**
+ * Every VERIFIED gross ad value G (S2S postback with the network's own estimated_price — P1) is split once:
+ *   S_risk = floor(G × 3 %)  → system_balances.safety_reserve_micro_usd (Platform Safety Reserve)
+ *   B      = floor(G × 5 %)  → system_balances.boss_bounty_pool_micro_usd (Boss Bounty Pool)
+ *   V      = G − S_risk − B  (92 %, never above 95 % of G) → ticket backing / cheer split
+ * See splitAdGross().
+ */
+export const AD_SAFETY_HAIRCUT_PCT = 3;
+export const BOSS_POOL_GROSS_PCT = 5;
+/** Hard ceiling of the net ticket value V as a share of G (spec §7.1: never above 95 %). */
+export const AD_NET_VALUE_MAX_PCT = 95;
+/**
+ * Admin toggle (platform_settings, D1): while true (launch default) the 5 % platform fee of every
+ * 55/15/5/5/20 split is credited to the Boss Bounty Pool instead of platform profit (5 % gross + 5 % fee = 10 %).
+ */
+export const REDIRECT_PLATFORM_FEE_TO_BOSS_KEY = 'redirect_platform_fee_to_boss';
+export const REDIRECT_PLATFORM_FEE_TO_BOSS_DEFAULT = true;
+/** Strict anti-abuse cap on banner impressions (live + simulated) per user per UTC day (429 beyond). */
+export const MAX_DAILY_BANNER_IMPRESSIONS = 60;
+/**
+ * Golden Boss Bounty Event ("เป้าหมายค่าหัวทองคำ"): every 10 minutes in an active Paid-EC PvP room, while the
+ * Boss Bounty Pool holds at least 500 C, the Worker reserves a random 500 C – 2,000 C (never more than the pool
+ * holds) for ONE active player. Whoever eliminates that player wins it (55/15/5/5/20 split, BOSS_BOUNTY_CLAIM);
+ * if the boss leaves / dies otherwise / the event expires / the room closes, the reservation returns to the pool.
+ */
+export const BOSS_BOUNTY_EVENT_INTERVAL_MS = 10 * 60_000;
+export const BOSS_BOUNTY_MIN_POOL_MICRO_USD = 50_000;
+export const BOSS_BOUNTY_MIN_MICRO_USD = 50_000;
+export const BOSS_BOUNTY_MAX_MICRO_USD = 200_000;
+/** Players (alive, connected, paid seats) a room needs before a Golden Boss is drawn. */
+export const BOSS_BOUNTY_MIN_PLAYERS = 2;
+/** A reservation nobody settled (game-server crash) returns to the pool after this long (Worker cron). */
+export const BOSS_BOUNTY_RESERVATION_TTL_SECONDS = 30 * 60;
+
+/**
+ * Reward of one Golden Boss draw: a uniform random amount in [500 C, 2,000 C] (whole C), capped by what the
+ * pool holds. Returns 0 when the pool is below the 500 C threshold.
+ */
+export function drawBossBountyMicroUsd(poolMicroUsd: number, rand: () => number = Math.random): number {
+  const pool = Math.max(0, Math.floor(Number(poolMicroUsd) || 0));
+  if (pool < BOSS_BOUNTY_MIN_POOL_MICRO_USD) return 0;
+  const r = Math.min(0.999999, Math.max(0, Number(rand()) || 0));
+  const steps = (BOSS_BOUNTY_MAX_MICRO_USD - BOSS_BOUNTY_MIN_MICRO_USD) / 100 + 1; // whole C
+  const want = BOSS_BOUNTY_MIN_MICRO_USD + Math.floor(r * steps) * 100;
+  return Math.min(pool, want);
+}

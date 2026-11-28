@@ -24,6 +24,7 @@ import { logFinancialTransaction, walletBalance } from '../utils/audit-logger';
 import { trackQuestAction, getUtcDateKey } from './quests';
 import { loadRooms, gameServersOnline, fpsRoomsBody } from './games';
 import { loadActiveSession, sessionReportStmts, toActiveSession } from '../utils/active-sessions';
+import { loadReservation, releaseBossReservation, reserveBossBounty } from '../utils/boss-bounty';
 
 export const gameRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -239,6 +240,24 @@ gameRouter.get('/active-session', authMiddleware, async (c) => {
 /** GET /api/game/rooms — same body as GET /api/games/fps/rooms (live PvP rooms hidden while servers are offline). */
 gameRouter.get('/rooms', async (c) => c.json(await fpsRoomsBody(c)));
 
+/**
+ * POST /api/game/boss-bounty/reserve — V1.2 Golden Boss draw (game server only: INTERNAL_API_SECRET).
+ * Body { secret, gameId, roomId, targetUserId, entryId }. The Worker decides the amount (500 C – 2,000 C,
+ * capped by the Boss Bounty Pool) and moves it from the pool into a reservation row in one D1 batch; the game
+ * server only gets the reservation id + amount to show. Settled by BOSS_BOUNTY_CLAIM / BOSS_BOUNTY_RELEASE items.
+ */
+gameRouter.post('/boss-bounty/reserve', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = z
+    .object({ secret: z.string().optional(), gameId: z.string().min(1).max(80), roomId: z.string().max(80).optional(), targetUserId: z.string().uuid(), entryId: z.string().max(64).optional() })
+    .safeParse(body);
+  if (!parsed.success) return c.json({ error: 'Validation failed' }, 400);
+  const secret = parsed.data.secret || c.req.header('X-Internal-Secret');
+  if (!safeEqual(secret, c.env.INTERNAL_API_SECRET)) return c.json({ error: 'Unauthorized game server secret' }, 401);
+  const r = await reserveBossBounty(c.env, { gameId: parsed.data.gameId, roomId: parsed.data.roomId ?? null, targetUserId: parsed.data.targetUserId, entryId: parsed.data.entryId ?? null });
+  return c.json(r);
+});
+
 // Batch Payout Sync Endpoint from Colyseus Game Engine
 gameRouter.post('/batch-payout', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -287,6 +306,9 @@ gameRouter.post('/batch-payout', async (c) => {
   // V1.1 R2 Fast & Mini results (the game server credits the HUD with what the Worker really paid)
   const fastMini: Array<{ pid: string; killerId: string; victimId: string; status: FastMiniKillResult['status']; valueMicroUsd: number; shooterMicroUsd: number; platformMicroUsd: number }> = [];
   const fm = { kills: 0, paidMicroUsd: 0, potsClosed: 0, forfeitedMicroUsd: 0 };
+  // V1.2 Golden Boss results (the game server shows what the Worker really paid)
+  const boss = { claimed: 0, claimedMicroUsd: 0, released: 0, releasedMicroUsd: 0 };
+  const bossResults: Array<{ reservationId: string; killerId: string; victimId: string; amountMicroUsd: number; shooterMicroUsd: number }> = [];
   const md = (it: { metadata?: Record<string, unknown> }) => (it.metadata || {}) as Record<string, unknown>;
   /** Items without a ticket (bounty claims, AFK claw-backs) are de-duplicated by the game server's payout id. */
   const firstTime = async (it: { metadata?: Record<string, unknown> }) => {
@@ -395,6 +417,74 @@ gameRouter.post('/batch-payout', async (c) => {
         fm.potsClosed++;
         fm.forfeitedMicroUsd += got;
       }
+      continue;
+    }
+    if (item.actionType === 'BOSS_BOUNTY_RELEASE') {
+      // V1.2: the Golden Boss reservation ended unclaimed → back to the pool (exactly once)
+      const res = await loadReservation(c.env, md(item).reservationId);
+      if (!res || res.game_id !== gameId.slice(0, 80)) {
+        v11.rejectedTicket++;
+        continue;
+      }
+      const reason = typeof md(item).reason === 'string' ? String(md(item).reason).slice(0, 24) : 'ended';
+      const back = await releaseBossReservation(c.env, res.id, reason, now);
+      if (back > 0) {
+        boss.released++;
+        boss.releasedMicroUsd += back;
+      } else v11.duplicates++;
+      continue;
+    }
+    if (item.actionType === 'BOSS_BOUNTY_CLAIM') {
+      // V1.2: userId eliminated the Golden Boss → the reservation's amount (from D1, never the item's) is paid
+      // through 55/15/5/5/20 in ONE batch with the status guard (a reservation that is not 'reserved' any more
+      // aborts the batch) — so a reservation is paid at most once and only to a real paid seat
+      const res = await loadReservation(c.env, md(item).reservationId);
+      const victimId = typeof md(item).victimId === 'string' ? (md(item).victimId as string) : '';
+      if (!res || res.game_id !== gameId.slice(0, 80) || res.target_user_id !== victimId || victimId === item.userId) {
+        v11.rejectedTicket++;
+        continue;
+      }
+      if (res.status !== 'reserved') {
+        v11.duplicates++;
+        continue;
+      }
+      const earnerEntered = await c.env.DB
+        .prepare("SELECT 1 AS ok FROM user_energy_tickets WHERE user_id = ?1 AND status IN ('in_match', 'settled') AND consumed_at >= ?2 LIMIT 1")
+        .bind(item.userId, now - 86_400)
+        .first<{ ok: number }>();
+      if (!earnerEntered) {
+        // not a paid seat: nobody wins it → the reservation returns to the pool
+        await releaseBossReservation(c.env, res.id, 'claim_rejected', now);
+        v11.rejectedTicket++;
+        continue;
+      }
+      let split: Awaited<ReturnType<typeof applyRewardSplit>>;
+      try {
+        split = await applyRewardSplit(c.env, {
+          earnerId: item.userId,
+          grossMicroUsd: Number(res.amount_micro_usd),
+          actionType: 'BOSS_BOUNTY_CLAIM',
+          sourceId: `boss:${res.id}`.slice(0, 80),
+          dateKey,
+          guard: [
+            c.env.DB.prepare(
+              `UPDATE boss_bounty_reservations SET status = CASE WHEN status = 'reserved' THEN 'claimed' ELSE 'conflict' END,
+                     settled_at = ?2, claimed_by_user_id = ?3, settle_ref = ?4
+               WHERE id = ?1`
+            ).bind(res.id, now, item.userId, typeof md(item).pid === 'string' ? String(md(item).pid).slice(0, 80) : gameId.slice(0, 80)),
+          ],
+        });
+      } catch (e) {
+        if (isSettleConflict(e)) {
+          v11.duplicates++;
+          continue;
+        }
+        throw e;
+      }
+      boss.claimed++;
+      boss.claimedMicroUsd += Number(res.amount_micro_usd);
+      earnerCredited += Number(split.earnerMicroUsd);
+      bossResults.push({ reservationId: res.id, killerId: item.userId, victimId, amountMicroUsd: Number(res.amount_micro_usd), shooterMicroUsd: Number(split.earnerMicroUsd) });
       continue;
     }
     if (item.actionType !== 'GAME_KILL' && item.actionType !== 'CHEST_OPEN') {
@@ -524,6 +614,11 @@ gameRouter.post('/batch-payout', async (c) => {
     fastMiniPaidMicroUsd: fm.paidMicroUsd,
     fastMiniPotsClosed: fm.potsClosed,
     fastMiniForfeitedMicroUsd: fm.forfeitedMicroUsd,
+    bossClaims: boss.claimed,
+    bossClaimedMicroUsd: boss.claimedMicroUsd,
+    bossReleases: boss.released,
+    bossReleasedMicroUsd: boss.releasedMicroUsd,
+    boss: bossResults,
     sessionUpserts: sess?.upserts ?? 0,
     sessionEnds: sess?.ends ?? 0,
   });

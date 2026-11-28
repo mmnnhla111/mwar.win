@@ -7,6 +7,7 @@ import {
   AD_VIDEO_SECONDS,
   AD_VIDEO_EC_DAILY_CAP,
   EC_PROGRESS_BP_PER_TICKET,
+  splitAdGross,
 } from '@mwar/shared';
 import type { Env, AuthUserPayload } from '../types';
 import { applyRewardSplit } from '../utils/reward-split';
@@ -14,7 +15,7 @@ import { trackQuestAction, getUtcDateKey } from './quests';
 import { isLocalDev, safeEqual } from '../utils/guards';
 import { getStaffRoles } from '../middleware/staff';
 import { authMiddleware } from '../middleware/auth';
-import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
+import { bannerGateBody, bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { safeValue } from '../utils/energy-tickets';
 import { creditFastMiniBanner } from '../utils/fast-mini';
 import { resolveAdValue, logAdImpression, creditEcProgress, ecProgressBpFor, normalizeCountry, parseAdFormat, utcDateKey, type AdValueSource } from '../utils/ad-value';
@@ -28,7 +29,7 @@ async function processAdReward(
   provider: string,
   country: string,
   providerTxId: string,
-  opts: { payoutUsd?: number | string | null; format?: AdFormat } = {},
+  opts: { payoutUsd?: number | string | null; format?: AdFormat; requireNetworkPrice?: boolean } = {},
   dateKey = getUtcDateKey()
 ) {
   // Three-tier value: P1 exact network payout → P2 yesterday's average (country + format) → P3 country eCPM
@@ -47,15 +48,22 @@ async function processAdReward(
     .run();
   if ((ins.meta?.changes ?? 0) === 0) return { success: true, duplicate: true };
   await logAdImpression(env.DB, { userId, provider, country: countryCode, format, purpose: 'monetized', microUsd: grossReward, source: value.source });
+  // V1.2 (audit H2): a real network postback pays withdrawable cash only with the network's own payout (P1)
+  if (opts.requireNetworkPrice && value.source !== 'network') {
+    return { success: true, credited: false, reason: 'no_network_price', grossRewardMicroUsd: grossReward, valueSource: value.source, country: countryCode, format };
+  }
+  // V1.2 §7.1: G → 3 % safety reserve + 5 % Boss Bounty Pool + V (92 %), all in the split's batch
+  const haircut = splitAdGross(grossReward);
 
   // 1–5. 100 % revenue split of V: 55 % watcher · 15 % uplines (5/4/3/2/1) · 5 % watcher's head
-  //      bounty · 5 % platform · 20 % Energy Recharge Pool (missing upline levels roll over to the platform)
+  //      bounty · 5 % platform (or Boss Pool) · 20 % Energy Recharge Pool (missing upline levels roll over to the platform)
   const split = await applyRewardSplit(env, {
     earnerId: userId,
-    grossMicroUsd: grossReward,
+    grossMicroUsd: haircut.netMicroUsd,
     actionType: 'AD_WATCH',
     sourceId: `${provider}:${providerTxId}`,
     dateKey,
+    adHaircut: haircut,
   });
 
   // 5. Track daily quests for watcher
@@ -63,6 +71,9 @@ async function processAdReward(
   return {
     success: true,
     grossRewardMicroUsd: grossReward,
+    netRewardMicroUsd: haircut.netMicroUsd,
+    safetyReserveMicroUsd: haircut.safetyReserveMicroUsd,
+    bossPoolMicroUsd: haircut.bossPoolMicroUsd,
     valueSource: value.source,
     country: countryCode,
     format,
@@ -101,7 +112,7 @@ adsRouter.all('/postback/adswedmedia', async (c) => {
     return c.json({ error: 'Missing user_id or transaction_id in postback' }, 400);
   }
 
-  const result = await processAdReward(c.env, userId, 'adswedmedia', country, txId, postbackValue(query));
+  const result = await processAdReward(c.env, userId, 'adswedmedia', country, txId, { ...postbackValue(query), requireNetworkPrice: true });
   return c.json(result);
 });
 
@@ -117,7 +128,7 @@ adsRouter.all('/postback/onclicka', async (c) => {
     return c.json({ error: 'Missing user_id or transaction_id in postback' }, 400);
   }
 
-  const result = await processAdReward(c.env, userId, 'onclicka', country, txId, postbackValue(query));
+  const result = await processAdReward(c.env, userId, 'onclicka', country, txId, { ...postbackValue(query), requireNetworkPrice: true });
   return c.json(result);
 });
 
@@ -207,8 +218,8 @@ adsRouter.post('/simulate-view', authMiddleware, async (c) => {
     // Anti-AFK: last real input within 40 s, then the atomic per-user 28 s gate (a batch of N needs N gaps)
     const idle = bannerIdleMs(body);
     if (idle !== null) return c.json(idlePausedBody(idle), 400);
-    const wait = await claimBannerGate(c.env.DB, user.userId, count, now);
-    if (wait !== null) return c.json({ error: 'Banner impressions too soon', code: 'too_soon', retryInSeconds: wait }, 429);
+    const refused = await claimBannerGate(c.env.DB, user.userId, count, now);
+    if (refused) return c.json(bannerGateBody(refused), 429);
   } else {
     const viewId = typeof body.viewId === 'string' ? body.viewId : '';
     const view = await c.env.DB

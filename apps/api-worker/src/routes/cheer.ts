@@ -27,13 +27,17 @@ import { safeValue } from '../utils/energy-tickets';
 type Ctx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
 
 /**
+ * V1.2: only called with S2S-verified revenue (applyVerifiedVisit); a timer-only claim pays the creator 0.
  * V1.1 exact 100 % Cheer split of a REAL ad's safe value V (Viewer A cheers Creator B):
  *   55 % → B's wallet (CHEER_REWARD) · 15 % → B's 5 uplines (5/4/3/2/1, daily-mission gated, missing →
  *   platform) · 5 % → B's head bounty · 5 % → platform · 20 % → Energy Pool, drawn at once as Viewer A's
  *   EC backing (pending_ec_micro_usd). Creator + uplines + bounty + platform + viewer backing === V.
  * The caller credits A's EC progress with `viewerBackingMicroUsd` (source 'cheer_pool', not from the pool again).
  */
-export async function settleCheerRevenue(env: Env, v: { creatorId: string; viewerId: string; valueMicroUsd: number; sourceId: string }) {
+export async function settleCheerRevenue(
+  env: Env,
+  v: { creatorId: string; viewerId: string; valueMicroUsd: number; sourceId: string; adHaircut?: { safetyReserveMicroUsd: number; bossPoolMicroUsd: number } }
+) {
   const V = Math.max(0, Math.floor(v.valueMicroUsd));
   if (V <= 0 || !v.creatorId || v.creatorId === v.viewerId) return { valueMicroUsd: 0, creatorMicroUsd: 0, viewerBackingMicroUsd: 0 };
   const split = await applyRewardSplit(env, {
@@ -42,6 +46,7 @@ export async function settleCheerRevenue(env: Env, v: { creatorId: string; viewe
     actionType: 'CHEER_REWARD',
     sourceId: v.sourceId,
     energyPoolPassThrough: true,
+    adHaircut: v.adHaircut,
   });
   return { valueMicroUsd: V, creatorMicroUsd: Number(split.earnerMicroUsd), viewerBackingMicroUsd: Number(split.energyPoolMicroUsd) };
 }

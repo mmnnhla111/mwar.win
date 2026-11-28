@@ -72,6 +72,9 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 
+/** V1.2 §7.1 net ticket value of a gross ad value: V = G − ⌊G × 3 %⌋ (safety) − ⌊G × 5 %⌋ (boss pool), ≤ ⌊G × 95 %⌋. */
+const net92 = (g) => Math.min(g - Math.floor((g * 3) / 100) - Math.floor((g * 5) / 100), Math.floor((g * 95) / 100));
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 // colyseus.js lives in the web app's dependencies
@@ -96,7 +99,7 @@ function mintEntryToken(secret, { uid, un, eid = uuid(), bty = 0, rc = '', tid =
 
 /**
  * Realistic ticket values (µUSD): 0 = signup promo, 1 / 7 / 33 = odd dust, the rest = 30 s videos /
- * banner charges after the 0.92 haircut in different countries (BD 1 840, TH 7 820, US 29 440, …).
+ * banner charges after the V1.2 haircut (3 % safety + 5 % boss pool = V 92 %) in different countries (BD 1 840, TH 7 820, US 29 440, …).
  */
 const TICKET_VALUES = [0, 1, 7, 33, 230, 1840, 2760, 3496, 7820, 13800, 22080, 29440];
 /** 0.007 C rule (fraction >= 0.7 µUSD rounds up) for the 55 % shooter share the HUD shows. */
@@ -1338,10 +1341,10 @@ if (isMainThread) {
     const poolB = q1("SELECT energy_pool_micro_usd AS p, energy_pool_drawn_micro_usd AS d FROM system_balances WHERE id = 'global'");
     const drawn = Number(poolB.d) - Number(poolA.d);
     const mintedV = minted.reduce((a, r) => a + Number(r.v), 0);
-    const safeEach = Math.floor((Number(ban.body.adValueMicroUsd) * 9200) / 10000);
+    const safeEach = net92(Number(ban.body.adValueMicroUsd));
     check(
       S,
-      'simulated ad: EC backing drawn from the Energy Pool = floor(gross × 0.92) × 2, minted ticket + pending = drawn',
+      'simulated ad: EC backing drawn from the Energy Pool = V (G − 3 % − 5 %) × 2, minted ticket + pending = drawn',
       ban.status === 200 && ban.body.ticketsAwarded === 1 && drawn === safeEach * 2 && mintedV + Number(uV.pending) === drawn && Number(uV.n) === 2,
       `HTTP ${ban.status} · gross ${ban.body.adValueMicroUsd}/banner (${ban.body.country}) · drawn ${drawn} · tickets ${minted.map((r) => r.v).join('+')} · pending ${uV.pending}`
     );
@@ -1499,7 +1502,7 @@ if (isMainThread) {
     const pl0 = pool();
     const b1 = await ban(F1, P1);
     const pl1 = pool();
-    const safe1 = Math.floor((Number(b1.body.adValueMicroUsd) * 9200) / 10000);
+    const safe1 = net92(Number(b1.body.adValueMicroUsd));
     const cr1 = q1(`SELECT COALESCE(SUM(micro_usd),0) AS pot, COALESCE(SUM(ec_micro_usd),0) AS ec FROM fast_mini_pot_credits WHERE pot_id = '${P1}'`);
     const drawn1 = Number(pl1.d) - Number(pl0.d);
     check(

@@ -12,8 +12,13 @@
  *   4. plays Paid-EC PvP (Skirmish 30P / Warzone 100P) or free Fast & Mini on the real game server:
  *      moves 10 Hz, shoots 2 Hz, dies, "Play again (-1 EC)" or back to lobby, some leave while alive
  *      (body stays) and Rejoin later, some suicide (chest)
- *   5. cheers other players' profiles / posts through the real direct-link flow (and the in-app card)
+ *   5. cheers other players' profiles / posts through the real direct-link flow (and the in-app card); about half
+ *      of those visits later get the network's S2S postback with estimated_price (the only VERIFIED revenue)
+ *   6. V1.2 Golden Boss: the Boss Bounty Pool is funded (test top-up) and the game server (event interval shortened
+ *      by run-local-audit.mjs) reserves draws for players in Paid-EC rooms; kills claim them, the rest return
  * Then the midnight MLM settlement runs, and every money invariant is checked straight in D1.
+ * V1.2 money rule checked here: only verified revenue (P1 postbacks) enters the system — as the WHOLE gross G
+ * (3 % safety reserve + 5 % boss pool + 92 % ticket value); banners and timer-only claims add 0 µUSD.
  *
  * Options: --players=100 --play-seconds=150
  */
@@ -57,25 +62,30 @@ const ancestorsOf = (id) => {
 function moneySnapshot() {
   const r = sqlFile([
     'SELECT COALESCE(SUM(balance_micro_usd),0) AS bal, COALESCE(SUM(bounty_micro_usd),0) AS bty, SUM(CASE WHEN balance_micro_usd < 0 OR bounty_micro_usd < 0 THEN 1 ELSE 0 END) AS neg FROM wallets;',
-    "SELECT platform_micro_usd AS pl, energy_pool_micro_usd AS pool, energy_pool_drawn_micro_usd AS drawn FROM system_balances WHERE id = 'global';",
+    "SELECT platform_micro_usd AS pl, energy_pool_micro_usd AS pool, energy_pool_drawn_micro_usd AS drawn, boss_bounty_pool_micro_usd AS boss, safety_reserve_micro_usd AS safety FROM system_balances WHERE id = 'global';",
     'SELECT COALESCE(SUM(pending_ec_micro_usd),0) AS pend FROM users;',
     "SELECT COALESCE(SUM(CASE WHEN status IN ('available','in_match') THEN backed_micro_usd ELSE 0 END),0) AS live FROM user_energy_tickets;",
     "SELECT COALESCE(SUM(amount_micro_usd),0) AS mlm FROM daily_mlm_pending_ledger WHERE status IN ('pending_grey','unlocked_green');",
     "SELECT COALESCE(SUM(micro_usd),0) AS fm FROM fast_mini_pot_credits WHERE status = 'open';",
     "SELECT COALESCE(SUM(amount_micro_usd),0) AS wd FROM withdrawal_requests WHERE status NOT IN ('rejected');",
+    "SELECT COALESCE(SUM(amount_micro_usd),0) AS res FROM boss_bounty_reservations WHERE status = 'reserved';",
   ]).map((x) => x.results[0] || {});
-  const [w, sys, u, t, m, f, wd] = r;
+  const [w, sys, u, t, m, f, wd, br] = r;
   const parts = {
     wallets: Number(w.bal), headBounties: Number(w.bty), platform: Number(sys.pl), poolUnspent: Number(sys.pool) - Number(sys.drawn),
     pendingEc: Number(u.pend), liveTickets: Number(t.live), mlmPending: Number(m.mlm), fastMiniOpen: Number(f.fm), withdrawals: Number(wd.wd),
+    // V1.2: Boss Bounty Pool + draws reserved for live Golden Bosses + the 3 % Platform Safety Reserve
+    bossPool: Number(sys.boss), bossReserved: Number(br.res), safetyReserve: Number(sys.safety),
   };
   return { ...parts, total: Object.values(parts).reduce((a, b) => a + b, 0), negativeWallets: Number(w.neg || 0), pool: Number(sys.pool), drawn: Number(sys.drawn) };
 }
 
-// Real-revenue inflow ledger kept by the simulation (what the ad networks would pay, after the haircut)
-const inflow = { postbackSafe: 0, bannerSafe: 0, directLinkSafe: 0, grossClaimed: 0, byCountry: {} };
+// VERIFIED revenue inflow kept by the simulation (V1.2: only P1 postbacks — the whole gross G enters the system:
+// 3 % safety reserve + 5 % boss pool + 92 % V). Banner pings / timer-only claims are unverified → 0.
+const inflow = { postbackVerified: 0, directLinkVerified: 0, bossTopUp: 0, grossClaimed: 0, unverifiedEstimate: 0, byCountry: {} };
 const addInflow = (cc, kind, safe, gross) => {
   inflow[kind] += safe;
+  inflow.safetyExpected = (inflow.safetyExpected || 0) + S.splitAdGross(safe).safetyReserveMicroUsd;
   inflow.grossClaimed += gross;
   const c = (inflow.byCountry[cc] ||= { safe: 0, gross: 0, events: 0 });
   c.safe += safe;
@@ -100,6 +110,11 @@ check(SEC, 'setup: super_admin switches ads to live (banner 320x50 + Monetag dir
 const heartbeat = () => call('/api/nodes/heartbeat', { method: 'POST', headers: { Authorization: `Bearer ${SECRETS.INTERNAL_API_SECRET}` }, body: { nodeId: `audit-node-${RUN}`, nodeName: 'audit-node', role: 'game', activeRooms: 3, playerCount: N } });
 await heartbeat();
 const hbTimer = setInterval(() => heartbeat().catch(() => {}), 20_000);
+// V1.2 Golden Boss: fund the Boss Bounty Pool for the test (a marketing top-up, done BEFORE the money snapshot so
+// it is part of the starting balance; the 5 % gross + 5 % fee of this run's verified revenue add to it)
+const BOSS_TOP_UP = 1_000_000;
+sqlFile([`UPDATE system_balances SET boss_bounty_pool_micro_usd = boss_bounty_pool_micro_usd + ${BOSS_TOP_UP} WHERE id = 'global';`]);
+const bossBefore = sql1("SELECT COUNT(*) AS n FROM boss_bounty_reservations");
 const money0 = moneySnapshot();
 
 // ---- 1. sign-ups with referral codes ------------------------------------------------------------
@@ -153,6 +168,8 @@ for (const p of players.filter((x) => x.idx % 10 === 0)) {
 note(SEC, `${posts.length} social posts created for cheering`);
 
 // ---- 2. EC charging with real-revenue ads valued in each player's own country --------------------
+let postbackNetBad = 0;
+let unpricedBacked = 0;
 const postback = async (p, priced) => {
   const q = new URLSearchParams({ secret: SECRETS.AD_POSTBACK_SECRET, ymid: p.id, geo: p.country === 'GLOBAL' ? 'ZZ' : p.country, click_id: `au_${RUN}_${uuid()}` });
   // ~1/3 of the postbacks carry the network's own estimated_price (P1): a realistic Monetag direct-link CPM ($0.5–$4)
@@ -165,8 +182,11 @@ const postback = async (p, priced) => {
   const r = await call(`/api/ads/postback/monetag?${q}`);
   if (r.status === 200 && r.body.note === 'credited') {
     const eff = Number(r.body.effectiveMicroUsd);
-    const gross = priced ? eff : Math.min(eff, S.getStatisticalAdMicroUsd(p.country, 'video_15s'));
-    addInflow(p.country, 'postbackSafe', S.safeAdMicroUsd(gross, 0.92), eff);
+    if (r.body.verified === true) {
+      addInflow(p.country, 'postbackVerified', eff, eff);
+      if (Number(r.body.netMicroUsd) !== S.splitAdGross(eff).netMicroUsd) postbackNetBad++;
+    } else inflow.unverifiedEstimate += eff;
+    if (!priced && Number(r.body.netMicroUsd || 0) !== 0) unpricedBacked++;
     p.stats.ads++;
   }
   return r;
@@ -175,9 +195,11 @@ const postback = async (p, priced) => {
   const t0 = Date.now();
   const res = await Promise.all(
     players.map(async (p) => {
-      const n = 4 + Math.floor(Math.random() * 10); // 4–13 direct-link visits before the first match
+      // 4–13 direct-link visits before the first match; the players who later leave alive (idx % 9 === 3) get 10 more
+      // UNPRICED ones (EC % only, 0 µUSD) so they keep re-staking until they leave (V1.2 multipliers give less EC per visit)
+      const n = 4 + Math.floor(Math.random() * 10) + (p.idx % 9 === 3 ? 10 : 0);
       const out = [];
-      for (let k = 0; k < n; k++) out.push(await postback(p, Math.random() < 0.33));
+      for (let k = 0; k < n; k++) out.push(await postback(p, k < n - (p.idx % 9 === 3 ? 10 : 0) && Math.random() < 0.33));
       return out;
     })
   );
@@ -186,8 +208,8 @@ const postback = async (p, priced) => {
   check(SEC, 'Monetag S2S postbacks (geo = player country) accepted', bad.length === 0, `${flat.length} postbacks in ${((Date.now() - t0) / 1000).toFixed(1)} s · non-200: ${bad.length}`);
   const dupe = await call(`/api/ads/postback/monetag?${new URLSearchParams({ secret: SECRETS.AD_POSTBACK_SECRET, ymid: players[1].id, geo: 'TH', click_id: 'au_dupe_1' })}`);
   const dupe2 = await call(`/api/ads/postback/monetag?${new URLSearchParams({ secret: SECRETS.AD_POSTBACK_SECRET, ymid: players[1].id, geo: 'TH', click_id: 'au_dupe_1' })}`);
-  if (dupe.body.note === 'credited') addInflow('TH', 'postbackSafe', S.safeAdMicroUsd(Math.min(Number(dupe.body.effectiveMicroUsd), S.getStatisticalAdMicroUsd('TH', 'video_15s')), 0.92), Number(dupe.body.effectiveMicroUsd));
   check(SEC, 'replayed postback (same click_id) credits nothing', dupe2.body.duplicate === true, JSON.stringify(dupe2.body).slice(0, 80));
+  check(SEC, 'V1.2 H2: a postback WITHOUT the network price credits EC % only (0 µUSD backing); a priced one backs V = 92 % of G', unpricedBacked === 0 && postbackNetBad === 0 && dupe.body.verified !== true, `unpriced with backing: ${unpricedBacked} · priced with a wrong V: ${postbackNetBad}`);
   const tk = sql(`SELECT u.id, u.energy_tickets AS cached, (SELECT COUNT(*) FROM user_energy_tickets t WHERE t.user_id = u.id AND t.status = 'available') AS rows_, (SELECT COALESCE(SUM(backed_micro_usd),0) FROM user_energy_tickets t WHERE t.user_id = u.id AND t.status='available') AS v FROM users u WHERE u.id IN (${players.map((p) => `'${p.id}'`).join(',')})`);
   const cacheBad = tk.filter((r) => Number(r.cached) !== Number(r.rows_));
   check(SEC, 'users.energy_tickets cache == available ticket rows after charging', cacheBad.length === 0, `${cacheBad.length} mismatched`);
@@ -231,7 +253,10 @@ async function bannerPing(p, sess) {
   if (r.status === 200) {
     game.bannerOk++;
     p.stats.banners++;
-    addInflow(r.body.country || 'GLOBAL', 'bannerSafe', Number(r.body.backedMicroUsd || 0) + Number(r.body.fastMiniPotAddedMicroUsd || 0), Number(r.body.adValueMicroUsd || 0));
+    // V1.2 H2: an unverified banner ping never brings cash backing (the Fast & Mini pot share comes from the Energy Pool)
+    if (Number(r.body.backedMicroUsd || 0) !== 0) game.bannerBacked = (game.bannerBacked || 0) + 1;
+    if (Number(r.body.fastMiniPotAddedMicroUsd || 0) > 0) game.bannerFmPot = (game.bannerFmPot || 0) + 1;
+    inflow.unverifiedEstimate += Number(r.body.adValueMicroUsd || 0);
   }
 }
 
@@ -262,15 +287,18 @@ function drive(p, room, sess) {
       p.stats.deaths++;
       const diedAt = Date.now();
       sess.alive = false;
+      const deathNo = (sess.deathNo = (sess.deathNo || 0) + 1);
       setTimeout(() => {
         const me = room.state?.players?.get(room.sessionId);
-        if (me && !me.isGhost && !sess.choseAgain) game.autoRespawn++;
+        // (only if this is still the latest death: a re-kill right after "Play again" resets choseAgain
+        // before the 20 Hz state patch shows the new ghost state)
+        if (me && !me.isGhost && !sess.choseAgain && sess.deathNo === deathNo) game.autoRespawn++;
       }, 3500);
       sess.choseAgain = false;
       setTimeout(async () => {
         if (stopping || !room.connection?.isOpen) return;
         if (msg.respawnMode === 'restake') {
-          if (p.stats.energyLeft > 0 && Math.random() < 0.8) {
+          if (p.stats.energyLeft > 0 && (p.idx % 9 === 3 || Math.random() < 0.8)) {
             const r = await enter(p, sess.mode, sess.entryId);
             if (r.status === 200) {
               sess.choseAgain = true;
@@ -375,19 +403,21 @@ async function playSession(p) {
   }
   if (p.idx % 9 === 3 && !sess.fastMini) {
     // leaves the match while alive (closes the tab): the body must stay, then half of them Rejoin
-    await sleep(rnd(20_000, 40_000));
+    await sleep(rnd(10_000, 20_000));
     // wait until this character is alive (not on the death screen) — up to 60 s
     for (let w = 0; w < 120 && !(sess.alive && sess.room?.connection?.isOpen && !sess.room.state?.players?.get(sess.room.sessionId)?.isGhost); w++) await sleep(500);
     if (stopping || !sess.room?.connection?.isOpen || !sess.alive) return;
     clearInterval(sess.timer);
     await sess.room.leave(true).catch(() => {});
     p.stats.leftAlive++;
-    await sleep(8_000);
+    // check after 3 s: in a crowded 30P room an idle body is often shot within seconds
+    await sleep(3_000);
     const act = await call('/api/game/active-session?rejoin=1', { token: p.token });
     if (act.body.session) game.activeSeen++;
     sess.awaySession = act.body.session;
-    if (p.idx % 2 === 1 && act.body.session && act.body.rejoinToken) {
-      await sleep(rnd(5_000, 20_000));
+    // every other player whose body is still there comes back (Rejoin)
+    if (act.body.session && act.body.rejoinToken && (game.leaverSeq = (game.leaverSeq || 0) + 1) % 2 === 1) {
+      await sleep(rnd(500, 2_000));
       const again = await call('/api/game/active-session?rejoin=1', { token: p.token });
       if (!again.body.session) return; // killed while away
       const r2 = await joinRoom(p, mode, { roomId: again.body.session.roomId, rejoinToken: again.body.rejoinToken });
@@ -401,7 +431,7 @@ async function playSession(p) {
 }
 
 // ---- 5. cheers (direct link = real revenue; in-app card = no revenue) ----------------------------
-const cheer = { ok: 0, codes: {}, selfBlocked: 0, selfTried: 0, targetCapHit: 0, cooldownHit: 0, inAppOk: 0, inAppCreatorPaid: 0, creatorPaid: 0 };
+const cheer = { ok: 0, codes: {}, selfBlocked: 0, selfTried: 0, targetCapHit: 0, cooldownHit: 0, inAppOk: 0, inAppCreatorPaid: 0, creatorPaid: 0, timerBacked: 0, verified: 0, doubleVerified: 0 };
 const cheerCode = (k) => (cheer.codes[k] = (cheer.codes[k] || 0) + 1);
 async function directCheer(p, targetType, targetId) {
   const s = await call('/api/ads/direct-link/start', { method: 'POST', token: p.token, body: { purpose: 'cheer', seconds: 15, targetType, targetId } });
@@ -416,8 +446,25 @@ async function directCheer(p, targetType, targetId) {
     const owner = targetType === 'profile' ? byId.get(targetId) : posts.find((x) => x.id === targetId)?.owner;
     if (owner) owner.stats.cheersRecv++;
     if (Number(c.body.creatorMicroUsd) > 0) cheer.creatorPaid++;
-    // the claim credits revenue on the server's timer (no network confirmation); its safe value V enters the system
-    addInflow(c.body.country || 'GLOBAL', 'directLinkSafe', Number(c.body.valueMicroUsd || 0), Number(c.body.effectiveMicroUsd || 0));
+    // V1.2: the 15 s timer is no network confirmation → creator 0, EC % with 0 µUSD backing
+    if (Number(c.body.valueMicroUsd || 0) > 0 || Number(c.body.ecBackingMicroUsd || 0) > 0) cheer.timerBacked++;
+    inflow.unverifiedEstimate += Number(c.body.effectiveMicroUsd || 0);
+    // ~half of the visits later get Monetag's S2S postback for this token (ymid = dl_ token) with a real price
+    if (Math.random() < 0.5) {
+      const cc = p.country === 'GLOBAL' ? 'GLOBAL' : p.country;
+      const tier = S.COUNTRY_AD_ECPM_USD[cc]?.tier ?? 0;
+      const price = (tier === 1 ? rnd(2, 4) : tier === 2 ? rnd(0.8, 2) : rnd(0.3, 0.9)) / 1000;
+      const q = new URLSearchParams({ secret: SECRETS.AD_POSTBACK_SECRET, ymid: s.body.token, estimated_price: price.toFixed(6), click_id: `au_cheer_${RUN}_${uuid()}` });
+      const pb = await call(`/api/ads/postback/monetag?${q}`);
+      if (pb.status === 200 && pb.body.verified === true) {
+        cheer.verified++;
+        addInflow(cc, 'directLinkVerified', Number(pb.body.effectiveMicroUsd), Number(pb.body.effectiveMicroUsd));
+        if (Number(pb.body.creatorMicroUsd) > 0) cheer.creatorPaid++;
+        // a replayed postback for the same visit (new click id) adds nothing
+        const again = await call(`/api/ads/postback/monetag?${new URLSearchParams({ secret: SECRETS.AD_POSTBACK_SECRET, ymid: s.body.token, estimated_price: price.toFixed(6), click_id: `au_cheer_${RUN}_${uuid()}` })}`);
+        if (again.body.verified === true) cheer.doubleVerified++;
+      } else cheerCode(`postback:${pb.status}/${pb.body.note || pb.body.error || ''}`);
+    }
   }
   return c;
 }
@@ -482,7 +529,7 @@ await Promise.all(playing);
 // mid-game: bodies of players who left alive must be visible as active sessions
 await sleep(Math.max(0, PLAY_SECONDS * 1000 - (Date.now() - t0)));
 stopping = true;
-check(SEC, '§5.3 a player who leaves alive still has a live character (GET /api/game/active-session)', game.activeSeen > 0 && game.activeSeen >= Math.floor(players.filter((p) => p.stats.leftAlive).length * 0.5), `${game.activeSeen} of ${players.filter((p) => p.stats.leftAlive).length} who left alive were still in the arena 8 s later`);
+check(SEC, '§5.3 a player who leaves alive still has a live character (GET /api/game/active-session)', game.activeSeen > 0 && game.activeSeen >= Math.floor(players.filter((p) => p.stats.leftAlive).length * 0.5), `${game.activeSeen} of ${players.filter((p) => p.stats.leftAlive).length} who left alive were still in the arena 3 s later`);
 check(SEC, '§5.3 Rejoin re-attaches to the same body (no new EC)', game.rejoinOk > 0 && game.rejoinFail === 0, `${game.rejoinOk} ok / ${game.rejoinFail} failed`);
 for (const s of sessions) clearInterval(s.timer);
 await Promise.allSettled(sessions.map((s) => s.room?.connection?.isOpen && s.room.leave(true)));
@@ -496,7 +543,10 @@ check(SEC, 'all game-server joins succeeded', game.joinFail === 0, `${game.joinF
 note(SEC, `game: ${game.killEvents} kills seen by room observers (${game.paidKillEvents} paid by a ticket, ${game.bountyEvents} with bounty) · restake ok ${game.restakeOk} / refused ${game.restakeFail} ${JSON.stringify(game.restakeCodes)} · to lobby ${game.toLobby} · free respawn ${game.freeRespawn} · suicides ${game.suicides} · chest hits ${game.chestHits} · shots sent ${game.shots || 0}, refused by server ballistics ${game.rejected || 0}`);
 note(SEC, `enter codes ${JSON.stringify(game.enterCodes)} · banner pings ${JSON.stringify(game.bannerCodes)}`);
 check(SEC, '§7.5 self-cheer refused on post/profile (direct link + in-app)', cheer.selfBlocked === cheer.selfTried, `${cheer.selfBlocked}/${cheer.selfTried}`);
-note(SEC, `cheers: ${cheer.ok} paid direct-link cheers, creator paid in ${cheer.creatorPaid} · codes ${JSON.stringify(cheer.codes)}`);
+check(SEC, 'V1.2 H2: live banner pings credit EC % with 0 µUSD backing (unverified)', game.bannerOk > 0 && !game.bannerBacked, `${game.bannerOk} banners · ${game.bannerBacked || 0} with backing · ${game.bannerFmPot || 0} funded a Fast & Mini pot from the Energy Pool`);
+check(SEC, 'V1.2 H2: timer-only direct-link cheer claims pay the creator 0 and back 0 µUSD', cheer.ok > 0 && cheer.timerBacked === 0, `${cheer.ok} timer claims · ${cheer.timerBacked} with value`);
+check(SEC, 'V1.2 H2: the S2S postback (estimated_price) of a claimed cheer visit pays the 55/15/5/5/20 split exactly once', cheer.verified > 0 && cheer.doubleVerified === 0 && cheer.creatorPaid === cheer.verified, `${cheer.verified} verified visits · creator paid ${cheer.creatorPaid} · replay applied ${cheer.doubleVerified}`);
+note(SEC, `cheers: ${cheer.ok} direct-link cheers (timer), ${cheer.verified} verified later by postback · codes ${JSON.stringify(cheer.codes)}`);
 
 // ---- 6. midnight MLM settlement (run 3× in parallel to look for double payment) -----------------------
 const mlmBefore = sql1(`SELECT COALESCE(SUM(CASE WHEN status IN ('pending_grey','unlocked_green') THEN amount_micro_usd END),0) AS open, SUM(CASE WHEN status IN ('pending_grey','unlocked_green') THEN 1 ELSE 0 END) AS n, COALESCE(SUM(CASE WHEN status = 'settled_paid' THEN amount_micro_usd END),0) AS paid0, COALESCE(SUM(CASE WHEN status = 'forfeited_burned' THEN amount_micro_usd END),0) AS burned0 FROM daily_mlm_pending_ledger WHERE date_key = '${today}'`);
@@ -512,10 +562,30 @@ check(SEC, 'MLM settlement: 3 parallel triggers credit the day exactly once (wal
 // ---- 7. invariants in D1 -------------------------------------------------------------------------------
 const ids = players.map((p) => `'${p.id}'`).join(',');
 const money1 = moneySnapshot();
-const inflowTotal = inflow.postbackSafe + inflow.bannerSafe + inflow.directLinkSafe;
+const inflowTotal = inflow.postbackVerified + inflow.directLinkVerified + inflow.bossTopUp;
 const delta = money1.total - money0.total;
 const extraMlm = mlmCredited - paidNow; // money created by a double settlement, if any
-check(SEC, 'ZERO-DEFICIT: money in the system grew by exactly the real ad revenue credited (nothing created or lost)', delta === inflowTotal, `Δ ${delta} µUSD vs inflow ${inflowTotal} µUSD (postback ${inflow.postbackSafe} + banner ${inflow.bannerSafe} + direct link ${inflow.directLinkSafe}) · diff ${delta - inflowTotal}${extraMlm ? ` (double MLM settlement ${extraMlm})` : ''}`);
+check(SEC, 'ZERO-DEFICIT: money in the system grew by exactly the real ad revenue credited (nothing created or lost)', delta === inflowTotal, `Δ ${delta} µUSD vs verified inflow ${inflowTotal} µUSD (postback ${inflow.postbackVerified} + direct-link postback ${inflow.directLinkVerified}) · unverified estimate NOT credited ${inflow.unverifiedEstimate} · diff ${delta - inflowTotal}${extraMlm ? ` (double MLM settlement ${extraMlm})` : ''}`);
+{
+  // V1.2: the 3 % / 5 % of every verified gross reached the safety reserve / boss pool
+  const parts = sql1(`SELECT COALESCE(SUM(verified_gross_micro_usd),0) AS g FROM ad_click_tokens WHERE verified_at IS NOT NULL`);
+  note(SEC, `V1.2 pools: safety reserve +${money1.safetyReserve - money0.safetyReserve} µUSD · boss pool ${money0.bossPool} → ${money1.bossPool} µUSD · verified direct-link gross ${parts.g} µUSD`);
+  check(SEC, 'V1.2 safety reserve grew by exactly Σ 3 % of each verified gross (never from unverified ads)', money1.safetyReserve - money0.safetyReserve === inflow.safetyExpected, `+${money1.safetyReserve - money0.safetyReserve} µUSD vs expected ${inflow.safetyExpected} for verified ${inflowTotal}`);
+  // Golden Boss reservations of this run
+  const rs = sql(`SELECT id, status, amount_micro_usd AS a, target_user_id AS t, claimed_by_user_id AS k, settle_ref AS ref FROM boss_bounty_reservations LIMIT -1 OFFSET ${Number(bossBefore.n || 0)}`);
+  const claimed = rs.filter((r) => r.status === 'claimed');
+  const released = rs.filter((r) => r.status === 'released');
+  const live = rs.filter((r) => r.status === 'reserved');
+  check(SEC, 'V1.2 §5.6 Golden Boss: the game server reserved draws of 500 C – 2,000 C from the Boss Bounty Pool in Paid-EC rooms', rs.length > 0 && rs.every((r) => Number(r.a) >= 50_000 && Number(r.a) <= 200_000), `${rs.length} draws · ${claimed.length} claimed · ${released.length} returned (${[...new Set(released.map((r) => r.ref))].join(',')})`);
+  check(SEC, 'V1.2 Golden Boss: every reservation ended exactly once after the rooms closed (none left reserved)', live.length === 0, `${live.length} still reserved`);
+  let claimBad = 0;
+  for (const r of claimed) {
+    const led = sql(`SELECT delta_micro_usd AS d FROM wallet_ledger WHERE action_type = 'BOSS_BOUNTY_CLAIM' AND ref_id = 'boss:${r.id}'`);
+    const want = Number(S.calculateRewardSplit(Number(r.a), ancestorsOf(r.k)).earnerMicroUsd);
+    if (led.length !== 1 || Number(led[0].d) !== want || r.k === r.t) claimBad++;
+  }
+  check(SEC, 'V1.2 BOSS_BOUNTY_CLAIM: each claimed boss paid its killer exactly the 55 % share, once', claimBad === 0, `${claimed.length} claims · ${claimBad} wrong`);
+}
 check(SEC, 'no negative wallet / bounty balance', money1.negativeWallets === 0, `${money1.negativeWallets}`);
 check(SEC, 'Energy Pool never overdrawn (pool − drawn ≥ 0)', money1.poolUnspent >= 0, `pool ${money1.pool} drawn ${money1.drawn}`);
 {
@@ -535,7 +605,6 @@ check(SEC, 'Energy Pool never overdrawn (pool − drawn ≥ 0)', money1.poolUnsp
   check(SEC, '§7.3 every Paid-EC kill / chest: shooter got exactly the 55 % share (0.007 C rounding)', ev.length > 0 && badE.length === 0, `${ev.length} paid kills/chests · ${badE.length} wrong`);
   const badF = fmEv.filter((x) => Number(x.e) !== Number(S.calculateFastMiniSplit(Number(x.v)).shooterMicroUsd));
   check(SEC, '§7.4 every Fast & Mini kill: shooter got exactly 90 % of the victim banner pot', badF.length === 0, `${fmEv.length} Fast & Mini kills · ${badF.length} wrong`);
-  note(SEC, 'Fast & Mini kills are stored with action_type GAME_KILL in combat_events / wallet_ledger / audit log (no FAST_MINI_KILL type) — a 90 % payout looks like a wrong 55 % GAME_KILL to any reconciliation by action type', `${fmEv.length} such rows in this run`);
   const expectUp = new Map();
   for (const x of ev) for (const u of S.calculateRewardSplit(Number(x.v), ancestorsOf(x.user_id)).uplinePayouts) {
     const k = `${u.userId}|${x.user_id}|${u.depth}`;
@@ -555,7 +624,7 @@ check(SEC, 'Energy Pool never overdrawn (pool − drawn ≥ 0)', money1.poolUnsp
 }
 
 // ---- 8. economics per player / country ----------------------------------------------------------------
-const wallets = sql(`SELECT u.id, w.balance_micro_usd AS bal, w.bounty_micro_usd AS bty, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = u.id AND action_type='MLM_COMMISSION') AS mlm, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = u.id AND action_type='CHEER_REWARD') AS cheer, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = u.id AND action_type IN ('GAME_KILL','CHEST_OPEN','BOUNTY_CLAIM','FAST_MINI_KILL')) AS game FROM users u JOIN wallets w ON w.user_id = u.id WHERE u.id IN (${ids})`);
+const wallets = sql(`SELECT u.id, w.balance_micro_usd AS bal, w.bounty_micro_usd AS bty, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = u.id AND action_type='MLM_COMMISSION') AS mlm, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = u.id AND action_type='CHEER_REWARD') AS cheer, (SELECT COALESCE(SUM(delta_micro_usd),0) FROM wallet_ledger l WHERE l.user_id = u.id AND action_type IN ('GAME_KILL','CHEST_OPEN','BOUNTY_CLAIM','FAST_MINI_KILL','BOSS_BOUNTY_CLAIM')) AS game FROM users u JOIN wallets w ON w.user_id = u.id WHERE u.id IN (${ids})`);
 for (const w of wallets) Object.assign(byId.get(w.id).stats, { balance: Number(w.bal), bounty: Number(w.bty), mlm: Number(w.mlm), cheerIncome: Number(w.cheer), gameIncome: Number(w.game) });
 const tAvg = sql(`SELECT country_code AS cc, COUNT(*) AS n, AVG(backed_micro_usd) AS avg, MIN(backed_micro_usd) AS mn, MAX(backed_micro_usd) AS mx FROM user_energy_tickets WHERE user_id IN (${ids}) AND source_type IN ('ad_charge','cheer_pool') GROUP BY 1 ORDER BY avg DESC`);
 const econ = {

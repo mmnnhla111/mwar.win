@@ -1,3 +1,4 @@
+import { releaseExpiredReservations } from './utils/boss-bounty';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
@@ -179,6 +180,8 @@ export default {
    */
   async scheduled(event: { cron?: string }, env: Env): Promise<void> {
     if (event?.cron === '*/10 * * * *') {
+      // V1.2: Golden Boss reservations nobody settled (game-server crash) → back to the Boss Bounty Pool
+      await releaseExpiredReservations(env).catch((e: unknown) => console.warn('[Cron] boss reservation sweep failed', e));
       await flushAuditOutbox(env).catch((e: unknown) => console.warn('[Cron] audit outbox flush failed', e));
       return;
     }
@@ -189,6 +192,7 @@ export default {
     // V1.1: in_match tickets nobody settled for 6 h (game-server crash) → their backing to the platform
     //        (R3: never a ticket whose body is still alive in a heart-beating room)
     await sweepStaleMatchTickets(env).catch((e: unknown) => console.warn('[Cron] stale ticket sweep failed', e));
+    await releaseExpiredReservations(env).catch((e: unknown) => console.warn('[Cron] boss reservation sweep failed', e));
     await sweepStaleFastMiniPots(env).catch((e: unknown) => console.warn('[Cron] stale Fast & Mini pot sweep failed', e));
     await purgeOldSessions(env);
     await runRetentionJobs(env).catch((e: unknown) => console.warn('[Cron] retention failed', e));

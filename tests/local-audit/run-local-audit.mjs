@@ -51,7 +51,7 @@ if (!reuse) {
 const gameUp = await fetch(GAME_HTTP + '/health').then((r) => r.ok).catch(() => false);
 if (!gameUp && !args['skip-sim']) {
   console.log('• starting the real game server (Colyseus) → worker ' + API);
-  const env = { ...process.env, GAME_PORT: new URL(GAME_HTTP).port, WORKER_API_URL: API, INTERNAL_API_SECRET: SECRETS.INTERNAL_API_SECRET, BODY_ONLY_ROOM_TTL_SECONDS: '20', NODE_ID: 'audit-node' };
+  const env = { ...process.env, GAME_PORT: new URL(GAME_HTTP).port, WORKER_API_URL: API, INTERNAL_API_SECRET: SECRETS.INTERNAL_API_SECRET, BODY_ONLY_ROOM_TTL_SECONDS: '20', BOSS_BOUNTY_INTERVAL_SECONDS: '15', NODE_ID: 'audit-node' };
   delete env.REDIS_URL;
   const tsx = path.join(ROOT, 'apps/game-server/node_modules/tsx/dist/cli.mjs');
   const g = spawn(process.execPath, [tsx, 'src/index.ts'], { cwd: path.join(ROOT, 'apps/game-server'), env, stdio: ['ignore', fs.openSync(path.join(STATE_DIR, 'game-server.log'), 'a'), fs.openSync(path.join(STATE_DIR, 'game-server.log'), 'a')] });

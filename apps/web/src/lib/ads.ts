@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { AdNetworkConfig, AdNetworkConfigUpdate, AdStats, DirectLinkStart, PublicAdConfig, CheerStatus } from '@mwar/shared';
+import type { EconomyStatus, AdNetworkConfig, AdNetworkConfigUpdate, AdStats, DirectLinkStart, PublicAdConfig, CheerStatus } from '@mwar/shared';
 import { apiFetch } from './api';
 
 /**
@@ -111,4 +111,13 @@ export function saveAdminAdConfig(patch: AdNetworkConfigUpdate) {
 
 export function getAdminAdStats() {
   return apiFetch<AdStats>('/api/admin/ads/stats');
+}
+
+/** V1.2: system pools + the "5 % platform fee → Boss Bounty Pool" switch (super_admin). */
+export function getAdminEconomy() {
+  return apiFetch<EconomyStatus>('/api/admin/ads/economy');
+}
+
+export function saveAdminEconomy(redirectPlatformFeeToBoss: boolean) {
+  return apiFetch<{ success: true; economy: EconomyStatus }>('/api/admin/ads/economy', { method: 'PUT', body: JSON.stringify({ redirectPlatformFeeToBoss }) });
 }

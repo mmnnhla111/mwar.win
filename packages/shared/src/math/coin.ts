@@ -2,6 +2,9 @@ import {
   AD_SAFETY_MULTIPLIER_DEFAULT_BP,
   AD_SAFETY_MULTIPLIER_MAX_BP,
   AD_SAFETY_MULTIPLIER_MIN_BP,
+  AD_SAFETY_HAIRCUT_PCT,
+  BOSS_POOL_GROSS_PCT,
+  AD_NET_VALUE_MAX_PCT,
   COIN_ROUND_UP_FRACTION,
   EC_PROGRESS_BP_PER_TICKET,
 } from '../constants';
@@ -73,6 +76,39 @@ export function safeAdMicroUsd(grossMicroUsd: number, multiplier: number = AD_SA
   const bp = BigInt(parseSafetyMultiplierBp(multiplier));
   const safe = Number((BigInt(gross) * bp) / 10_000n);
   return Math.max(0, Math.min(gross, safe));
+}
+
+export interface AdGrossSplit {
+  grossMicroUsd: number;
+  /** 3 % (+ any µUSD that would push V above 95 % of G) → Platform Safety Reserve. */
+  safetyReserveMicroUsd: number;
+  /** 5 % → Boss Bounty Pool. */
+  bossPoolMicroUsd: number;
+  /** Net ticket value V = G − safety − boss (≈ 92 %, never above floor(G × 95 %)). */
+  netMicroUsd: number;
+}
+
+/**
+ * V1.2 §7.1 first-level split of a VERIFIED gross ad value G (integer µUSD):
+ *   S_risk = floor(G × 3 %), B = floor(G × 5 %), V = G − S_risk − B, capped at floor(G × 95 %) (the cap only
+ *   matters for tiny G; the trimmed µUSD goes to the safety reserve). safety + boss + net === G exactly.
+ */
+export function splitAdGross(grossMicroUsd: number): AdGrossSplit {
+  const g = Math.floor(Number(grossMicroUsd));
+  if (!Number.isFinite(g) || g <= 0) return { grossMicroUsd: 0, safetyReserveMicroUsd: 0, bossPoolMicroUsd: 0, netMicroUsd: 0 };
+  const G = BigInt(g);
+  const boss = (G * BigInt(BOSS_POOL_GROSS_PCT)) / 100n;
+  const risk = (G * BigInt(AD_SAFETY_HAIRCUT_PCT)) / 100n;
+  const cap = (G * BigInt(AD_NET_VALUE_MAX_PCT)) / 100n;
+  let net = G - risk - boss;
+  if (net > cap) net = cap;
+  const safety = G - boss - net;
+  return { grossMicroUsd: g, safetyReserveMicroUsd: Number(safety), bossPoolMicroUsd: Number(boss), netMicroUsd: Number(net) };
+}
+
+/** Net ticket value V (92 %) of a gross ad value — what an ad's EC backing / cheer split is worth. */
+export function netAdMicroUsd(grossMicroUsd: number): number {
+  return splitAdGross(grossMicroUsd).netMicroUsd;
 }
 
 const group = (s: string) => s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');

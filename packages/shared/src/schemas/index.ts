@@ -101,7 +101,10 @@ export const BatchPayoutItemSchema = z.object({
   // V1.1 R2 FAST_MINI_KILL: userId killed metadata.victimId in Fast & Mini → the Worker pays 90/10 of the
   //   victim's OWN verified-banner pot (metadata.potId, credits up to metadata.diedAt) — amount is ignored
   // V1.1 R2 FAST_MINI_CLOSE: userId's Fast & Mini pot (metadata.potId) closed (left / AFK / room closed)
-  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT', 'TICKET_RETURN', 'FAST_MINI_KILL', 'FAST_MINI_CLOSE']),
+  // V1.2 BOSS_BOUNTY_CLAIM: userId eliminated the Golden Boss metadata.victimId → the Worker pays the
+  //   reservation metadata.reservationId (amount from D1, never item.amountMicroUsd) through 55/15/5/5/20, once
+  // V1.2 BOSS_BOUNTY_RELEASE: the Golden Boss reservation metadata.reservationId ended unclaimed → back to the pool, once
+  actionType: z.enum(['GAME_KILL', 'CHEST_OPEN', 'AD_WATCH', 'AFK_FORFEIT', 'BOUNTY_CLAIM', 'TICKET_FORFEIT', 'TICKET_RETURN', 'FAST_MINI_KILL', 'FAST_MINI_CLOSE', 'BOSS_BOUNTY_CLAIM', 'BOSS_BOUNTY_RELEASE']),
   gameId: z.string(),
   metadata: z.record(z.any()).optional(),
 });

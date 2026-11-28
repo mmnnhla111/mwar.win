@@ -1,8 +1,8 @@
 import type { D1Database, D1PreparedStatement } from '@cloudflare/workers-types';
 import {
   allocateEcProgress,
-  parseSafetyMultiplierBp,
-  safeAdMicroUsd,
+  netAdMicroUsd,
+  type AdGrossSplit,
   INITIAL_ENERGY_TICKETS,
   MAX_ENERGY_TICKETS,
   STALE_MATCH_TICKET_SECONDS,
@@ -11,15 +11,16 @@ import {
 } from '@mwar/shared';
 import type { Env } from '../types';
 import { logFinancialTransaction } from './audit-logger';
-import { ENERGY_POOL_ACCOUNT_ID, PLATFORM_ACCOUNT_ID } from './guards';
+import { BOSS_POOL_ACCOUNT_ID, ENERGY_POOL_ACCOUNT_ID, PLATFORM_ACCOUNT_ID, SAFETY_RESERVE_ACCOUNT_ID } from './guards';
 import { LIVE_SESSION_GUARD_SQL } from './active-sessions';
 
 /**
  * V1.1 zero-deficit ticket-backed economy (D1 core_db, migration 0021).
  *
  *  · Every Energy Ticket (1 EC) is a `user_energy_tickets` row with the REAL µUSD that backs it.
- *  · Real ad revenue (live banner / direct link / network postback) → floor(gross × 0.90–0.95) into
- *    `users.pending_ec_micro_usd` while the EC bar fills; at 100 % a ticket is minted with that backing.
+ *  · V1.2: only VERIFIED ad revenue (S2S postback with the network's estimated_price) backs EC: its net value
+ *    V = G − 3 % safety − 5 % boss pool goes into `users.pending_ec_micro_usd` while the EC bar fills; at 100 %
+ *    a ticket is minted with that backing. Banner pings and timer-only direct-link claims credit EC % only (0 µUSD).
  *  · Simulated (test-mode) ads have no revenue: their backing is drawn from the Energy Pool's unspent
  *    balance (energy_pool − drawn), never more than it holds — an empty pool mints 0-value tickets.
  *  · A paid entry locks the oldest available ticket(s) (FIFO, status in_match); the kill that ends that
@@ -30,14 +31,53 @@ import { LIVE_SESSION_GUARD_SQL } from './active-sessions';
 const nowSec = () => Math.floor(Date.now() / 1000);
 const newTicketId = () => `tkt_${crypto.randomUUID()}`;
 
-/** Configured haircut (env AD_SAFETY_MULTIPLIER, e.g. "0.92"), always clamped to 0.90–0.95. */
-export function safetyBp(env: Env): number {
-  return parseSafetyMultiplierBp(env.AD_SAFETY_MULTIPLIER);
+/**
+ * V1.2 §7.1: net value V of a gross ad value — G − floor(G × 3 %) safety − floor(G × 5 %) boss pool (≈ 92 %,
+ * never above 95 %). The haircut is fixed by the spec now; env AD_SAFETY_MULTIPLIER is no longer read.
+ * Only VERIFIED revenue (P1 postback) is credited as cash backing — see the callers.
+ */
+export function safeValue(_env: Env, grossMicroUsd: number): number {
+  return netAdMicroUsd(grossMicroUsd);
 }
 
-/** Safe (after-haircut) µUSD of a gross ad value. */
-export function safeValue(env: Env, grossMicroUsd: number): number {
-  return safeAdMicroUsd(grossMicroUsd, safetyBp(env));
+/**
+ * The 3 % safety + 5 % boss-pool part of a verified gross ad value, for the SAME D1 batch that credits its
+ * net value V (guarded: only when the previous statement changed exactly one row, like the ticket inserts).
+ */
+export function adHaircutStmt(db: D1Database, h: Pick<AdGrossSplit, 'safetyReserveMicroUsd' | 'bossPoolMicroUsd'>, now: number, guarded = true): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE system_balances SET safety_reserve_micro_usd = safety_reserve_micro_usd + ?1, boss_bounty_pool_micro_usd = boss_bounty_pool_micro_usd + ?2, updated_at = ?3
+       WHERE id = 'global'${guarded ? ' AND changes() = 1' : ''}`
+    )
+    .bind(Math.max(0, Math.floor(h.safetyReserveMicroUsd)), Math.max(0, Math.floor(h.bossPoolMicroUsd)), now);
+}
+
+/** Audit rows of a verified ad haircut (3 % safety reserve + 5 % boss pool). */
+export async function logAdHaircut(env: Env, h: Pick<AdGrossSplit, 'safetyReserveMicroUsd' | 'bossPoolMicroUsd'>, sourceId: string, userId: string | null) {
+  const tag = `${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+  if (h.safetyReserveMicroUsd > 0) {
+    await logFinancialTransaction(env, {
+      transaction_id: `tx_ad_safety_${tag}`,
+      user_id: SAFETY_RESERVE_ACCOUNT_ID,
+      action_type: 'AD_SAFETY_RESERVE',
+      amount_micro_usd: BigInt(h.safetyReserveMicroUsd),
+      balance_after_micro_usd: 0n,
+      source_game_id: sourceId.slice(0, 64),
+      related_user_id: userId,
+    });
+  }
+  if (h.bossPoolMicroUsd > 0) {
+    await logFinancialTransaction(env, {
+      transaction_id: `tx_ad_boss_${tag}`,
+      user_id: BOSS_POOL_ACCOUNT_ID,
+      action_type: 'BOSS_POOL_CREDIT',
+      amount_micro_usd: BigInt(h.bossPoolMicroUsd),
+      balance_after_micro_usd: 0n,
+      source_game_id: sourceId.slice(0, 64),
+      related_user_id: userId,
+    });
+  }
 }
 
 /** Unspent Energy Pool balance (never negative). */
@@ -277,6 +317,11 @@ export interface EcBacking {
   country: string;
   /** Simulated ads: draw the backing from the Energy Pool (capped by what it holds). */
   fromPool?: boolean;
+  /**
+   * V1.2 verified revenue: the 3 % safety + 5 % boss-pool part of the same gross ad value, credited in the same
+   * D1 batch as `microUsd` (= its net V), so G enters the system exactly once or not at all.
+   */
+  haircut?: Pick<AdGrossSplit, 'safetyReserveMicroUsd' | 'bossPoolMicroUsd'>;
 }
 
 /**
@@ -302,6 +347,7 @@ export async function creditEcProgress(env: Env, userId: string, addBp: number, 
     const prevTickets = u.energy_tickets ?? INITIAL_ENERGY_TICKETS;
     const want = Math.max(0, Math.floor(Number(backing?.microUsd ?? 0)));
     const fromPool = !!backing?.fromPool && want > 0;
+    const haircut = !fromPool && backing?.haircut && backing.haircut.safetyReserveMicroUsd + backing.haircut.bossPoolMicroUsd > 0 ? backing.haircut : null;
     const add = fromPool ? Math.min(want, await energyPoolAvailable(db)) : want;
     const alloc = allocateEcProgress({ prevBp, prevPending, addBp, addMicroUsd: add, tickets: prevTickets, maxTickets });
     const now = nowSec();
@@ -320,6 +366,7 @@ export async function creditEcProgress(env: Env, userId: string, addBp: number, 
         db.prepare("UPDATE system_balances SET energy_pool_drawn_micro_usd = energy_pool_drawn_micro_usd + ?1, updated_at = ?2 WHERE id = 'global' AND changes() = 1").bind(add, now)
       );
     }
+    if (haircut) stmts.push(adHaircutStmt(db, haircut, now));
     const ids: string[] = [];
     for (const value of alloc.mintedBacking) {
       const id = newTicketId();
@@ -343,6 +390,7 @@ export async function creditEcProgress(env: Env, userId: string, addBp: number, 
       balance_after_micro_usd: 0n,
       source_game_id: `${sourceId}:+${addBp}bp:t${alloc.tickets}`.slice(0, 64),
     });
+    if (haircut) await logAdHaircut(env, haircut, sourceId, userId);
     if (usePool) {
       await logFinancialTransaction(env, {
         transaction_id: `tx_pool_draw_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,

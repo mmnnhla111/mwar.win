@@ -47,6 +47,9 @@ export class PlayerState extends Schema {
   @type('number') bountyMicroUsd: number = 0;
   // V1.1: real backed value of this player's live Energy Ticket — exactly what a kill on them pays (0 after settled)
   @type('number') ticketMicroUsd: number = 0;
+  // V1.2 Golden Boss ("เป้าหมายค่าหัวทองคำ"): reserved reward on this player's head (0 = not the boss). Clients
+  // draw a golden crown above them; the amount is decided and held by the Worker (reservation), not here.
+  @type('number') goldenBossMicroUsd: number = 0;
   // Medkits carried (slot 4). Healing is a 4 s stationary cast validated by the server.
   @type('number') medkits: number = 0;
 
@@ -67,7 +70,7 @@ export class PlayerState extends Schema {
 const PLAYER_FIELDS = [
   'id', 'username', 'x', 'y', 'z', 'rotationY', 'stance', 'health', 'maxHealth', 'avatarId', 'isProp', 'propType', 'disguisePropId',
   'isPropSolid', 'primaryWeapon', 'currentWeapon', 'magAmmo', 'reserveAmmo', 'grenadesRemaining', 'isGhost', 'isSpectator', 'kills',
-  'deaths', 'chestsCollected', 'sessionEarningsMicroUsd', 'bountyMicroUsd', 'ticketMicroUsd', 'medkits', 'lastActiveTime',
+  'deaths', 'chestsCollected', 'sessionEarningsMicroUsd', 'bountyMicroUsd', 'ticketMicroUsd', 'goldenBossMicroUsd', 'medkits', 'lastActiveTime',
   'afkWarningSent', 'afkKicked', 'isDisconnected', 'disconnectedAt',
 ] as const;
 

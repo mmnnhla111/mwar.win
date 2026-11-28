@@ -8,6 +8,7 @@ import {
   DirectLinkStartSchema,
   EC_PROGRESS_BP_PER_TICKET,
   MAX_ENERGY_TICKETS,
+  splitAdGross,
   type AdSlot,
   type CheerTargetType,
   type DirectLinkStart,
@@ -20,7 +21,7 @@ import { creditEcProgress, logAdImpression, normalizeCountry, utcDateKey } from 
 import { creditFastMiniBanner } from '../utils/fast-mini';
 import { AD_CONFIG_CACHE_KEY, cfCountryOf, getAdConfig, pickDirectLink, toPublicAdConfig, valueFromNetworkPrice, valueSlot } from '../utils/ad-networks';
 import { isLocalDev, safeEqual } from '../utils/guards';
-import { bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
+import { bannerGateBody, bannerIdleMs, claimBannerGate, idlePausedBody } from '../utils/ad-activity';
 import { loadStatus, recordCheer, resolveTarget, settleCheerRevenue } from './cheer';
 import { safeValue } from '../utils/energy-tickets';
 import { getStatisticalAdMicroUsd, type AdFormat } from '@mwar/shared';
@@ -38,11 +39,14 @@ type Ctx = Context<{ Bindings: Env; Variables: { user: AuthUserPayload } }>;
 /**
  * Real ad networks (Adsterra + Monetag), mounted at /api/ads:
  *   GET  /config                 public, sanitized, edge-cached 60 s (mode, enabled flags, banner keys, in-page zone)
- *   POST /impression             live Adsterra banner impression ping (30–45 s, visible tab) → EC progress + backing
+ *   POST /impression             live Adsterra banner impression ping (30–45 s, visible tab, ≤ 60 / day) → EC % only
  *   POST /direct-link/start      Path A: open a Monetag Direct Link (Adsterra Smartlink fallback) with a token
- *   POST /direct-link/claim      Path A: claim after required_seconds (server clock) → EC progress / Cheer
+ *   POST /direct-link/claim      Path A: claim after required_seconds (server clock) → EC % / Cheer count
  *   ALL  /postback/monetag       Path B: Monetag S2S postback (secret) → P1 value from estimated_price
- * Ads credit non-withdrawable EC only (cap 300). Withdrawable USD comes only from game rooms.
+ * V1.2 (audit H2 — verified-ad-only cash): banner pings and timer-only claims are UNVERIFIED (the client says
+ * they happened) and credit EC progress with 0 µUSD backing, never cheer cash. Only an S2S postback carrying the
+ * network's own estimated_price (P1) creates value: G → 3 % safety reserve + 5 % Boss Bounty Pool + V 92 %,
+ * where V backs the viewer's EC (ec_recharge) or is split 55/15/5/5/20 for a cheer — exactly once per visit.
  */
 export const adNetworksRouter = new Hono<{ Bindings: Env; Variables: { user: AuthUserPayload } }>();
 
@@ -71,8 +75,8 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
   if (idle !== null) return c.json(idlePausedBody(idle), 400);
   // At most one accepted banner request per 28 s per user across every banner (a batch of N needs
   // N gaps), claimed atomically in D1 so parallel / scripted pings can't slip through
-  const wait = await claimBannerGate(c.env.DB, me.userId, count);
-  if (wait !== null) return c.json({ error: 'Banner impressions too soon', code: 'too_soon', retryInSeconds: wait }, 429);
+  const refused = await claimBannerGate(c.env.DB, me.userId, count);
+  if (refused) return c.json(bannerGateBody(refused), 429);
 
   const country = cfCountryOf(c);
   const v = valueSlot(cfg, country, slot);
@@ -81,23 +85,22 @@ adNetworksRouter.post('/impression', authMiddleware, async (c) => {
     { userId: me.userId, provider: v.network, country, format: v.format, purpose: 'ec_recharge', microUsd: v.effectiveMicroUsd, source: 'country_ecpm_mult', ecBp: v.ecBp, slot },
     count
   );
-  // V1.1: a live banner impression is real ad revenue → floor(gross × 0.90–0.95) backs the EC it charges
-  let backed = safeValue(c.env, backingGross(country, v)) * count;
+  // V1.2 (audit H2): a banner ping is client-reported, the network never confirms it → EC progress only, 0 µUSD
+  // cash backing. Its estimated value is still what the slot is worth for EC % and the Fast & Mini pot share.
   let creditBp = v.ecBp * count;
-  // V1.1 R2: while playing Fast & Mini, 50 % of this real banner revenue funds the player's own pot
-  // (what a killer can win, 90/10) and 50 % stays EC backing — the same µUSD is never used twice
+  // V1.1 R2 Fast & Mini: 50 % of the banner's value funds the player's own pot (what a killer can win, 90/10)
+  // and the EC % is scaled to the other 50 %. V1.2: the pot share is drawn from the Energy Pool's UNSPENT
+  // balance (capped by what it holds, exactly like a simulated banner) — never created from an unverified ping.
   const fmPot = body.fastMiniEntryId
-    ? await creditFastMiniBanner(c.env, { userId: me.userId, potId: body.fastMiniEntryId, safeMicroUsd: backed, ecBp: creditBp, fromPool: false, ref: `${slot}x${count}` })
+    ? await creditFastMiniBanner(c.env, { userId: me.userId, potId: body.fastMiniEntryId, safeMicroUsd: safeValue(c.env, backingGross(country, v)) * count, ecBp: creditBp, fromPool: true, ref: `${slot}x${count}` })
     : null;
-  if (fmPot && fmPot.potMicroUsd > 0) {
-    backed = fmPot.ecMicroUsd;
-    creditBp = fmPot.ecBp;
-  }
-  const ec = creditBp > 0 ? await creditEcProgress(c.env, me.userId, creditBp, `${slot}x${count}`, { microUsd: backed, source: 'ad_charge', country }) : null;
+  if (fmPot && fmPot.potMicroUsd > 0) creditBp = fmPot.ecBp;
+  const ec = creditBp > 0 ? await creditEcProgress(c.env, me.userId, creditBp, `${slot}x${count}`, { microUsd: 0, source: 'ad_charge', country }) : null;
   return c.json({
     success: true,
     format: 'banner',
     backedMicroUsd: ec?.backedAddedMicroUsd ?? 0,
+    verified: false,
     pendingEcMicroUsd: ec?.pendingEcMicroUsd,
     slot,
     country,
@@ -233,18 +236,10 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
     }
     cheerCount = rec.cheerCount;
   }
-  // V1.1: a real direct-link visit is real revenue. Safe value V = floor(gross × 0.90–0.95):
-  //   ec_recharge / energy cheer → 100 % of V backs the viewer's EC
-  //   creator cheer → 55 / 15 / 5 / 5 to the creator side, the 20 % slice backs the viewer's EC
-  const safeV = safeValue(c.env, backingGross(country, v));
-  let viewerBacking = safeV;
-  let backingSource: 'ad_charge' | 'cheer_pool' = 'ad_charge';
-  if (row.purpose === 'cheer' && row.target_user_id) {
-    cheerSplit = await settleCheerRevenue(c.env, { creatorId: row.target_user_id, viewerId: me.userId, valueMicroUsd: safeV, sourceId: `cheer:${row.token}` });
-    viewerBacking = cheerSplit.viewerBackingMicroUsd;
-    backingSource = 'cheer_pool';
-  }
-
+  // V1.2 (audit H2): the 15/30 s timer only proves the tab stayed open — no network confirmed the visit. It
+  // credits EC progress with 0 µUSD backing and the cheer COUNT only (creator cash 0). The revenue is applied
+  // when (if) the network's S2S postback with estimated_price arrives for this token — or right here when the
+  // postback already arrived before the claim (applyVerifiedVisit, exactly once per token).
   await logAdImpression(c.env.DB, {
     userId: me.userId,
     provider: v.network,
@@ -256,7 +251,9 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
     ecBp: v.ecBp,
     slot,
   });
-  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp, `direct:${slot}:${row.token}`, { microUsd: viewerBacking, source: backingSource, country }) : null;
+  const ec = v.ecBp > 0 ? await creditEcProgress(c.env, me.userId, v.ecBp, `direct:${slot}:${row.token}`, { microUsd: 0, source: row.purpose === 'cheer' ? 'cheer_pool' : 'ad_charge', country }) : null;
+  const verified = await applyVerifiedVisit(c.env, row.token);
+  if (verified.applied) cheerSplit = { valueMicroUsd: verified.netMicroUsd, creatorMicroUsd: verified.creatorMicroUsd, viewerBackingMicroUsd: verified.viewerBackingMicroUsd };
   if (row.purpose === 'cheer') cheerStatus = await loadStatus(c, row.target_type, row.target_id, row.target_user_id);
   return c.json({
     success: true,
@@ -273,11 +270,45 @@ adNetworksRouter.post('/direct-link/claim', authMiddleware, async (c) => {
     ticketsAwarded: ec?.ticketsAwarded ?? 0,
     cheerCount,
     status: cheerStatus,
-    valueMicroUsd: safeV,
+    verified: verified.applied,
+    valueMicroUsd: verified.applied ? verified.netMicroUsd : 0,
+    estimatedMicroUsd: safeValue(c.env, backingGross(country, v)),
     creatorMicroUsd: cheerSplit?.creatorMicroUsd ?? 0,
-    ecBackingMicroUsd: ec?.backedAddedMicroUsd ?? 0,
+    ecBackingMicroUsd: (ec?.backedAddedMicroUsd ?? 0) + (verified.applied ? verified.viewerBackingMicroUsd : 0),
   });
 });
+
+/**
+ * V1.2: apply the S2S-verified revenue (ad_click_tokens.verified_gross_micro_usd, the network's estimated_price)
+ * of a CLAIMED direct-link visit, exactly once per token (guarded by verified_at IS NULL: a replayed postback,
+ * a racing timer claim or a second call all find it already applied):
+ *   G -> 3 % Platform Safety Reserve + 5 % Boss Bounty Pool + V (92 %)
+ *   ec_recharge / EC-panel cheer -> V backs the viewer's EC (pending_ec_micro_usd)
+ *   creator cheer -> V split 55 / 15 / 5 / 5 / 20 (settleCheerRevenue), the 20 % slice backs the viewer's EC
+ */
+export async function applyVerifiedVisit(env: Env, token: string): Promise<{ applied: boolean; netMicroUsd: number; creatorMicroUsd: number; viewerBackingMicroUsd: number }> {
+  const none = { applied: false, netMicroUsd: 0, creatorMicroUsd: 0, viewerBackingMicroUsd: 0 };
+  const now = nowSec();
+  const upd = await env.DB
+    .prepare("UPDATE ad_click_tokens SET verified_at = ?1 WHERE token = ?2 AND status = 'claimed' AND verified_at IS NULL AND verified_gross_micro_usd > 0")
+    .bind(now, token)
+    .run();
+  if ((upd.meta?.changes ?? 0) !== 1) return none;
+  const row = await env.DB.prepare('SELECT * FROM ad_click_tokens WHERE token = ?1').bind(token).first<any>();
+  if (!row) return none;
+  const h = splitAdGross(Number(row.verified_gross_micro_usd) || 0);
+  if (h.grossMicroUsd <= 0) return none;
+  const country = normalizeCountry(row.country_code);
+  if (row.purpose === 'cheer' && row.target_user_id && row.target_user_id !== row.user_id) {
+    const split = await settleCheerRevenue(env, { creatorId: row.target_user_id, viewerId: row.user_id, valueMicroUsd: h.netMicroUsd, sourceId: `cheer:${token}`, adHaircut: h });
+    if (split.viewerBackingMicroUsd > 0) {
+      await creditEcProgress(env, row.user_id, 0, `verified:cheer:${token}`, { microUsd: split.viewerBackingMicroUsd, source: 'cheer_pool', country });
+    }
+    return { applied: true, netMicroUsd: h.netMicroUsd, creatorMicroUsd: split.creatorMicroUsd, viewerBackingMicroUsd: split.viewerBackingMicroUsd };
+  }
+  const ec = await creditEcProgress(env, row.user_id, 0, `verified:${token}`, { microUsd: h.netMicroUsd, source: row.purpose === 'cheer' ? 'cheer_pool' : 'ad_charge', country, haircut: h });
+  return { applied: true, netMicroUsd: h.netMicroUsd, creatorMicroUsd: 0, viewerBackingMicroUsd: ec?.backedAddedMicroUsd ?? 0 };
+}
 
 /** Constant-time check of the shared postback secret (query `secret` or header `X-Postback-Secret`). */
 function postbackSecretOk(c: Context<any>, q: Record<string, string>): boolean {
@@ -346,25 +377,55 @@ adNetworksRouter.all('/postback/monetag', async (c) => {
     .run();
   if ((ins.meta?.changes ?? 0) === 0) return c.json({ ok: true, duplicate: true }, 200);
 
-  // Decide whether this postback credits EC (never twice for one visit, never above the daily cap)
+  // Decide whether this postback credits EC (never twice for one visit, never above the daily cap) and whether
+  // it carries VERIFIED revenue (V1.2: only P1 — the network's own estimated_price — creates value)
   let creditBp = value.ecBp;
   let note = 'credited';
+  let verifiedGross = p1 ? value.effectiveMicroUsd : 0;
+  const now = nowSec();
   if (eventType === 'not_valued' || eventType === 'non_valued' || eventType === 'invalid') {
     creditBp = 0;
+    verifiedGross = 0;
     note = 'not_valued';
   } else if (tokenRow) {
+    // Remember the verified price on the visit (first priced postback only: replays never add a second value)
+    if (verifiedGross > 0) {
+      const rec = await c.env.DB
+        .prepare('UPDATE ad_click_tokens SET verified_gross_micro_usd = ?1, postback_at = ?2 WHERE token = ?3 AND verified_gross_micro_usd IS NULL')
+        .bind(verifiedGross, now, tokenRow.token)
+        .run();
+      if ((rec.meta?.changes ?? 0) !== 1) verifiedGross = 0;
+    }
     if (tokenRow.purpose === 'cheer') {
-      creditBp = 0; // the in-app timer claim counts the cheer; the postback records the real revenue
-      note = 'cheer_revenue_only';
+      creditBp = 0; // the in-app timer claim counts the cheer (+ EC %); the postback brings the real revenue
+      note = verifiedGross > 0 ? 'cheer_verified' : 'cheer_unverified';
     } else {
       const upd = await c.env.DB
         .prepare("UPDATE ad_click_tokens SET status = 'claimed', claimed_at = ?1, claimed_via = 'postback' WHERE token = ?2 AND status = 'pending'")
-        .bind(nowSec(), tokenRow.token)
+        .bind(now, tokenRow.token)
         .run();
       if ((upd.meta?.changes ?? 0) !== 1) {
         creditBp = 0;
-        note = 'already_claimed';
+        note = verifiedGross > 0 ? 'verified_after_claim' : 'already_claimed';
       }
+    }
+    // The visit is (now) claimed: apply its verified revenue exactly once (EC backing / cheer split)
+    if (verifiedGross > 0) {
+      if (creditBp > 0) {
+        await logAdImpression(c.env.DB, { userId: user.id, provider: 'monetag', country, format: value.format as any, purpose: 'ec_recharge', microUsd: value.effectiveMicroUsd, source: 'network', ecBp: creditBp, slot });
+        // claimed by this postback: EC % and its backing in ONE credit (guarded so a racing claim cannot apply it again)
+        const mark = await c.env.DB
+          .prepare("UPDATE ad_click_tokens SET verified_at = ?1 WHERE token = ?2 AND verified_at IS NULL AND status = 'claimed'")
+          .bind(now, tokenRow.token)
+          .run();
+        const h = splitAdGross(verifiedGross);
+        const ok = (mark.meta?.changes ?? 0) === 1;
+        const ec = await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`, ok ? { microUsd: h.netMicroUsd, source: 'ad_charge', country, haircut: h } : { microUsd: 0, source: 'ad_charge', country });
+        return c.json({ ok: true, note, valueSource: 'network', verified: ok, effectiveMicroUsd: value.effectiveMicroUsd, netMicroUsd: ok ? h.netMicroUsd : 0, ecProgressPct: Math.round(creditBp / 100), energyTickets: ec?.energyTickets ?? null }, 200);
+      }
+      await logAdImpression(c.env.DB, { userId: user.id, provider: 'monetag', country, format: value.format as any, purpose: tokenRow.purpose === 'cheer' ? 'cheer' : 'ec_recharge', microUsd: value.effectiveMicroUsd, source: 'network', ecBp: 0, slot });
+      const visit = await applyVerifiedVisit(c.env, tokenRow.token);
+      return c.json({ ok: true, note, valueSource: 'network', verified: visit.applied, effectiveMicroUsd: value.effectiveMicroUsd, applied: visit.applied, netMicroUsd: visit.netMicroUsd, creatorMicroUsd: visit.creatorMicroUsd, ecBackingMicroUsd: visit.viewerBackingMicroUsd }, 200);
     }
   } else {
     const n = await c.env.DB
@@ -373,23 +434,45 @@ adNetworksRouter.all('/postback/monetag', async (c) => {
       .first<{ n: number }>();
     if (Number(n?.n || 0) >= AD_VIDEO_EC_DAILY_CAP) {
       creditBp = 0;
+      verifiedGross = 0;
       note = 'daily_cap';
     }
   }
 
-  await logAdImpression(c.env.DB, {
-    userId: user.id,
-    provider: 'monetag',
-    country,
-    format: value.format as any,
-    purpose: tokenRow?.purpose === 'cheer' ? 'cheer' : 'ec_recharge',
-    microUsd: value.effectiveMicroUsd,
-    source: p1 ? 'network' : 'country_ecpm_mult',
-    ecBp: creditBp,
-    slot,
-  });
-  // V1.1: real revenue (P1 estimated_price or the slot's eCPM) backs the EC it credits, after the haircut
-  const pbGross = p1 ? value.effectiveMicroUsd : backingGross(country, value as { format: string; effectiveMicroUsd: number });
-  const ec = creditBp > 0 ? await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`, { microUsd: safeValue(c.env, pbGross), source: 'ad_charge', country }) : null;
-  return c.json({ ok: true, note, valueSource: p1 ? 'network' : 'country_ecpm_mult', effectiveMicroUsd: value.effectiveMicroUsd, ecProgressPct: Math.round(creditBp / 100), energyTickets: ec?.energyTickets ?? null }, 200);
+  // An unpriced postback that credits nothing is not logged as an estimated impression (it would inflate the
+  // admin "estimated vs verified" check without anything having been credited)
+  if (creditBp > 0 || verifiedGross > 0) {
+    await logAdImpression(c.env.DB, {
+      userId: user.id,
+      provider: 'monetag',
+      country,
+      format: value.format as any,
+      purpose: tokenRow?.purpose === 'cheer' ? 'cheer' : 'ec_recharge',
+      microUsd: value.effectiveMicroUsd,
+      source: verifiedGross > 0 ? 'network' : 'country_ecpm_mult',
+      ecBp: creditBp,
+      slot,
+    });
+  }
+  // V1.2: only P1 revenue backs the EC it credits (G -> 3 % safety + 5 % boss pool + V 92 % in one batch);
+  // a postback without the network's price credits EC % only (0 µUSD)
+  const verified = verifiedGross > 0 && creditBp > 0;
+  const h = splitAdGross(verified ? verifiedGross : 0);
+  const ec =
+    creditBp > 0
+      ? await creditEcProgress(c.env, user.id, creditBp, `postback:monetag:${txId}`, verified ? { microUsd: h.netMicroUsd, source: 'ad_charge', country, haircut: h } : { microUsd: 0, source: 'ad_charge', country })
+      : null;
+  return c.json(
+    {
+      ok: true,
+      note,
+      valueSource: p1 ? 'network' : 'country_ecpm_mult',
+      verified,
+      effectiveMicroUsd: value.effectiveMicroUsd,
+      netMicroUsd: verified ? h.netMicroUsd : 0,
+      ecProgressPct: Math.round(creditBp / 100),
+      energyTickets: ec?.energyTickets ?? null,
+    },
+    200
+  );
 });

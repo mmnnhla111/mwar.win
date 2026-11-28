@@ -13,8 +13,8 @@ import {
   parseMonetagInpage,
   sanitizeDirectUrl,
 } from '@mwar/shared';
-import type { AdMode, AdNetworkConfig, AdSlot, AdStats, AdStatsRow } from '@mwar/shared';
-import { clearAdConfigCache, getAdminAdConfig, getAdminAdStats, saveAdminAdConfig } from '../../lib/ads';
+import type { AdMode, AdNetworkConfig, AdSlot, AdStats, AdStatsRow, EconomyStatus } from '@mwar/shared';
+import { clearAdConfigCache, getAdminAdConfig, getAdminAdStats, getAdminEconomy, saveAdminAdConfig, saveAdminEconomy } from '../../lib/ads';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { Spinner, btn } from '../ui/Card';
 
@@ -33,6 +33,7 @@ export function AdNetworksAdmin() {
   const [draft, setDraft] = useState<AdNetworkConfig | null>(null);
   const [secretSet, setSecretSet] = useState(false);
   const [stats, setStats] = useState<AdStats | null>(null);
+  const [eco, setEco] = useState<EconomyStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [copied, setCopied] = useState(false);
@@ -44,6 +45,7 @@ export function AdNetworksAdmin() {
       setDraft(c.config);
       setSecretSet(c.postbackSecretSet);
       setStats(s);
+      getAdminEconomy().then(setEco).catch(() => {});
     } catch (e: any) {
       setMsg(e?.message || t('common.error'));
     }
@@ -63,6 +65,20 @@ export function AdNetworksAdmin() {
       setDraft((d) => (d ? { ...r.config, ...pickUnsaved(d, patch) } : r.config));
       clearAdConfigCache();
       setMsg(okMsg);
+    } catch (e: any) {
+      setMsg(e?.message || t('common.error'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleBossFee = async (on: boolean) => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const r = await saveAdminEconomy(on);
+      setEco(r.economy);
+      setMsg(t('ads.admin.saved'));
     } catch (e: any) {
       setMsg(e?.message || t('common.error'));
     } finally {
@@ -140,6 +156,37 @@ export function AdNetworksAdmin() {
           </p>
         )}
       </div>
+
+      {/* V1.2 economy: pools + "5 % fee → Boss Bounty Pool" switch */}
+      {eco && (
+        <div className={card} data-ads-economy>
+          <h3 className="font-extrabold text-stone-900">👑 {t('ads.admin.economy')}</h3>
+          <p className="text-xs text-stone-500 mt-1">{t('ads.admin.economyHint')}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5 text-xs">
+            {(
+              [
+                ['ads.admin.bossPool', eco.bossBountyPoolMicroUsd, 'boss'],
+                ['ads.admin.bossReserved', eco.bossReservedMicroUsd, 'reserved'],
+                ['ads.admin.safetyReserve', eco.safetyReserveMicroUsd, 'safety'],
+                ['ads.admin.platformBalance', eco.platformMicroUsd, 'platform'],
+                ['ads.admin.energyUnspent', eco.energyPoolUnspentMicroUsd, 'energy'],
+              ] as const
+            ).map(([k, v, id]) => (
+              <div key={id} className="rounded-2xl bg-[#FFFBEA] border border-yellow-100 px-3 py-2" data-eco={id}>
+                <div className="text-[11px] font-bold text-stone-500">{t(k, { n: eco.bossReservedCount })}</div>
+                <div className="font-extrabold text-stone-900 tabular-nums">{usd(v)}</div>
+              </div>
+            ))}
+          </div>
+          <label className="mt-3 flex items-start gap-2 text-sm font-bold text-stone-800">
+            <input type="checkbox" className="mt-1" checked={eco.redirectPlatformFeeToBoss} disabled={busy} onChange={(e) => toggleBossFee(e.target.checked)} data-eco-redirect />
+            <span>
+              {t('ads.admin.redirectFee')}
+              <span className="block text-[11px] font-semibold text-stone-500">{t('ads.admin.redirectFeeHint')}</span>
+            </span>
+          </label>
+        </div>
+      )}
 
       {/* Networks */}
       <div className={card}>
@@ -273,6 +320,16 @@ export function AdNetworksAdmin() {
             {t('common.refresh')}
           </button>
         </div>
+        {stats?.revenueCheck && (
+          <p
+            className={`mt-3 rounded-2xl px-4 py-2 text-xs font-bold ${stats.revenueCheck.alert ? 'bg-rose-50 border border-rose-200 text-rose-700' : 'bg-emerald-50 border border-emerald-200 text-emerald-700'}`}
+            role={stats.revenueCheck.alert ? 'alert' : 'status'}
+            data-ads-revenue-alert={stats.revenueCheck.alert ? 'on' : 'off'}
+          >
+            {stats.revenueCheck.alert ? '⚠️ ' : '✓ '}
+            {t(stats.revenueCheck.alert ? 'ads.admin.revenueAlert' : 'ads.admin.revenueOk', { est: usd(stats.revenueCheck.estimatedMicroUsd), ver: usd(stats.revenueCheck.verifiedMicroUsd) })}
+          </p>
+        )}
         {stats && (
           <>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">

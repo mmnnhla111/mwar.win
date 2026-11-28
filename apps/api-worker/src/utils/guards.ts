@@ -41,3 +41,7 @@ export async function walletBalance(db: D1Database, userId: string): Promise<big
 export const PLATFORM_ACCOUNT_ID = 'SYSTEM_PLATFORM';
 /** Ledger account of the Energy Recharge Reserve Pool (20 % of every reward split). */
 export const ENERGY_POOL_ACCOUNT_ID = 'SYSTEM_ENERGY_POOL';
+/** Ledger account of the V1.2 Boss Bounty Pool (5 % of verified gross ad value + the redirected 5 % fee). */
+export const BOSS_POOL_ACCOUNT_ID = 'SYSTEM_BOSS_POOL';
+/** Ledger account of the V1.2 Platform Safety Reserve (3 % of verified gross ad value). */
+export const SAFETY_RESERVE_ACCOUNT_ID = 'SYSTEM_SAFETY_RESERVE';

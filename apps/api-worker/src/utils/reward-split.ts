@@ -1,9 +1,11 @@
-import { calculateRewardSplit, type FinancialLog } from '@mwar/shared';
+import { calculateRewardSplit, type AdGrossSplit, type FinancialLog } from '@mwar/shared';
 import type { D1PreparedStatement } from '@cloudflare/workers-types';
 import type { Env } from '../types';
 import { getUplines } from './mlm-tree';
 import { logFinancialTransaction, walletBalance } from './audit-logger';
-import { PLATFORM_ACCOUNT_ID, ENERGY_POOL_ACCOUNT_ID } from './guards';
+import { PLATFORM_ACCOUNT_ID, ENERGY_POOL_ACCOUNT_ID, BOSS_POOL_ACCOUNT_ID } from './guards';
+import { redirectPlatformFeeToBoss } from './platform-settings';
+import { logAdHaircut } from './energy-tickets';
 import { ledgerAfterUpdate } from './ledger';
 import { recordPendingMlmCommission, trackQuestAction, getUtcDateKey } from '../routes/quests';
 
@@ -16,6 +18,8 @@ const rid = () => Math.random().toString(36).substring(2, 7);
  *           paid at midnight if the sponsor completed 4 quests, otherwise forfeited to the platform)
  *    5 %  → earner's own head bounty (wallets.bounty_micro_usd) — claimed by whoever eliminates them
  *    5 %  → platform / system (+ every missing upline level and rounding remainder)
+ *           V1.2: while platform_settings.redirect_platform_fee_to_boss is on (launch default) the 5 % fee
+ *           (floor(V × 5 %)) goes to system_balances.boss_bounty_pool_micro_usd instead; the rollover stays platform
  *   20 %  → Energy Recharge Reserve Pool (system_balances.energy_pool_micro_usd), backs ad / cheer EC
  */
 export async function applyRewardSplit(
@@ -23,7 +27,7 @@ export async function applyRewardSplit(
   opts: {
     earnerId: string;
     grossMicroUsd: number;
-    actionType: 'GAME_KILL' | 'CHEST_OPEN' | 'AD_WATCH' | 'CHEER_REWARD';
+    actionType: 'GAME_KILL' | 'CHEST_OPEN' | 'AD_WATCH' | 'CHEER_REWARD' | 'BOSS_BOUNTY_CLAIM';
     sourceId?: string | null;
     dateKey?: string;
     /**
@@ -38,6 +42,11 @@ export async function applyRewardSplit(
      * backing (pool − drawn unchanged), so the cheer allocates exactly 100 % of V.
      */
     energyPoolPassThrough?: boolean;
+    /**
+     * V1.2 verified ad revenue: the 3 % safety + 5 % boss-pool part of the gross whose net value is this V,
+     * credited in the SAME batch (so the whole gross enters the system exactly once).
+     */
+    adHaircut?: Pick<AdGrossSplit, 'safetyReserveMicroUsd' | 'bossPoolMicroUsd'>;
   }
 ) {
   const dateKey = opts.dateKey ?? getUtcDateKey();
@@ -49,7 +58,12 @@ export async function applyRewardSplit(
 
   // 1. Earner 55 % + head bounty 5 % + Energy Pool 20 % + platform total (one atomic D1 batch)
   const pool = Number(split.energyPoolMicroUsd);
-  const platform = Number(split.platformTotalMicroUsd) + Math.max(0, Math.floor(opts.extraPlatformMicroUsd ?? 0));
+  // V1.2: the 5 % fee → Boss Bounty Pool while the admin switch is on (launch default)
+  const toBoss = (await redirectPlatformFeeToBoss(env)) ? Number(split.platformFeeMicroUsd) : 0;
+  const platform = Number(split.platformTotalMicroUsd) - toBoss + Math.max(0, Math.floor(opts.extraPlatformMicroUsd ?? 0));
+  const hc = opts.adHaircut;
+  const safetyIn = Math.max(0, Math.floor(hc?.safetyReserveMicroUsd ?? 0));
+  const bossIn = toBoss + Math.max(0, Math.floor(hc?.bossPoolMicroUsd ?? 0));
   await env.DB.batch([
     ...(opts.guard ?? []),
     env.DB.prepare(
@@ -57,11 +71,14 @@ export async function applyRewardSplit(
     ).bind(earner, bounty, now, opts.earnerId),
     ledgerAfterUpdate(env.DB, opts.earnerId, earner, opts.actionType, opts.sourceId ?? null, now),
     env.DB.prepare(
-      `INSERT INTO system_balances (id, energy_pool_micro_usd, energy_pool_drawn_micro_usd, platform_micro_usd, updated_at) VALUES ('global', ?1, ?4, ?2, ?3)
+      `INSERT INTO system_balances (id, energy_pool_micro_usd, energy_pool_drawn_micro_usd, platform_micro_usd, boss_bounty_pool_micro_usd, safety_reserve_micro_usd, updated_at)
+       VALUES ('global', ?1, ?4, ?2, ?5, ?6, ?3)
        ON CONFLICT(id) DO UPDATE SET energy_pool_micro_usd = energy_pool_micro_usd + ?1, energy_pool_drawn_micro_usd = energy_pool_drawn_micro_usd + ?4,
-                                     platform_micro_usd = platform_micro_usd + ?2, updated_at = ?3`
-    ).bind(pool, platform, now, opts.energyPoolPassThrough ? pool : 0),
+                                     platform_micro_usd = platform_micro_usd + ?2, boss_bounty_pool_micro_usd = boss_bounty_pool_micro_usd + ?5,
+                                     safety_reserve_micro_usd = safety_reserve_micro_usd + ?6, updated_at = ?3`
+    ).bind(pool, platform, now, opts.energyPoolPassThrough ? pool : 0, bossIn, safetyIn),
   ]);
+  if (hc) await logAdHaircut(env, hc, opts.sourceId ?? opts.actionType, opts.earnerId);
 
   // 2. Upline 15 % into the daily grey/green ledger
   for (const p of split.uplinePayouts) {
@@ -101,6 +118,19 @@ export async function applyRewardSplit(
       source_game_id: src,
       related_user_id: opts.earnerId,
     },
+    ...(toBoss > 0
+      ? [
+          {
+            transaction_id: `${base}_boss_fee`,
+            user_id: BOSS_POOL_ACCOUNT_ID,
+            action_type: 'BOSS_POOL_CREDIT' as const,
+            amount_micro_usd: BigInt(toBoss),
+            balance_after_micro_usd: 0n,
+            source_game_id: src,
+            related_user_id: opts.earnerId,
+          },
+        ]
+      : []),
     {
       transaction_id: `${base}_energy`,
       user_id: ENERGY_POOL_ACCOUNT_ID,
@@ -135,7 +165,7 @@ export async function applyRewardSplit(
     })),
   ];
   for (const l of logs) await logFinancialTransaction(env, l);
-  return split;
+  return { ...split, bossFeeMicroUsd: BigInt(toBoss) };
 }
 
 /**

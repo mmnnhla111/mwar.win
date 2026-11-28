@@ -39,11 +39,13 @@ export const AD_MULT_MIN_PCT = 10;
 export const AD_MULT_MAX_PCT = 150;
 
 export const DEFAULT_AD_MULTIPLIERS: Record<AdSlot, number> = {
-  adsterra_300x250: 100,
-  adsterra_320x50: 85,
+  // V1.2 conservative launch values (audit H3): banners 60 %, direct links 35 % of the statistical eCPM,
+  // raised later from the networks' real reports (P1 / P2)
+  adsterra_300x250: 60,
+  adsterra_320x50: 60,
   monetag_inpage: 50,
-  monetag_direct: 50,
-  adsterra_smartlink: 45,
+  monetag_direct: 35,
+  adsterra_smartlink: 35,
 };
 
 /** Direct-link visits: how long the ad tab must stay open (seconds) before the claim is accepted. */
@@ -168,9 +170,35 @@ export interface AdStatsRow {
   estMicroUsd: number;
   ecBp: number;
 }
+/**
+ * V1.2 (audit H3): estimated ad value the system credited (P2/P3 valuations of real network slots) vs the
+ * revenue the networks themselves reported (P1 postbacks with estimated_price), last 7 days.
+ * `alert` is true when the estimate is above the verified revenue.
+ */
+export interface AdRevenueCheck {
+  estimatedMicroUsd: number;
+  verifiedMicroUsd: number;
+  estimatedImpressions: number;
+  verifiedImpressions: number;
+  alert: boolean;
+}
+/** /admin → Ad Networks → economy card (super_admin): system pools + the boss-fee toggle. */
+export interface EconomyStatus {
+  redirectPlatformFeeToBoss: boolean;
+  bossBountyPoolMicroUsd: number;
+  /** Golden Boss draws currently reserved (status 'reserved'), not in the pool any more. */
+  bossReservedMicroUsd: number;
+  bossReservedCount: number;
+  safetyReserveMicroUsd: number;
+  platformMicroUsd: number;
+  energyPoolUnspentMicroUsd: number;
+  settingUpdatedAt: number | null;
+  settingUpdatedBy: string | null;
+}
 export interface AdStats {
   today: AdStatsRow;
   last7: AdStatsRow;
+  revenueCheck?: AdRevenueCheck;
   topCountries: (AdStatsRow & { country: string })[];
   byNetwork: (AdStatsRow & { network: string })[];
   bySlot: (AdStatsRow & { slot: string })[];
