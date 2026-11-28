@@ -19,3 +19,15 @@ export function bannerContextPayload(): { fastMiniEntryId?: string } {
 export function bannerBatchSize(normal: number): number {
   return fastMiniEntryId ? 1 : normal;
 }
+
+/**
+ * V1.2 C Streamer Room attribution: while the player SPECTATES a registry room, direct-link (rewarded) ads carry
+ * its room code. The Worker credits the room's streamer only from the VERIFIED (postback-priced) value.
+ */
+let adRoomCode: string | null = null;
+export function setAdRoomCode(code: string | null) {
+  adRoomCode = code && /^[A-Z0-9][A-Z0-9_-]{1,15}$/.test(code) ? code : null;
+}
+export function adRoomPayload(): { roomCode?: string } {
+  return adRoomCode ? { roomCode: adRoomCode } : {};
+}

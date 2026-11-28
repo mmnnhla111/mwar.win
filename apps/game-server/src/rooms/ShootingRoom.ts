@@ -29,12 +29,33 @@ import {
   KILL_MINUTE_LIMIT,
   BOSS_BOUNTY_EVENT_INTERVAL_MS,
   BOSS_BOUNTY_MIN_PLAYERS,
+  GIFT_CROWN_MS,
+  SPECTATOR_GIFTS,
 } from '@mwar/shared';
 import type { IncomingMessage } from 'http';
-import type { BatchPayoutItem } from '@mwar/shared';
+import type { BatchPayoutItem, LiveConfigResponse } from '@mwar/shared';
 import { GameState, PlayerState, ChestState, DroppedWeaponState, MedkitState, clonePlayerState } from '../schema/GameState';
-import { getRegistryRoom } from '../roomRegistry';
+import { getRegistryRoom, refreshRegistry } from '../roomRegistry';
 import { validateShot } from '../ballistics';
+import {
+  BOT_AVATARS,
+  BOT_DAMAGE_SHARE,
+  BOT_ENGAGE_M,
+  BOT_HIT_CHANCE,
+  BOT_NAMES,
+  BOT_RESPAWN_MS,
+  BOT_SPEED_MPS,
+  BOT_WEAPON,
+  cleanChat,
+  cleanSkin,
+  groundY,
+  newBotId,
+  verifyGiftToken,
+  verifyViewerToken,
+  walkable,
+  yawTo,
+  type BotBrain,
+} from '../liveFeatures';
 
 /**
  * Load-test harness switch: the legacy "trust the client's hit" rule, so scripted bots that do not aim can
@@ -247,6 +268,8 @@ const MEDKIT_CAST_MS = 4000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const TICKET_ID_RE = /^tkt_[A-Za-z0-9_-]{8,80}$/;
+/** V1.2 C: payout-item user of a bot bounty RELEASE (no player is involved; the Worker keys it by reservation id). */
+const BOT_RELEASE_USER_ID = '00000000-0000-4000-8000-000000000000';
 
 export interface EntryTokenClaims {
   uid: string;
@@ -262,6 +285,9 @@ export interface EntryTokenClaims {
   fm: boolean;
   /** V1.1 R2: "Play again (-1 EC)" token (a new ticket for a dead player of the same account). */
   rs: boolean;
+  /** V1.2 C cosmetic skin slugs (equipped + owned, from D1). */
+  ws: string;
+  os: string;
 }
 
 /** Verify the HMAC-SHA256 entry token minted by POST /api/game/enter (1 EC spent). */
@@ -276,6 +302,8 @@ export function verifyEntryToken(token: unknown, secret: string): EntryTokenClai
     if (typeof json.uid !== 'string' || !UUID_RE.test(json.uid)) return null;
     // V1.1 R3: a Rejoin token is never an entry token (it carries no stake and must not open a new seat)
     if (json.rj !== undefined) return null;
+    // V1.2 C: gift / viewer tokens (k: 'gift' | 'viewer') are never entry tokens either
+    if (json.k !== undefined) return null;
     const bty = Number(json.bty);
     const tv = Number(json.tv);
     const tid = typeof json.tid === 'string' && TICKET_ID_RE.test(json.tid) ? json.tid : '';
@@ -289,6 +317,8 @@ export function verifyEntryToken(token: unknown, secret: string): EntryTokenClai
       tv: tid && Number.isFinite(tv) && tv > 0 ? Math.floor(tv) : 0,
       fm: json.fm === 1 || json.fm === true,
       rs: json.rs === 1 || json.rs === true,
+      ws: cleanSkin(json.ws),
+      os: cleanSkin(json.os),
     };
   } catch {
     return null;
@@ -374,12 +404,28 @@ export class ShootingRoom extends Room<GameState> {
   private boss: { reservationId: string; userId: string; entryId: string; amount: number; startedAt: number } | null = null;
   private bossDrawing = false;
   private bossIntervalMs = BOSS_BOUNTY_EVENT_INTERVAL_MS;
+  /** V1.2 C: Worker live config (bot fill, Happy Hour badge) — polled, never decides money here. */
+  private liveCfg: LiveConfigResponse | null = null;
+  /** V1.2 C cold-start bots of this room (state key → brain). */
+  private bots = new Map<string, BotBrain>();
+  private lastBotReconcile = 0;
+  /** V1.2 C gift tokens already shown (each Worker-signed gift is broadcast once). */
+  private usedGiftIds = new Set<string>();
+  /** V1.2 C verified identity of signed-in spectators (viewer token) + chat rate limit. */
+  private viewers = new Map<string, { uid: string; un: string }>();
+  private chatLast = new Map<string, number>();
+  private streamerRoom = false;
 
-  onCreate(options: RoomOptions) {
+  async onCreate(options: RoomOptions) {
     this.setState(new GameState());
 
     // Registry rooms: mode, map and seat caps are whatever the admin configured for that room code
-    const reg = options.roomCode ? getRegistryRoom(options.roomCode) : null;
+    let reg = options.roomCode ? getRegistryRoom(options.roomCode) : null;
+    // V1.2 C: a Streamer Room opened a moment ago may not be in the 60 s registry copy yet → refresh once
+    if (options.roomCode && !reg && /^LIVE-[A-Z0-9]{6}$/i.test(String(options.roomCode))) {
+      await refreshRegistry();
+      reg = getRegistryRoom(options.roomCode);
+    }
     if (options.roomCode && !reg) throw new Error('This room is closed');
     const engineMode = reg ? reg.engineMode : options.mode ?? 'mini_30';
     const modeKey = engineMode === 'standard_100' ? 'STANDARD_100' : 'MINI_30';
@@ -400,7 +446,10 @@ export class ShootingRoom extends Room<GameState> {
     this.fastMini = engineMode === 'fast_mini';
     this.engineMode = engineMode === 'standard_100' ? 'standard_100' : engineMode === 'fast_mini' ? 'fast_mini' : 'mini_30';
     this.paidRoom = !this.fastMini && (reg ? reg.entryCostEc > 0 : true);
-    this.setMetadata({ roomCode: this.roomCode, mode: engineMode, mapSize: kind });
+    this.streamerRoom = !!reg?.isStreamerRoom;
+    this.state.isStreamerRoom = this.streamerRoom;
+    this.state.streamerUserId = reg?.streamerUserId || '';
+    this.setMetadata({ roomCode: this.roomCode, mode: engineMode, mapSize: kind, isStreamerRoom: this.streamerRoom });
     this.state.mapMode = engineMode === 'fast_mini' ? 'fast_mini' : spec.id;
     this.state.mapSizeX = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
     this.state.mapSizeZ = this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE;
@@ -447,6 +496,11 @@ export class ShootingRoom extends Room<GameState> {
     const bossSec = Number(process.env.BOSS_BOUNTY_INTERVAL_SECONDS);
     if (Number.isFinite(bossSec) && bossSec > 0 && process.env.NODE_ENV !== 'production') this.bossIntervalMs = bossSec * 1000;
     if (this.paidRoom && !this.fastMini) this.clock.setInterval(() => void this.goldenBossTick(), this.bossIntervalMs);
+
+    // 7. V1.2 C live config (Happy Hour badge, bot fill) every 30 s + cold-start bots at 5 Hz
+    void this.pollLiveConfig();
+    this.clock.setInterval(() => void this.pollLiveConfig(), 30_000);
+    this.clock.setInterval(() => this.botTick(), 200);
   }
 
   private registerMessageHandlers() {
@@ -802,6 +856,55 @@ export class ShootingRoom extends Room<GameState> {
       client.send('restake_result', { ok: true, entryId: entry.eid, ticketMicroUsd: entry.tv });
     });
 
+    // V1.2 C Spectator gift: only a Worker-signed gift token (issued AFTER the atomic D1 payment) for THIS room,
+    // each gift once. The client's word that a gift happened is never enough.
+    this.onMessage('spectator_gift', (client, data: { token?: string }) => {
+      const g = verifyGiftToken(data?.token, this.internalSecret);
+      if (!g || g.roomId !== this.roomId || this.usedGiftIds.has(g.gid)) {
+        client.send('gift_result', { ok: false, reason: !g ? 'invalid_token' : g.roomId !== this.roomId ? 'wrong_room' : 'used' });
+        return;
+      }
+      this.usedGiftIds.add(g.gid);
+      let targetSid = '';
+      let target: PlayerState | undefined;
+      if (g.receiverId) {
+        this.state.players.forEach((p, sid) => {
+          if (!target && p.id === g.receiverId && !p.isSpectator && !p.isBot) {
+            target = p;
+            targetSid = sid;
+          }
+        });
+      }
+      const def = SPECTATOR_GIFTS[g.giftCode];
+      if (def.overheadCrown && target) target.giftCrownUntil = Date.now() + GIFT_CROWN_MS;
+      this.broadcast('spectator_gift', {
+        giftId: g.gid,
+        giftCode: g.giftCode,
+        senderUsername: g.senderName,
+        targetUserId: target?.id ?? g.receiverId,
+        targetSessionId: targetSid,
+        targetUsername: target?.username ?? '',
+        receiverMicroUsd: g.receiverMicroUsd,
+        roomBanner: def.roomBanner,
+      });
+      client.send('gift_result', { ok: true, giftId: g.gid });
+    });
+
+    // V1.2 C Streamer Room chat: signed-in spectators (viewer token) and players, 1 message / 2 s, ≤ 140 chars
+    this.onMessage('room_chat', (client, data: { text?: string }) => {
+      if (!this.streamerRoom) return;
+      const p = this.state.players.get(client.sessionId);
+      const viewer = this.viewers.get(client.sessionId);
+      const name = viewer?.un || (p && UUID_RE.test(p.id) ? p.username : '');
+      if (!name) return client.send('room_chat_refused', { reason: 'sign_in' });
+      const now = Date.now();
+      if (now - (this.chatLast.get(client.sessionId) ?? 0) < 2000) return;
+      const text = cleanChat(data?.text);
+      if (!text) return;
+      this.chatLast.set(client.sessionId, now);
+      this.broadcast('room_chat', { username: name, text, spectator: !!p?.isSpectator, streamer: !!p && p.id === this.state.streamerUserId, at: now });
+    });
+
     // Anti-AFK Captcha Verification Response
     this.onMessage('afk_captcha_solved', (client) => {
       const player = this.state.players.get(client.sessionId);
@@ -914,7 +1017,24 @@ export class ShootingRoom extends Room<GameState> {
       );
     }
 
-    if (killer && killerSessionId && killerSessionId !== targetSessionId) {
+    if (killer && killerSessionId && killerSessionId !== targetSessionId && (killer.isBot || target.isBot)) {
+      // V1.2 C cold-start bot kill: bots never earn — a bot's kill returns the victim's stake (no payout to anyone);
+      // a player's kill on a bot claims only the bot's Worker reservation (Boss Bounty Pool), paid seats only
+      killer.kills += 1;
+      const won = this.settleBotKill(target, targetSessionId, killer, killerSessionId);
+      this.broadcast('player_killed', {
+        killerId: killer.id,
+        killerUsername: killer.username,
+        victimId: target.id,
+        victimUsername: target.username,
+        rewardMicroUsd: won,
+        bountyClaimedMicroUsd: 0,
+        ticketMicroUsd: 0,
+        fastMini: false,
+        goldenBossMicroUsd: 0,
+        botKill: true,
+      });
+    } else if (killer && killerSessionId && killerSessionId !== targetSessionId) {
       // 1. Weapon/Combat Kill by another player:
       // Kills by another player do NOT drop a Bounty Chest!
       killer.kills += 1;
@@ -987,7 +1107,9 @@ export class ShootingRoom extends Room<GameState> {
         bountyMicroUsd: target.bountyMicroUsd,
         bountyLostMicroUsd: killer && killerSessionId !== targetSessionId ? Math.max(0, this.lastBountyLost) : 0,
         /** Ticket value this life held (taken by the killer's 55/15/5/5/20 split, or dropped in the chest). */
-        stakeLostMicroUsd: stakeHeldMicroUsd,
+        /** V1.2 C: a cold-start bot's kill takes nothing — the stake was returned. */
+        stakeLostMicroUsd: killer?.isBot ? 0 : stakeHeldMicroUsd,
+        killedByBot: !!killer?.isBot,
       });
     }
     this.lastBountyLost = 0;
@@ -1212,7 +1334,7 @@ export class ShootingRoom extends Room<GameState> {
       let left = this.chestRemaining.get(id) ?? Math.max(0, chest.expiresAt - now);
       let near = false;
       this.state.players.forEach((p) => {
-        if (near || p.isGhost || p.isSpectator || p.isDisconnected) return;
+        if (near || p.isGhost || p.isSpectator || p.isDisconnected || p.isBot) return;
         if ((p.x - chest.x) ** 2 + (p.z - chest.z) ** 2 <= CHEST_PAUSE_RADIUS_M ** 2) near = true;
       });
       if (!near) left -= chestDt;
@@ -1258,7 +1380,7 @@ export class ShootingRoom extends Room<GameState> {
     // (V1.1 R2: no automatic respawn — dead players wait on the death & round summary until they choose)
 
     this.state.players.forEach((player, sessionId) => {
-      if (player.isSpectator) return; // spectators are never AFK-kicked by combat rules
+      if (player.isSpectator || player.isBot) return; // spectators / cold-start bots are never AFK-kicked
       // V1.1 R3: a disconnected body is never AFK-kicked (it stays killable until it dies / the room shuts down);
       // its away time does not count — the AFK clock restarts on Rejoin
       if (player.isDisconnected) return;
@@ -1395,6 +1517,8 @@ export class ShootingRoom extends Room<GameState> {
           if (j && Array.isArray(j.fastMini)) this.applyFastMiniResults(j.fastMini);
           const jb = j as { boss?: Array<{ killerId: string; victimId: string; amountMicroUsd: number; shooterMicroUsd: number }> } | null;
           if (jb && Array.isArray(jb.boss)) this.applyBossResults(jb.boss);
+          const jh = j as { bots?: Array<{ killerId: string; amountMicroUsd: number; shooterMicroUsd: number; happyHourMicroUsd: number }>; happyHourMicroUsd?: number } | null;
+          if (jh && Array.isArray(jh.bots)) for (const r of jh.bots) console.log(`[ShootingRoom] Bot bounty paid: ${r.killerId} won ${r.amountMicroUsd} µUSD (shooter ${r.shooterMicroUsd}, happy hour +${r.happyHourMicroUsd})`);
           return true;
         }
       } catch {
@@ -1437,7 +1561,7 @@ export class ShootingRoom extends Room<GameState> {
    * Paid seats: a valid EC entry token (signed by the API worker after spending 1 EC) makes the seat
    * earn Micro-USD. Everyone else may still play, but as an unpaid guest.
    */
-  onAuth(client: Client, options: { entryToken?: string; rejoinToken?: string; deviceId?: string; spectator?: boolean }, request?: IncomingMessage) {
+  onAuth(client: Client, options: { entryToken?: string; rejoinToken?: string; deviceId?: string; spectator?: boolean; viewerToken?: string }, request?: IncomingMessage) {
     const fwd = request?.headers?.['cf-connecting-ip'] || request?.headers?.['x-forwarded-for'];
     const ip = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim() || request?.socket?.remoteAddress || 'unknown';
     // V1.1 R3 Rejoin: a Worker-signed token for THIS room + an alive body of that account and life. The seat is
@@ -1454,7 +1578,7 @@ export class ShootingRoom extends Room<GameState> {
     if (this.roomCode) {
       let players = 0;
       let spectators = 0;
-      this.state.players.forEach((p) => (p.isSpectator ? spectators++ : players++));
+      this.state.players.forEach((p) => (p.isSpectator ? spectators++ : p.isBot ? 0 : players++));
       if (options?.spectator ? spectators >= this.maxSpectators : players >= this.maxPlayers) {
         throw new Error(options?.spectator ? 'Spectator seats are full' : 'This room is full');
       }
@@ -1487,7 +1611,282 @@ export class ShootingRoom extends Room<GameState> {
       entryId: valid && entry ? entry.eid : '',
       fmPot: fmSeat && entry && UUID_RE.test(entry.eid) && UUID_RE.test(entry.uid) ? entry.eid : '',
     });
-    return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0, ticket: paid ? entry.tv : 0 } : { userId: null };
+    // V1.2 C: a signed-in spectator (Worker viewer token) keeps their identity for room chat / gift display
+    if (!entry && options?.spectator) {
+      const v = verifyViewerToken(options.viewerToken, this.internalSecret);
+      if (v) {
+        this.viewers.set(client.sessionId, v);
+        return { userId: v.uid, username: v.un, viewer: true };
+      }
+    }
+    return entry ? { userId: entry.uid, username: entry.un, bounty: paid ? entry.bty : 0, ticket: paid ? entry.tv : 0, ws: entry.ws, os: entry.os } : { userId: null };
+  }
+
+  // ---- V1.2 C live config + cold-start bots -------------------------------------------------------------
+
+  /** Worker live config: Happy Hour badge (the Worker decides and pays the 2x) + bot fill target. */
+  private async pollLiveConfig() {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch(`${this.workerApiUrl}/api/game/live-config`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) return;
+      const j = (await res.json()) as LiveConfigResponse;
+      if (!j?.botFill || !j?.happyHour) return;
+      this.liveCfg = j;
+      this.state.happyHour = !!j.happyHour.active;
+      this.state.happyHourEndsAt = Number(j.happyHour.endsAt) || 0;
+    } catch {
+      // Worker unreachable: keep the last copy (no bots are added without a config)
+    }
+  }
+
+  /** Real (non-bot) seats: alive players, dead players waiting on the death screen and disconnected bodies. */
+  private realPlayerCount() {
+    let n = 0;
+    this.state.players.forEach((p) => {
+      if (!p.isBot && !p.isSpectator) n++;
+    });
+    return n;
+  }
+
+  /**
+   * 5 Hz: keep `targetBots − real players` server-side bots in the arena while bot fill is on (and at least one real
+   * player is here), then drive them. Bots obey validateShot() (range, aim cone, walls) like every client shot.
+   */
+  private botTick() {
+    const now = Date.now();
+    if (now - this.lastBotReconcile >= 3000) {
+      this.lastBotReconcile = now;
+      const cfg = this.liveCfg?.botFill;
+      const real = this.realPlayerCount();
+      const want = cfg?.enabled && real > 0 ? Math.max(0, cfg.targetBots - real) : 0;
+      const have = this.bots.size;
+      if (have < want) for (let i = have; i < want; i++) this.spawnBot();
+      else if (have > want) {
+        const extra = [...this.bots.keys()].slice(0, have - want);
+        for (const sid of extra) this.despawnBot(sid, 'despawn');
+      }
+      this.state.botCount = this.bots.size;
+    }
+    if (!this.bots.size) return;
+    const dt = 0.2;
+    for (const [sid, brain] of this.bots) {
+      const bot = this.state.players.get(sid);
+      if (!bot) {
+        this.bots.delete(sid);
+        continue;
+      }
+      bot.lastActiveTime = now;
+      if (bot.isGhost) {
+        if (brain.respawnAt && now >= brain.respawnAt) this.respawnBot(sid, bot, brain);
+        continue;
+      }
+      // nearest real, alive, visible target in engage range
+      let target: PlayerState | null = null;
+      let targetSid = '';
+      let best = Infinity;
+      this.state.players.forEach((p, psid) => {
+        if (p.isBot || p.isGhost || p.isSpectator || p.health <= 0) return;
+        const d = Math.hypot(p.x - bot.x, p.z - bot.z);
+        if (d < best && d <= BOT_ENGAGE_M) {
+          best = d;
+          target = p;
+          targetSid = psid;
+        }
+      });
+      const tgt = target as PlayerState | null;
+      if (tgt) {
+        bot.rotationY = yawTo(bot.x, bot.z, tgt.x, tgt.z);
+        if (now >= brain.nextShotAt) {
+          brain.nextShotAt = now + 650 + Math.random() * 650;
+          const v = validateShot({ shooter: bot, target: tgt, weapon: BOT_WEAPON, aimYaw: bot.rotationY, largeMap: this.largeMap });
+          if (v.ok && Math.random() < BOT_HIT_CHANCE) this.applyBotHit(bot, sid, targetSid, Math.round(WEAPON_SPECS[BOT_WEAPON].damage * BOT_DAMAGE_SHARE));
+        }
+        if (best < 18) continue; // hold position in close combat
+      }
+      // patrol towards the waypoint (a ground spawn point); pick another when reached or blocked
+      const dx = brain.waypoint.x - bot.x;
+      const dz = brain.waypoint.z - bot.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 2) {
+        brain.waypoint = this.botWaypoint(bot);
+        continue;
+      }
+      const step = Math.min(dist, BOT_SPEED_MPS * dt);
+      const nx = bot.x + (dx / dist) * step;
+      const nz = bot.z + (dz / dist) * step;
+      if (!walkable(bot.x, bot.z, nx, nz, this.largeMap)) {
+        brain.waypoint = this.botWaypoint(bot);
+        continue;
+      }
+      bot.x = nx;
+      bot.z = nz;
+      bot.y = groundY(nx, nz, this.largeMap);
+      if (!tgt) bot.rotationY = yawTo(bot.x, bot.z, brain.waypoint.x, brain.waypoint.z);
+    }
+  }
+
+  /** A patrol target the bot can walk to in a straight line (a ground spawn point, else a nearby open spot). */
+  private botWaypoint(from?: { x: number; z: number }) {
+    const ground = this.spawnPoints.filter((p) => this.largeMap || p.y === 0);
+    const pick = () => ground[Math.floor(Math.random() * ground.length)] || { x: 0, z: 0 };
+    if (!from) {
+      const p = pick();
+      return { x: p.x, z: p.z };
+    }
+    for (let i = 0; i < 6; i++) {
+      const p = pick();
+      if (Math.hypot(p.x - from.x, p.z - from.z) > 3 && walkable(from.x, from.z, p.x, p.z, this.largeMap)) return { x: p.x, z: p.z };
+    }
+    const half = (this.largeMap ? LARGE_MAP_SIZE : SMALL_MAP_SIZE) / 2 - 5;
+    for (let i = 0; i < 8; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 6 + Math.random() * 14;
+      const x = Math.max(-half, Math.min(half, from.x + Math.cos(a) * d));
+      const z = Math.max(-half, Math.min(half, from.z + Math.sin(a) * d));
+      if (walkable(from.x, from.z, x, z, this.largeMap)) return { x, z };
+    }
+    return { x: from.x, z: from.z };
+  }
+
+  private spawnBot() {
+    const sid = newBotId();
+    const bot = new PlayerState();
+    bot.id = sid;
+    bot.sessionId = sid;
+    bot.isBot = true;
+    bot.username = `[BOT] ${BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]}`;
+    bot.avatarId = BOT_AVATARS[Math.floor(Math.random() * BOT_AVATARS.length)];
+    bot.primaryWeapon = BOT_WEAPON;
+    bot.currentWeapon = BOT_WEAPON;
+    bot.magAmmo = 0; // bots never drop a usable weapon
+    bot.reserveAmmo = 0;
+    bot.grenadesRemaining = 0;
+    const wp = this.botWaypoint();
+    bot.x = wp.x;
+    bot.z = wp.z;
+    bot.y = groundY(wp.x, wp.z, this.largeMap);
+    bot.health = 100;
+    bot.lastActiveTime = Date.now();
+    const brain: BotBrain = { sid, waypoint: this.botWaypoint(wp), nextShotAt: Date.now() + 2000, respawnAt: 0, reservationId: '', bountyMicroUsd: 0, reserving: false };
+    this.state.players.set(sid, bot);
+    this.bots.set(sid, brain);
+    void this.reserveBotBounty(sid);
+  }
+
+  private respawnBot(sid: string, bot: PlayerState, brain: BotBrain) {
+    const wp = this.botWaypoint();
+    bot.x = wp.x;
+    bot.z = wp.z;
+    bot.y = groundY(wp.x, wp.z, this.largeMap);
+    bot.health = 100;
+    bot.isGhost = false;
+    brain.respawnAt = 0;
+    brain.nextShotAt = Date.now() + 2500;
+    brain.waypoint = this.botWaypoint(wp);
+    void this.reserveBotBounty(sid);
+  }
+
+  /** Paid-EC rooms only: ask the Worker for a bounty from the Boss Bounty Pool (0 C bots when the pool is low). */
+  private async reserveBotBounty(sid: string) {
+    const brain = this.bots.get(sid);
+    if (!brain || brain.reserving || brain.reservationId || !this.paidRoom || this.fastMini) return;
+    brain.reserving = true;
+    try {
+      const res = await fetch(`${this.workerApiUrl}/api/game/bot-bounty/reserve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret: this.internalSecret, gameId: this.gameId, roomId: this.roomId, botId: sid }),
+      });
+      const r = res.ok ? ((await res.json().catch(() => null)) as { reserved?: boolean; reservationId?: string; amountMicroUsd?: number } | null) : null;
+      if (!r?.reserved || typeof r.reservationId !== 'string' || !(Number(r.amountMicroUsd) > 0)) return;
+      const bot = this.state.players.get(sid);
+      const still = this.bots.get(sid);
+      if (!bot || !still || bot.isGhost) {
+        // despawned / killed while the Worker answered → straight back to the pool
+        this.pendingPayouts.push({ userId: BOT_RELEASE_USER_ID, amountMicroUsd: 0, actionType: 'BOT_BOUNTY_RELEASE', gameId: this.gameId, metadata: { reservationId: r.reservationId, botId: sid, reason: 'gone', pid: this.nextPid() } });
+        return;
+      }
+      still.reservationId = r.reservationId;
+      still.bountyMicroUsd = Math.floor(Number(r.amountMicroUsd));
+      bot.ticketMicroUsd = still.bountyMicroUsd; // shown on the value badge: what eliminating this bot can pay
+    } catch {
+      // Worker unreachable: this bot carries no bounty
+    } finally {
+      const b = this.bots.get(sid);
+      if (b) b.reserving = false;
+    }
+  }
+
+  private releaseBotBounty(sid: string, brain: BotBrain, reason: string) {
+    if (!brain.reservationId) return;
+    this.pendingPayouts.push({ userId: BOT_RELEASE_USER_ID, amountMicroUsd: 0, actionType: 'BOT_BOUNTY_RELEASE', gameId: this.gameId, metadata: { reservationId: brain.reservationId, botId: sid, reason, pid: this.nextPid() } });
+    brain.reservationId = '';
+    brain.bountyMicroUsd = 0;
+  }
+
+  private despawnBot(sid: string, reason: string) {
+    const brain = this.bots.get(sid);
+    if (brain) this.releaseBotBounty(sid, brain, reason);
+    this.bots.delete(sid);
+    this.state.players.delete(sid);
+    this.state.botCount = this.bots.size;
+  }
+
+  /** A bot's validated, landed shot (server-side only; never paid). */
+  private applyBotHit(bot: PlayerState, botSid: string, targetSid: string, damage: number) {
+    const target = this.state.players.get(targetSid);
+    if (!target || target.isGhost || target.isSpectator || target.isBot) return;
+    if (target.isProp) {
+      target.isProp = false;
+      target.disguisePropId = '';
+    }
+    target.health = Math.max(0, target.health - damage);
+    if (target.health === 0) this.handlePlayerElimination(target, targetSid, bot, botSid);
+    else this.clients.find((c) => c.sessionId === targetSid)?.send('player_damaged', { targetSessionId: targetSid, newHealth: target.health, damage, byBot: true });
+  }
+
+  /**
+   * Settle a kill that involves a bot. Returns what the killer can be paid (the bot's reservation, 0 otherwise).
+   *  · bot killed a real player → the victim's ticket stake is RETURNED (bot_kill: nobody is paid, nothing forfeited);
+   *    a Golden Boss killed by a bot releases its reservation; the head bounty stays with the victim
+   *  · a player killed a bot → BOT_BOUNTY_CLAIM for a paid, unflagged seat (the Worker pays the reservation 55/15/5/5/20),
+   *    otherwise the reservation is released
+   */
+  private settleBotKill(target: PlayerState, targetSid: string, killer: PlayerState, killerSid: string): number {
+    if (target.isBot) {
+      const brain = this.bots.get(targetSid);
+      target.ticketMicroUsd = 0;
+      if (brain) brain.respawnAt = Date.now() + BOT_RESPAWN_MS;
+      if (!brain?.reservationId) return 0;
+      const km = this.meta.get(killerSid);
+      if (killer.isBot || !km?.paid || km.flagged || !UUID_RE.test(killer.id)) {
+        this.releaseBotBounty(targetSid, brain, killer.isBot ? 'bot_kill' : 'unpaid_kill');
+        return 0;
+      }
+      const amount = brain.bountyMicroUsd;
+      const { earner, bounty } = earnerAndBountyShares(amount);
+      km.earned += earner;
+      killer.sessionEarningsMicroUsd += earner;
+      killer.bountyMicroUsd += bounty;
+      this.pendingPayouts.push({ userId: killer.id, amountMicroUsd: amount, actionType: 'BOT_BOUNTY_CLAIM', gameId: this.gameId, metadata: { reservationId: brain.reservationId, botId: targetSid, hits: km.hits, headshots: km.headshots, pid: this.nextPid() } });
+      brain.reservationId = '';
+      brain.bountyMicroUsd = 0;
+      return earner;
+    }
+    // a bot killed a real player
+    const tm = this.meta.get(targetSid);
+    const stake = this.takeStake(targetSid, target);
+    if (stake && tm?.entryId) {
+      this.pendingPayouts.push({ userId: stake.victimId, amountMicroUsd: 0, actionType: 'TICKET_RETURN', gameId: this.gameId, metadata: { ticketId: stake.ticketId, entryId: tm.entryId, reason: 'bot_kill', pid: this.nextPid() } });
+      // the ticket must be available again before the player presses "Play again (-1 EC)"
+      void this.flushPayoutBatch();
+    } else if (stake) this.queueTicketForfeit(stake, 'unpaid_kill');
+    this.settleBossOnDeath(target);
+    this.lastBountyLost = 0;
+    return 0;
   }
 
   // ---- V1.2 Golden Boss Bounty Event ("เป้าหมายค่าหัวทองคำ") ------------------------------------------
@@ -1741,7 +2140,7 @@ export class ShootingRoom extends Room<GameState> {
   onJoin(
     client: Client,
     options: { userId?: string; username?: string; avatarId?: string; primaryWeapon?: string; spectator?: boolean },
-    auth?: { userId: string | null; username?: string; bounty?: number; ticket?: number; rejoin?: boolean }
+    auth?: { userId: string | null; username?: string; bounty?: number; ticket?: number; rejoin?: boolean; ws?: string; os?: string; viewer?: boolean }
   ) {
     if (auth?.rejoin) {
       this.attachRejoin(client);
@@ -1756,6 +2155,8 @@ export class ShootingRoom extends Room<GameState> {
     player.bountyMicroUsd = auth?.bounty ?? 0; // accumulated head bounty from the database
     player.ticketMicroUsd = auth?.ticket ?? 0; // V1.1: this player's live ticket value (what a kill on them pays)
     player.avatarId = options.avatarId || 'specops';
+    player.weaponSkin = cleanSkin(auth?.ws);
+    player.outfitSkin = cleanSkin(auth?.os);
 
     const chosenPrimary = options.primaryWeapon || 'ak47';
     player.primaryWeapon = chosenPrimary;
@@ -1827,6 +2228,8 @@ export class ShootingRoom extends Room<GameState> {
   async onLeave(client: Client, consented: boolean) {
     this.rejoinTargets.delete(client.sessionId);
     this.rejoinIps.delete(client.sessionId);
+    this.viewers.delete(client.sessionId);
+    this.chatLast.delete(client.sessionId);
     const player = this.state.players.get(client.sessionId);
     // No body under this key: it was moved to a newer connection by a Rejoin (or never created)
     if (!player) {
@@ -2061,6 +2464,8 @@ export class ShootingRoom extends Room<GameState> {
   async onDispose() {
     this.bodyOnlyTimer?.clear();
     this.bodyOnlyTimer = undefined;
+    // V1.2 C: every cold-start bot bounty still reserved returns to the Boss Bounty Pool
+    for (const [sid] of [...this.bots]) this.despawnBot(sid, 'room_closed');
     // V1.2: a Golden Boss still alive when the room closes → the reservation returns to the pool
     if (this.boss) this.releaseBoss('room_closed');
     for (const [sid, m] of this.meta) {

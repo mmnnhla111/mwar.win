@@ -15,6 +15,8 @@ import { RewardedVideoModal } from '../../../game/ui/AdEngine';
 import { formatEc } from '../../../lib/format';
 import { CheerButton } from '../../../components/cheer/CheerModal';
 import { useTranslation } from '../../../i18n/I18nProvider';
+import { HappyHourBadge, useLiveConfig } from '../../../components/game/HappyHourBadge';
+import { StreamerLiveSection } from '../../../components/game/StreamerLiveSection';
 
 const FILTERS: { id: FpsRoomFilter; label: string }[] = [
   { id: 'all', label: 'fps.filter.all' },
@@ -96,7 +98,10 @@ export default function FpsLobbyPage() {
   }, [load]);
   useVisibleInterval(load, AUTO_REFRESH_MS);
 
-  const visible = rooms.filter((r) => matches(r, filter));
+  // V1.2 C: Streamer Showcase Rooms get their own "🔴 LIVE" section above the room table
+  const live = useLiveConfig();
+  const streamerRooms = rooms.filter((r) => r.isStreamerRoom);
+  const visible = rooms.filter((r) => !r.isStreamerRoom && matches(r, filter));
   const room = rooms.find((r) => r.id === selected) || null;
   const ec = boot?.user.energyTickets ?? 0;
   const ecMax = boot?.user.maxEnergyTickets ?? MAX_ENERGY_TICKETS;
@@ -116,6 +121,7 @@ export default function FpsLobbyPage() {
               {serverOnline === false ? t('fps.offline') : t('fps.liveNumbers')}
             </div>
           </div>
+          <HappyHourBadge active={!!live?.happyHour.active} endsAt={live?.happyHour.endsAt} className="shrink-0" />
           <span className="inline-flex items-center gap-1 sm:gap-1.5 rounded-full bg-[#FFF6C2] text-stone-900 text-xs sm:text-sm font-extrabold px-2.5 sm:px-3 py-1.5 shrink-0" title={t('fps.energyTickets')}>
             <Icon name="bolt" size={16} filled /> {formatEc(ec, ecMax)}
           </span>
@@ -149,6 +155,8 @@ export default function FpsLobbyPage() {
           />
         </div>
       </Card>
+
+      {serverOnline !== false && <StreamerLiveSection rooms={streamerRooms} signedIn={!!boot?.user} onChanged={load} />}
 
       {/* Desktop / tablet table */}
       <Card className="hidden md:block overflow-hidden">

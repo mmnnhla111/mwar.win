@@ -52,6 +52,13 @@ export class PlayerState extends Schema {
   @type('number') goldenBossMicroUsd: number = 0;
   // Medkits carried (slot 4). Healing is a 4 s stationary cast validated by the server.
   @type('number') medkits: number = 0;
+  // V1.2 C cold-start bot (server-side combat bot): labelled as a bot on every client, never paid, never earns
+  @type('boolean') isBot: boolean = false;
+  // V1.2 C cosmetic skins (slugs from the Worker-signed entry token; rendering only — no gameplay effect)
+  @type('string') weaponSkin: string = '';
+  @type('string') outfitSkin: string = '';
+  // V1.2 C Champion Crown gift: ms timestamp until which a crown floats above this player
+  @type('number') giftCrownUntil: number = 0;
 
   // Internal anti-AFK timestamp (not serialized to network)
   lastActiveTime: number = Date.now();
@@ -70,7 +77,7 @@ export class PlayerState extends Schema {
 const PLAYER_FIELDS = [
   'id', 'username', 'x', 'y', 'z', 'rotationY', 'stance', 'health', 'maxHealth', 'avatarId', 'isProp', 'propType', 'disguisePropId',
   'isPropSolid', 'primaryWeapon', 'currentWeapon', 'magAmmo', 'reserveAmmo', 'grenadesRemaining', 'isGhost', 'isSpectator', 'kills',
-  'deaths', 'chestsCollected', 'sessionEarningsMicroUsd', 'bountyMicroUsd', 'ticketMicroUsd', 'goldenBossMicroUsd', 'medkits', 'lastActiveTime',
+  'deaths', 'chestsCollected', 'sessionEarningsMicroUsd', 'bountyMicroUsd', 'ticketMicroUsd', 'goldenBossMicroUsd', 'medkits', 'isBot', 'weaponSkin', 'outfitSkin', 'giftCrownUntil', 'lastActiveTime',
   'afkWarningSent', 'afkKicked', 'isDisconnected', 'disconnectedAt',
 ] as const;
 
@@ -130,4 +137,11 @@ export class GameState extends Schema {
   @type('number') activeChestsCount: number = 0;
   @type('number') activePlayersCount: number = 0;
   @type('number') activeDroppedWeaponsCount: number = 0;
+  // V1.2 C Happy Hour 2x (the Worker decides and pays it; this only drives the HUD badge)
+  @type('boolean') happyHour: boolean = false;
+  @type('number') happyHourEndsAt: number = 0;
+  // V1.2 C Streamer Showcase Room
+  @type('boolean') isStreamerRoom: boolean = false;
+  @type('string') streamerUserId: string = '';
+  @type('number') botCount: number = 0;
 }

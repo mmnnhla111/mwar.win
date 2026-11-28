@@ -8,6 +8,7 @@ import type { GameNode } from '../../lib/api';
 import { compressImageToWebp } from '../../lib/image';
 import { Card, Modal, Spinner, btn, inputCls } from '../ui/Card';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { ColdStartAdmin } from './ColdStartAdmin';
 
 type GameForm = {
   slug: string;
@@ -112,6 +113,8 @@ export function GamesAdmin() {
           + {t('adming.newGame')}
         </button>
       </div>
+      {/* V1.2 C cold-start tools: bot fill, Happy Hour, streamer share, skin fee, marketing pool + promo codes */}
+      <ColdStartAdmin />
       {error && <p className="rounded-2xl bg-[#FFE4E6] text-rose-600 text-sm font-semibold px-4 py-2.5">{error}</p>}
       {!games && !error && (
         <div className="py-8 flex justify-center">

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { EconomyStatus, AdNetworkConfig, AdNetworkConfigUpdate, AdStats, DirectLinkStart, PublicAdConfig, CheerStatus } from '@mwar/shared';
 import { apiFetch } from './api';
+import { adRoomPayload } from './bannerContext';
 
 /**
  * Public ad config (GET /api/ads/config, edge-cached 60 s): fetched at most once per 60 s per tab,
@@ -93,7 +94,9 @@ export interface DirectLinkClaimResult {
 }
 
 export function startDirectLink(body: { purpose: 'ec_recharge' | 'cheer'; seconds: 15 | 30; targetType?: string; targetId?: string | null }) {
-  return apiFetch<DirectLinkStart>('/api/ads/direct-link/start', { method: 'POST', body: JSON.stringify(body) });
+  // V1.2 C: an EC-recharge ad watched while spectating carries the room code (Streamer Room attribution)
+  const room = body.purpose === 'ec_recharge' ? adRoomPayload() : {};
+  return apiFetch<DirectLinkStart>('/api/ads/direct-link/start', { method: 'POST', body: JSON.stringify({ ...body, ...room }) });
 }
 
 export function claimDirectLink(token: string) {

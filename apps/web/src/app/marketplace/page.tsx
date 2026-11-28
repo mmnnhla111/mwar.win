@@ -5,6 +5,7 @@ import { apiFetch } from '../../lib/api';
 import { formatMicroUsd, formatCoins } from '@mwar/shared';
 import { BountyChestIcon, GoldCoinIcon, UsdDollarIcon } from '../../components/icons';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { SkinMarket } from '../../components/skins/SkinMarket';
 
 export default function MarketplacePage() {
   const { t } = useTranslation();
@@ -16,6 +17,7 @@ export default function MarketplacePage() {
   const [listingPriceUsd, setListingPriceUsd] = useState('15.00');
   const [actionMsg, setActionMsg] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [tab, setTab] = useState<'skins' | 'network'>('skins');
 
   const loadMarketplace = async () => {
     setLoading(true);
@@ -80,6 +82,20 @@ export default function MarketplacePage() {
 
   return (
     <div className="space-y-6 pb-12">
+      {/* V1.2 C tabs: P2P skin market (cosmetic items for C) / network listings */}
+      <div className="flex gap-2">
+        {(['skins', 'network'] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`rounded-full px-4 py-2 text-sm font-bold ${tab === k ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}
+          >
+            {k === 'skins' ? `🎨 ${t('skins.tab')}` : `🧑‍🤝‍🧑 ${t('skins.tabNetwork')}`}
+          </button>
+        ))}
+      </div>
+      {tab === 'skins' ? <SkinMarket /> : (
+      <>
       {/* 1. Header Banner */}
       <div className="bg-white border border-stone-200/80 rounded-3xl p-5 sm:p-6 shadow-[0_2px_12px_rgba(0,0,0,0.04)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="flex items-center space-x-3.5">
@@ -275,6 +291,8 @@ export default function MarketplacePage() {
             </form>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );

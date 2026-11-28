@@ -5,7 +5,13 @@ import * as THREE from 'three';
 import { Client as ColyseusClient, Room } from 'colyseus.js';
 import { apiFetch, getActiveSession, getFpsRooms, progressQuest, rejoinHref } from '../../lib/api';
 import type { ActiveGameSession } from '@mwar/shared';
-import { setFastMiniBannerPot } from '../../lib/bannerContext';
+import { setAdRoomCode, setFastMiniBannerPot } from '../../lib/bannerContext';
+import { applySkinTint, clearSkinTint } from '../../game/assets/skinTint';
+import { GiftPops, makeGiftCrown } from '../../game/assets/giftEffects';
+import { SpectatorGiftDrawer } from '../../components/game/SpectatorGiftDrawer';
+import { RoomChat } from '../../components/game/RoomChat';
+import { HappyHourBadge } from '../../components/game/HappyHourBadge';
+import { getViewerToken } from '../../lib/liveEconomy';
 import { DeathSummaryOverlay, type DeathPromptData } from '../../game/ui/DeathSummary';
 import { useTranslation } from '../../i18n/I18nProvider';
 import { formatCoins2, formatCoinsAndUsd, formatUsdPrecise, earnerAndBountyShares, weaponMaxShotRange } from '@mwar/shared';
@@ -331,6 +337,14 @@ export default function GamePage() {
   const [ecChargedPct, setEcChargedPct] = useState(0);
   const [ecSpent, setEcSpent] = useState(0);
   const [serversOffline, setServersOffline] = useState(false);
+  // V1.2 C live economy: Happy Hour badge (server state), Streamer Room chat, gift banner, signed-in viewer
+  const [happyHour, setHappyHour] = useState<{ active: boolean; endsAt: number }>({ active: false, endsAt: 0 });
+  const [streamerRoom, setStreamerRoom] = useState(false);
+  const [giftBanner, setGiftBanner] = useState<string | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
+  /** Ghost Spectator: the player the camera is watching (nearest visible real player). */
+  const watchedRef = useRef<() => string | null>(() => null);
+  const getWatched = React.useCallback(() => watchedRef.current(), []);
   // V1.1 R3: Rejoin of a live body — the loadout screen becomes "Resume" and deploys at the body's exact spot
   const resumeRef = useRef<ResumeState | null>(null);
   const [resumeInfo, setResumeInfo] = useState<{ prop: string | null; hp: number } | null>(null);
@@ -771,6 +785,11 @@ export default function GamePage() {
     const CHUNK_CULL_DIST = 700;
     let cullTimer = 0;
     const effects = new CombatEffects(scene);
+    // V1.2 C spectator gift pops (📦 / 💣 / 👑) at the receiver
+    const giftPops = new GiftPops(scene);
+    /** Own weapon finish (cosmetic skin slug from the signed entry token, via the server state). */
+    let myWeaponSkin = '';
+    let skinTick = 0;
     const viewmodel = new Viewmodel(width / height);
     setLoadingWorld(false);
 
@@ -1293,7 +1312,20 @@ export default function GamePage() {
       badge: ValueBadge;
       /** V1.2 golden crown + glow while this player is the Golden Boss (shown even on a prop disguise). */
       boss: GoldenBossMarker;
+      /** V1.2 C Champion Crown gift (floats above the player until crownUntil). */
+      crown: THREE.Sprite;
+      crownUntil: number;
+      /** V1.2 C applied cosmetic skin signature (outfit | weapon finish | weapon). */
+      skins: string;
+      isBot: boolean;
     }
+    const applySkins = (rp: Remote, p: any) => {
+      const sig = `${p.outfitSkin || ''}|${p.weaponSkin || ''}|${p.currentWeapon || ''}`;
+      if (rp.skins === sig) return;
+      rp.skins = sig;
+      applySkinTint(rp.rig.root, String(p.outfitSkin || ''), (m) => m.userData.hitZone === 'body');
+      applySkinTint(rp.rig.gun, String(p.weaponSkin || ''));
+    };
     const bossText = (micro: number): string | null => (micro > 0 ? `${Math.floor(micro / 100).toLocaleString()} C` : null);
     /** Killer's take of a player carrying `ticket` µUSD + `bounty` µUSD, as badge text (null = nothing to win). */
     const bountyBadgeText = (ticket: number, bounty: number): string | null => {
@@ -1433,6 +1465,18 @@ export default function GamePage() {
         } catch {
           // storage blocked
         }
+        // V1.2 C: signed-in spectators carry a Worker-signed viewer identity; their rewarded ads name the watched
+        // room (Streamer Room share — credited by the Worker only from VERIFIED postback value)
+        setSignedIn(!!meData?.user);
+        let viewerToken: string | undefined;
+        if (isGhostSpectator && meData?.user) {
+          try {
+            viewerToken = (await getViewerToken()).viewerToken;
+          } catch {
+            viewerToken = undefined;
+          }
+        }
+        setAdRoomCode(isGhostSpectator ? roomCode : null);
         // Admin-configured rooms join the 'arena' room type by code; the server applies mode, map and caps
         const joinPromise = rejoin
           ? (rejoin.session.serverUrl ? new ColyseusClient(rejoin.session.serverUrl) : colyseusClient).joinById(rejoin.session.roomId, { rejoinToken: rejoin.token, deviceId })
@@ -1446,6 +1490,8 @@ export default function GamePage() {
           primaryWeapon: loadoutPrimary,
           // Ghost Spectator joins as an invisible observer (no body, no hitbox, no damage)
           spectator: isGhostSpectator,
+          // V1.2 C: a signed-in spectator's Worker-signed identity (room chat / gifts)
+          ...(viewerToken ? { viewerToken } : {}),
         });
         if (meData?.user) {
           const u = meData.user;
@@ -1468,9 +1514,53 @@ export default function GamePage() {
         setConnectionStatus('connected');
 
         const state = roomInstance.state as any;
+        // V1.2 C Happy Hour badge + Streamer Room flag (server state; the Worker decides and pays the 2x)
+        const syncLive = () => {
+          setHappyHour({ active: !!state.happyHour, endsAt: Number(state.happyHourEndsAt) || 0 });
+          setStreamerRoom(!!state.isStreamerRoom);
+        };
+        syncLive();
+        state.listen?.('happyHour', syncLive);
+        state.listen?.('happyHourEndsAt', syncLive);
+        state.listen?.('isStreamerRoom', syncLive);
+        watchedRef.current = () => {
+          let best: string | null = null;
+          let bd = Infinity;
+          remotePlayers.forEach((rp, key) => {
+            if (rp.hidden || rp.isBot) return;
+            const d = rp.rig.root.position.distanceTo(camera.position);
+            if (d < bd) {
+              bd = d;
+              best = key;
+            }
+          });
+          return best;
+        };
+        // V1.2 C spectator gifts — broadcast by the server only after it verified the Worker-signed gift token
+        roomInstance.onMessage('spectator_gift', (data: any) => {
+          const code = String(data?.giftCode || '');
+          const emoji = code === 'champion_crown_500' ? '👑' : code === 'golden_grenade_100' ? '💣' : '📦';
+          const msg = tRef.current('gift.feed', {
+            sender: String(data?.senderUsername || '?'),
+            gift: tRef.current(code === 'champion_crown_500' ? 'gift.name.champion_crown_500' : code === 'golden_grenade_100' ? 'gift.name.golden_grenade_100' : 'gift.name.ammo_box_ad'),
+            name: String(data?.targetUsername || '') || tRef.current('gift.everyone'),
+          });
+          feed(`${emoji} ${msg}`);
+          const sid = String(data?.targetSessionId || '');
+          const rp = sid ? remotePlayers.get(sid) : undefined;
+          const at = rp ? rp.rig.root.position : sid && sid === roomInstance.sessionId ? camera.position.clone().setY(camera.position.y - 1.5) : null;
+          if (at) giftPops.spawn(emoji, at, code === 'champion_crown_500' ? 8 : 5);
+          if (data?.roomBanner) {
+            setGiftBanner(`${emoji} ${msg}`);
+            window.setTimeout(() => setGiftBanner(null), 6000);
+          }
+        });
+        roomInstance.onMessage('gift_result', () => {});
+        roomInstance.onMessage('room_chat_refused', () => {});
         state.players.onAdd((p: any, key: string) => {
           if (key === roomInstance.sessionId) {
             setHudStats((prev) => ({ ...prev, health: p.health, kills: p.kills, chests: p.chestsCollected, isGhost: p.isGhost }));
+            myWeaponSkin = String(p.weaponSkin || '');
           } else {
             // Opponents get their chosen avatar rig (or fallback) + weapon
             const rig = createCharacter((p.avatarId as CharacterId) || randomCharacterId(), {
@@ -1492,8 +1582,14 @@ export default function GamePage() {
               hidden: !!p.isGhost || !!p.isSpectator,
               badge: makeValueBadge(),
               boss: makeGoldenBossMarker(),
+              crown: makeGiftCrown(),
+              crownUntil: Number(p.giftCrownUntil) || 0,
+              skins: '',
+              isBot: !!p.isBot,
             };
             rig.root.add(rp.badge.sprite);
+            rig.root.add(rp.crown);
+            applySkins(rp, p);
             scene.add(rp.boss.group);
             rp.boss.set(rp.hidden ? null : bossText(Number(p.goldenBossMicroUsd) || 0));
             rig.root.visible = !rp.hidden;
@@ -1535,6 +1631,8 @@ export default function GamePage() {
                 refreshBadge(rp, p);
                 // V1.2 Golden Boss crown: always shown while the boss is alive (the boss is meant to be hunted)
                 rp.boss.set(rp.hidden ? null : bossText(Number(p.goldenBossMicroUsd) || 0));
+                rp.crownUntil = Number(p.giftCrownUntil) || 0;
+                applySkins(rp, p);
               }
             }
           });
@@ -2821,6 +2919,18 @@ export default function GamePage() {
 
       chestMeshes.forEach((g) => animateBountyChest(g, now));
       effects.update(dt);
+      // V1.2 C gift pops, Champion Crowns and the own weapon finish (cosmetic, throttled)
+      giftPops.update(dt);
+      skinTick -= dt;
+      if (skinTick <= 0) {
+        skinTick = 0.5;
+        const nowMs = Date.now();
+        remotePlayers.forEach((rp) => {
+          rp.crown.visible = !rp.hidden && rp.crownUntil > nowMs;
+        });
+        const vm = viewmodel as unknown as { glove?: THREE.Material; sleeve?: THREE.Material };
+        applySkinTint(viewmodel.scene, myWeaponSkin, (m) => m.userData.skinOrig !== undefined || (m.material !== vm.glove && m.material !== vm.sleeve));
+      }
       layout.terrain.update(dt, camera);
       cullTimer -= dt;
       if (chunkedMeshes.length && cullTimer <= 0) {
@@ -2954,6 +3064,9 @@ export default function GamePage() {
       grenades.forEach((g) => disposeObject(g.mesh));
       if (propModel) disposeObject(propModel);
       effects.dispose();
+      giftPops.dispose();
+      setAdRoomCode(null);
+      clearSkinTint(viewmodel.scene);
       viewmodel.dispose();
       layout.terrain.dispose();
       layout.staticMeshes.forEach((m) => m.geometry.dispose());
@@ -3323,6 +3436,8 @@ export default function GamePage() {
           </span>
           {ecToast && <span className="text-[10px] font-semibold text-yellow-200/70">{ecToast}</span>}
           {hudStats.isGhost && <span className="text-purple-300 animate-pulse">👻 GHOST</span>}
+          <HappyHourBadge active={happyHour.active} endsAt={happyHour.endsAt} />
+          {streamerRoom && <span className="text-rose-300 font-black">🔴 {t('streamer.liveShort')}</span>}
         </div>
         {(isBotMode || isGhostSpectator) && (deployed || isGhostSpectator) && <RechargeVideoButtons compact={isMobile} onPick={openVideoAd} />}
         {isGhostSpectator && !compactLandscape && (
@@ -3626,6 +3741,19 @@ export default function GamePage() {
       {!isMobile && isPointerLocked && hudStats.keyboardLocked && (
         <div className="absolute bottom-20 left-4 z-20 pointer-events-none text-[10px] font-bold text-sky-300/80 bg-slate-950/60 px-2 py-1 rounded-lg">
           🔒 Browser shortcuts locked (Ctrl+W safe) • Esc to release mouse
+        </div>
+      )}
+
+      {/* V1.2 C: spectator gift drawer + Streamer Room chat */}
+      {connectionStatus === 'connected' && room && (isGhostSpectator || streamerRoom) && (
+        <div className="absolute right-3 top-16 z-30 flex flex-col items-end gap-2 pointer-events-none">
+          {isGhostSpectator && <SpectatorGiftDrawer room={room} signedIn={signedIn} getWatchedSessionId={getWatched} onToast={(m) => { setRoundBanner(m); window.setTimeout(() => setRoundBanner(null), 3500); }} compact={isMobile} />}
+          {streamerRoom && <RoomChat room={room} canChat={signedIn} />}
+        </div>
+      )}
+      {giftBanner && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 text-slate-950 font-black px-5 py-2.5 shadow-2xl shadow-amber-500/40 text-sm sm:text-base animate-bounce" data-gift-banner>
+          {giftBanner}
         </div>
       )}
 

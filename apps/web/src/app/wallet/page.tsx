@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { UsdDollarIcon, GoldCoinIcon } from '../../components/icons';
 import { useTranslation } from '../../i18n/I18nProvider';
+import { PromoRedeemCard } from '../../components/wallet/PromoRedeemCard';
 import { CashoutCard } from '../../components/wallet/CashoutCard';
 
 export default function WalletPage() {
@@ -101,6 +102,9 @@ export default function WalletPage() {
           <p className="text-[10px] text-stone-500 font-semibold">{t('wallet.cashoutsHint')}</p>
         </div>
       </div>
+
+      {/* V1.2 C launch promo code → 1 EC ticket backed by the marketing pool */}
+      <PromoRedeemCard />
 
       {/* 3. Cashout ($10 minimum, 3-layer anti-cheat audit) + history */}
       {wallet && <CashoutCard balanceMicroUsd={Number(wallet.balanceMicroUsd || 0)} onChanged={loadWallet} />}

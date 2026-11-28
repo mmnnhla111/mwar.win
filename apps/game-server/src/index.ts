@@ -94,6 +94,8 @@ app.get('/rooms', async (_req, res) => {
         continue;
       }
       for (const p of players) {
+        // V1.2 C cold-start bots are never counted or listed as players
+        if (p.isBot) continue;
         if (p.isSpectator) bucket.spectators += 1;
         else bucket.players += 1;
         if (bucket.roster.length < ROSTER_CAP) {

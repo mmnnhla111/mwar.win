@@ -15,6 +15,9 @@ export interface RegistryRoom {
   entryCostEc: number;
   isActive: boolean;
   gameSlug: string;
+  /** V1.2 C Streamer Showcase Room (LIVE-XXXXXX, opened by a Silver I+ player). */
+  isStreamerRoom?: boolean;
+  streamerUserId?: string | null;
 }
 
 const DEFAULT_ROOMS: RegistryRoom[] = [
