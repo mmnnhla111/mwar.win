@@ -127,6 +127,20 @@ export const SOLID_PROPS = new Set([
   'generator_box',
   'mailbox',
   'ammo_chest',
+  // indoor furniture + street props (apps/web/src/game/assets/disguiseProps.ts, all solid)
+  'office_desk',
+  'office_chair',
+  'filing_cabinet',
+  'metal_locker',
+  'storage_shelf',
+  'bunk_bed',
+  'tv_stand',
+  'water_cooler',
+  'sofa',
+  'road_barrier',
+  'dumpster',
+  'utility_box',
+  'planter_box',
 ]);
 
 // Server Weapon Specifications
