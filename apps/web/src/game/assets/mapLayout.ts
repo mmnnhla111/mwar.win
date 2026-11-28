@@ -16,6 +16,7 @@ import {
 } from './props';
 import { PLAY_HALF, ROAD_LINES, ROAD_WIDTH, SIDEWALK_WIDTH, addTree, buildSkyAndTerrain, SkyAndTerrain } from './skyAndTerrain';
 import { MAP2D } from './map2d';
+import { populateSmallMapStreetProps } from './streetProps';
 
 /**
  * City layout for the 240 m × 240 m arena:
@@ -24,6 +25,9 @@ import { MAP2D } from './map2d';
  *  - 10 buildings + 20 houses on lots facing the nearest street, remaining lots are parks /
  *    tactical yards with trees, crates and sandbags
  *  - Street props: streetlights, parked vehicles, Jersey barriers
+ *  - Street population (streetProps.ts): benches, bins, dumpsters, hydrants, utility boxes, planters, cones, bollards,
+ *    pallets, crates, drums, tyres... along sidewalks, corners, plazas, lots and building exteriors, all real
+ *    Prop-Hunt disguise props
  * Also produces navigation data for AI bots (street graph, rooftop posts, chest spawns).
  */
 
@@ -229,6 +233,25 @@ export function buildArena(scene: THREE.Scene, world: CollisionWorld, lib: Mater
     }
   }
 
+  // ---- Street population with real disguise props (sidewalks, corners, plazas, lots, building exteriors) ----
+  const playerSpawns = [
+    new THREE.Vector3(-6, 0, -14),
+    new THREE.Vector3(14, 0, 6),
+    new THREE.Vector3(-30, 0, 2),
+    new THREE.Vector3(2, 0, 34),
+    new THREE.Vector3(32, 0, -2),
+    new THREE.Vector3(-2, 0, -40),
+  ];
+  populateSmallMapStreetProps({
+    kit,
+    world,
+    structures,
+    openLots: openLots.map((l, i) => ({ x: l.x, z: l.z, turns: facingTurns(l.x, l.z), type: i % 4 })),
+    plazaLots,
+    chestSpots,
+    playerSpawns,
+  });
+
   const staticMeshes = batcher.build(lib, scene);
 
   // ---- Navigation graph (streets) -------------------------------------------------------------
@@ -299,15 +322,6 @@ export function buildArena(scene: THREE.Scene, world: CollisionWorld, lib: Mater
     s.rooftops.forEach((p) => posts.push(v3(p)));
     s.interior.filter((p) => p[1] > 1).forEach((p) => posts.push(v3(p)));
   });
-
-  const playerSpawns = [
-    new THREE.Vector3(-6, 0, -14),
-    new THREE.Vector3(14, 0, 6),
-    new THREE.Vector3(-30, 0, 2),
-    new THREE.Vector3(2, 0, 34),
-    new THREE.Vector3(32, 0, -2),
-    new THREE.Vector3(-2, 0, -40),
-  ];
 
   // Clamp everything inside the playable area
   chestSpots.forEach((c) => {

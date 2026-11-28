@@ -23,6 +23,7 @@ import { placeBarrels, placeBench, placeCrateStack, placeJerseyBarrier, placeSan
 import { addTree, broadleafGeometry, buildSkyAndTerrain, pineGeometry } from '../assets/skyAndTerrain';
 import { MAP2D, map2dTree } from '../assets/map2d';
 import type { ArenaLayout, NavNode } from '../assets/mapLayout';
+import { populateLargeMapStreetProps, type OpenLotInfo, type PlazaInfo } from '../assets/streetProps';
 
 /**
  * Large open-world map (960 m × 960 m) for 100-Player Warzone and 30-Player Skirmish.
@@ -34,6 +35,9 @@ import type { ArenaLayout, NavNode } from '../assets/mapLayout';
  *  · 2 climbable mountains (height-field terrain with solid collision, pine forest, rocks)
  *  · 5 small towns (8–12 commercial buildings / 2-story houses on highway junctions)
  *  · 10 villages (5–10 houses on a lane) linked to the highway grid by side roads
+ *  · Street population (assets/streetProps.ts): real Prop-Hunt disguise props (benches, bins, dumpsters, hydrants,
+ *    utility boxes, planters, cones, bollards, pallets, crates, drums, tyres...) along streets, corners, plazas, lots,
+ *    building exteriors, village lanes and highway shoulders
  *
  * Performance: geometry is batched per 120 m chunk (frustum + distance culling per chunk), trees and
  * rocks are InstancedMeshes, and collision / ground queries go through the spatial hash grid.
@@ -168,6 +172,10 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
 
   const structures: StructureInfo[] = [];
   const chestSpots: THREE.Vector3[] = [];
+  // Recorded for the street-prop pass (assets/streetProps.ts)
+  const cityOpenLots: OpenLotInfo[] = [];
+  const cityPlazas: PlazaInfo[] = [];
+  const villageInfos: { x: number; z: number; halfLen: number }[] = [];
   const place = (factory: BuildingFactory | HouseFactory, x: number, z: number, turns: number, pullToStreet = 0) => {
     const f = new Frame(x, z, turns);
     const [fx, fz] = f.toWorld(0, -pullToStreet);
@@ -207,6 +215,7 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
       const [c, d] = at(3.5, 1);
       placeVehicle(kit, c, d, turns, 0x1f2937, i % 2 ? 'suv' : 'truck');
     }
+    cityOpenLots.push({ x, z, turns, type });
     chestSpots.push(new THREE.Vector3(x, 0, z));
   };
 
@@ -281,6 +290,7 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
       placeCrateStack(kit, x + sx * 5, z - sz * 4, 0, true);
       placeBench(kit, x - sx * 6, z + sz * 6, sz > 0 ? 2 : 0);
       addTree(kit, x + sx * 8.5, z + sz * 8.5, 'broadleaf', 1.1);
+      cityPlazas.push({ x, z, sx, sz });
       chestSpots.push(new THREE.Vector3(x, 0, z));
     }
     // Streetlights, parked cars and barrier chicanes
@@ -335,6 +345,7 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
     const n = Math.max(5, Math.min(10, s.count));
     const perSide = Math.ceil(n / 2);
     const halfLen = (perSide / 2) * 24 + 14;
+    villageInfos.push({ x: s.x, z: s.z, halfLen });
     dirtLane(s.x - halfLen, s.z, s.x + halfLen, s.z, 6);
     for (let i = 0; i < n; i++) {
       const side = i % 2 === 0 ? 1 : -1;
@@ -515,6 +526,23 @@ export function buildLargeArena(scene: THREE.Scene, world: CollisionWorld, lib: 
   rockMesh.receiveShadow = true;
   scene.add(rockMesh);
   instanced.push(rockMesh);
+
+  // ---- Street population with real disguise props (runs last so it sees every collider incl. the trees) ----
+  populateLargeMapStreetProps({
+    kit,
+    world,
+    structures,
+    half: LARGE_PLAY_HALF,
+    terrainHeight: largeMapTerrainHeight,
+    roads: MAP2D.roads,
+    plazas: cityPlazas,
+    openLots: cityOpenLots,
+    cities: LARGE_SETTLEMENTS.filter((s) => s.kind === 'city'),
+    towns: LARGE_SETTLEMENTS.filter((s) => s.kind === 'town'),
+    villages: villageInfos,
+    highways: LARGE_ROAD_LINES,
+    chestSpots,
+  });
 
   const staticMeshes = [...batcher.build(lib, scene), ...roadMeshes];
 

@@ -2,12 +2,17 @@ import * as THREE from 'three';
 import { Frame, Kit } from './kit';
 import { textureFactories } from './materials';
 import { map2dVehicle } from './map2d';
+import { PROP_PLACEMENT_READY, placeDisguiseProp } from './propPlacement';
 
 /**
  * Tactical cover & interactive props: streetlights, sandbag bunkers, Jersey barriers,
  * wooden crates (identical to the 'C' prop disguise), parked vehicles, barrels and the glowing
  * 15-second Bounty Treasure Chest. Static props are batched + collidable via the Kit; dynamic
  * ones (disguise crate, chests) are standalone groups.
+ *
+ * Sandbag bunkers, crate stacks, barrels and benches are built from the REAL Prop-Hunt disguise props
+ * (placeDisguiseProp) so a hider morphed into one blends in perfectly. The hand-drawn look-alikes below
+ * remain as a fallback while PROP_PLACEMENT_READY is false.
  */
 
 export function placeStreetlight(kit: Kit, x: number, z: number, quarterTurns: number) {
@@ -33,6 +38,14 @@ export function placeJerseyBarrier(kit: Kit, x: number, z: number, quarterTurns:
 
 export function placeSandbagBunker(kit: Kit, x: number, z: number, quarterTurns: number) {
   const f = new Frame(x, z, quarterTurns);
+  if (PROP_PLACEMENT_READY) {
+    // U-shaped nest from real sandbag_barrier pieces (1.8 × 0.8 × 0.9): 2-piece back wall + one piece per flank.
+    placeDisguiseProp(kit, f, 'sandbag_barrier', -0.9, 0, -1.4, 0);
+    placeDisguiseProp(kit, f, 'sandbag_barrier', 0.9, 0, -1.4, 0);
+    placeDisguiseProp(kit, f, 'sandbag_barrier', -1.4, 0, -0.1, 1);
+    placeDisguiseProp(kit, f, 'sandbag_barrier', 1.4, 0, -0.1, 3);
+    return;
+  }
   const bag = (cx: number, cz: number, y: number, alongX: boolean) =>
     kit.deco(f, 'fabric', 0xc2b280, cx, y, cz, alongX ? 0.7 : 0.42, 0.3, alongX ? 0.42 : 0.7);
   for (let row = 0; row < 4; row++) {
@@ -51,6 +64,13 @@ export function placeSandbagBunker(kit: Kit, x: number, z: number, quarterTurns:
 
 export function placeCrateStack(kit: Kit, x: number, z: number, quarterTurns: number, tall = false) {
   const f = new Frame(x, z, quarterTurns);
+  if (PROP_PLACEMENT_READY) {
+    placeDisguiseProp(kit, f, 'supply_crate', 0, 0, 0, 0);
+    placeDisguiseProp(kit, f, 'supply_crate', 1.3, 0, 0.1, 0);
+    placeDisguiseProp(kit, f, 'supply_crate', 0.65, 1.2, 0.05, 0);
+    if (tall) placeDisguiseProp(kit, f, 'supply_crate', 0.65, 2.4, 0.05, 0);
+    return;
+  }
   const crate = (cx: number, y: number, cz: number, s: number) => {
     kit.solid(f, 'wood', 0xc08a4b, cx, y, cz, s, s, s);
     // Dark slats on the crate faces
@@ -65,6 +85,13 @@ export function placeCrateStack(kit: Kit, x: number, z: number, quarterTurns: nu
 
 export function placeBarrels(kit: Kit, x: number, z: number, color: THREE.ColorRepresentation = 0x1d4ed8) {
   const f = new Frame(x, z, 0);
+  if (PROP_PLACEMENT_READY) {
+    // Real oil_drum props (the colour argument only applies to the fallback look-alike).
+    placeDisguiseProp(kit, f, 'oil_drum', 0, 0, 0, 0);
+    placeDisguiseProp(kit, f, 'oil_drum', 0.8, 0, 0.1, 0);
+    placeDisguiseProp(kit, f, 'oil_drum', 0.4, 0, 0.8, 0);
+    return;
+  }
   const spots: [number, number][] = [
     [0, 0],
     [0.75, 0.1],
@@ -113,6 +140,11 @@ export function placeVehicle(kit: Kit, x: number, z: number, quarterTurns: numbe
 
 export function placeBench(kit: Kit, x: number, z: number, quarterTurns: number) {
   const f = new Frame(x, z, quarterTurns);
+  if (PROP_PLACEMENT_READY) {
+    // legacy bench seat faces local -z; real props face +z at turn 0
+    placeDisguiseProp(kit, f, 'park_bench', 0, 0, 0, 2);
+    return;
+  }
   kit.solid(f, 'wood', 0x92400e, 0, 0.42, 0, 1.8, 0.08, 0.5);
   kit.deco(f, 'wood', 0x92400e, 0, 0.5, 0.22, 1.8, 0.45, 0.06);
   kit.deco(f, 'metal', 0x1f2937, -0.8, 0, 0, 0.08, 0.42, 0.45);

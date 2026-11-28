@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { Frame, Kit, Rect, door, win } from './kit';
 import { STORY, WALL_H, SLAB_T, StructureInfo, buildStories, worldPoint, windowsAlong, Vec3, GROUND_WINDOW } from './structure';
 import { MaterialKey } from './materials';
+import * as ISingle from './interiors/singleHouse';
+import * as ITwo from './interiors/twoStoryHouse';
 
 /**
  * 20 distinct house designs:
@@ -15,7 +17,7 @@ export type HouseFactory = (kit: Kit, f: Frame) => StructureInfo;
 
 type RoofType = 'gable-x' | 'gable-z' | 'flat' | 'shed';
 
-interface SingleCfg {
+export interface SingleCfg {
   name: string;
   w: number;
   d: number;
@@ -129,7 +131,7 @@ function buildSingle(cfg: SingleCfg): HouseFactory {
   };
 }
 
-const SINGLE_CONFIGS: SingleCfg[] = [
+export const SINGLE_CONFIGS: SingleCfg[] = [
   { name: 'SingleHouse01 Cottage', w: 9, d: 8, wall: 0xf3e8d2, trim: 0x7c2d12, roof: 'gable-x', roofColor: 0xb91c1c, porch: 'front', chimney: true, fence: true },
   { name: 'SingleHouse02 Ranch', w: 12, d: 8, wall: 0xdbeafe, trim: 0x1e3a8a, roof: 'gable-x', roofColor: 0x334155, porch: 'wide', partition: true },
   { name: 'SingleHouse03 Modern Flat', w: 10, d: 9, wall: 0xf8fafc, wallKey: 'concrete', trim: 0x0f172a, roof: 'flat', roofColor: 0x52525b, porch: 'none', partition: true },
@@ -157,7 +159,7 @@ export const SingleHouse10 = buildSingle(SINGLE_CONFIGS[9]);
 // Two-storey houses
 // ---------------------------------------------------------------------------------------------
 
-interface TwoCfg {
+export interface TwoCfg {
   name: string;
   w: number;
   d: number;
@@ -271,7 +273,7 @@ function buildTwo(cfg: TwoCfg): HouseFactory {
   };
 }
 
-const TWO_CONFIGS: TwoCfg[] = [
+export const TWO_CONFIGS: TwoCfg[] = [
   { name: 'TwoStoryHouse01 Colonial', w: 10, d: 9, wall: 0xf5f5f4, trim: 0x1e3a8a, roof: 'gable-x', roofColor: 0x1f2937, balcony: 'front', porch: true },
   { name: 'TwoStoryHouse02 Modern Terrace', w: 10, d: 10, wall: 0xe5e7eb, wallKey: 'concrete', trim: 0x111827, roof: 'terrace', roofColor: 0x374151, balcony: 'side', stairSide: 'e' },
   { name: 'TwoStoryHouse03 Brick Townhouse', w: 9, d: 10, wall: 0xa0522d, wallKey: 'brick', trim: 0xfafaf9, roof: 'gable-z', roofColor: 0x292524, balcony: 'twin' },
@@ -295,6 +297,15 @@ export const TwoStoryHouse08 = buildTwo(TWO_CONFIGS[7]);
 export const TwoStoryHouse09 = buildTwo(TWO_CONFIGS[8]);
 export const TwoStoryHouse10 = buildTwo(TWO_CONFIGS[9]);
 
+/** Factory + its interior (assets/interiors/*House.ts): every placed instance is furnished the same way. */
+const withInterior =
+  (factory: HouseFactory, furnish: (kit: Kit, f: Frame, info: StructureInfo, variant: number) => void, variant: number): HouseFactory =>
+  (kit, f) => {
+    const info = factory(kit, f);
+    furnish(kit, f, info, variant);
+    return info;
+  };
+
 export const SINGLE_HOUSES: HouseFactory[] = [
   SingleHouse01,
   SingleHouse02,
@@ -306,7 +317,7 @@ export const SINGLE_HOUSES: HouseFactory[] = [
   SingleHouse08,
   SingleHouse09,
   SingleHouse10,
-];
+].map((h, i) => withInterior(h, ISingle.furnish, i));
 
 export const TWO_STORY_HOUSES: HouseFactory[] = [
   TwoStoryHouse01,
@@ -319,6 +330,6 @@ export const TWO_STORY_HOUSES: HouseFactory[] = [
   TwoStoryHouse08,
   TwoStoryHouse09,
   TwoStoryHouse10,
-];
+].map((h, i) => withInterior(h, ITwo.furnish, i));
 
 void win;

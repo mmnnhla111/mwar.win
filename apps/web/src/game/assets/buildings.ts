@@ -1,6 +1,16 @@
 import * as THREE from 'three';
 import { Frame, Kit, Rect, door, win } from './kit';
 import { STORY, WALL_H, SLAB_T, StructureInfo, buildStories, standardPoints, worldPoint, windowsAlong, GROUND_WINDOW } from './structure';
+import * as I01 from './interiors/building01';
+import * as I02 from './interiors/building02';
+import * as I03 from './interiors/building03';
+import * as I04 from './interiors/building04';
+import * as I05 from './interiors/building05';
+import * as I06 from './interiors/building06';
+import * as I07 from './interiors/building07';
+import * as I08 from './interiors/building08';
+import * as I09 from './interiors/building09';
+import * as I10 from './interiors/building10';
 
 /**
  * 10 distinct multi-storey building architectures (Building01 … Building10).
@@ -422,15 +432,24 @@ export const Building10: BuildingFactory = (kit, f) => {
   };
 };
 
+/** Factory + its interior (assets/interiors/buildingNN.ts): every placed instance is furnished the same way. */
+const withInterior =
+  (factory: BuildingFactory, furnish: (kit: Kit, f: Frame, info: StructureInfo) => void): BuildingFactory =>
+  (kit, f) => {
+    const info = factory(kit, f);
+    furnish(kit, f, info);
+    return info;
+  };
+
 export const BUILDINGS: BuildingFactory[] = [
-  Building01,
-  Building02,
-  Building03,
-  Building04,
-  Building05,
-  Building06,
-  Building07,
-  Building08,
-  Building09,
-  Building10,
+  withInterior(Building01, I01.furnish),
+  withInterior(Building02, I02.furnish),
+  withInterior(Building03, I03.furnish),
+  withInterior(Building04, I04.furnish),
+  withInterior(Building05, I05.furnish),
+  withInterior(Building06, I06.furnish),
+  withInterior(Building07, I07.furnish),
+  withInterior(Building08, I08.furnish),
+  withInterior(Building09, I09.furnish),
+  withInterior(Building10, I10.furnish),
 ];
